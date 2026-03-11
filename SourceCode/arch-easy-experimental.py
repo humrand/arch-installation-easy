@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import curses
 import subprocess
 import sys
@@ -11,47 +12,66 @@ import time
 
 LOG_FILE = "/mnt/install_log.txt"
 
-def L(en, es):
-    return en if state.get("lang", "en") == "en" else es
+def nowtag():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def log(msg):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] {msg}"
+def write_log(line):
     try:
         with open(LOG_FILE, "a") as f:
             f.write(line + "\n")
     except Exception:
         pass
-    return line
 
-def run(cmd, stream=False):
-    log(f"Running: {cmd}")
-    if not stream:
-        p = subprocess.run(cmd, shell=True)
-        return p.returncode
-    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+def L(en, es):
+    return en if state.get("lang", "en") == "en" else es
+
+def append_buffer_add(s):
+    line = f"[{nowtag()}] {s}"
+    write_log(line)
+    with append_lock:
+        append_buffer.append(line)
+        if len(append_buffer) > 1000:
+            del append_buffer[:500]
+
+def run_stream(cmd, on_line=None, cwd=None):
+    append_buffer_add(f"Running: {cmd}")
+    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=cwd, executable="/bin/bash")
     while True:
         line = p.stdout.readline()
         if line == "" and p.poll() is not None:
             break
         if line:
-            line = line.rstrip("\n")
-            append_log(line)
+            l = line.rstrip("\n")
+            append_buffer_add(l)
+            if on_line:
+                on_line(l)
     return p.wait()
 
-def chroot(cmd, stream=False):
-    quoted = cmd.replace('"', '\\"')
-    return run(f'arch-chroot /mnt /bin/bash -c "{quoted}"', stream=stream)
+def run_simple(cmd):
+    append_buffer_add(f"Running: {cmd}")
+    r = subprocess.run(cmd, shell=True, executable="/bin/bash")
+    return r.returncode
 
-def append_log(line):
-    s = log(line)
+def check_network():
+    ret = subprocess.run("ping -c1 -W1 8.8.8.8 >/dev/null 2>&1", shell=True)
+    if ret.returncode == 0:
+        return True
+    if shutil_available():
+        subprocess.run("dhcpcd --nobackground >/dev/null 2>&1 &", shell=True)
+        time.sleep(2)
+        ret2 = subprocess.run("ping -c1 -W1 8.8.8.8 >/dev/null 2>&1", shell=True)
+        return ret2.returncode == 0
+    return False
+
+def shutil_available():
+    return shutil_path() is not None
+
+def shutil_path():
     try:
-        with append_lock:
-            append_buffer.append(s)
-            if len(append_buffer) > 1000:
-                del append_buffer[:500]
+        out = subprocess.check_output("command -v dhcpcd || true", shell=True, text=True).strip()
+        return out if out else None
     except Exception:
-        pass
+        return None
 
 def list_disks():
     try:
@@ -61,9 +81,10 @@ def list_disks():
             parts = line.split()
             if len(parts) < 2:
                 continue
-            name, size = parts[0], parts[1]
+            name = parts[0]
             try:
-                gb = int(size) // (1024**3)
+                size = int(parts[1])
+                gb = size // (1024 ** 3)
             except Exception:
                 gb = 0
             disks.append((name, gb))
@@ -75,6 +96,110 @@ def partition_suffix(disk, n):
     if "nvme" in disk or "mmcblk" in disk:
         return f"/dev/{disk}p{n}"
     return f"/dev/{disk}{n}"
+
+def prompt_password(prompt):
+    sys.stdout.write(prompt + " ")
+    sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    passwd = ""
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\n", "\r"):
+                sys.stdout.write("\n")
+                break
+            if ch == "\x7f":
+                if passwd:
+                    passwd = passwd[:-1]
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+            else:
+                passwd += ch
+                sys.stdout.write("*")
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return passwd
+
+def paginate_select(options, title):
+    per = 10
+    idx = 0
+    while True:
+        os.system("clear")
+        print(title)
+        page = options[idx:idx+per]
+        for i, opt in enumerate(page, start=1):
+            print(f"{i}. {opt}")
+        print()
+        print("n: next page, p: prev page, q: cancel")
+        choice = input("> ").strip()
+        if choice.isdigit():
+            n = int(choice)
+            if 1 <= n <= len(page):
+                return idx + n - 1
+        elif choice == "n":
+            if idx + per < len(options):
+                idx += per
+        elif choice == "p":
+            if idx - per >= 0:
+                idx -= per
+        elif choice == "q":
+            return None
+
+def get_input(prompt, default=""):
+    sys.stdout.write(prompt + (" [" + str(default) + "]" if default else "") + " ")
+    sys.stdout.flush()
+    s = input().strip()
+    return s if s else default
+
+def validate_name(n):
+    return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", n))
+
+def validate_swap(s):
+    return bool(re.match(r"^\d+$", s)) and int(s) > 0
+
+def choose_keymap():
+    try:
+        out = subprocess.check_output("localectl list-keymaps 2>/dev/null || true", shell=True, text=True)
+        if out:
+            maps = [l for l in out.splitlines() if l]
+            common = ["us","es","fr","de","it","pt","la-latin1"]
+            options = [m for m in common if m in maps]
+            if not options:
+                options = maps[:40]
+            idx = paginate_select(options, L("Select keymap","Seleccione keymap"))
+            if idx is None:
+                return "us"
+            return options[idx]
+    except Exception:
+        pass
+    return "us"
+
+def choose_timezone():
+    try:
+        out = subprocess.check_output("timedatectl list-timezones 2>/dev/null || true", shell=True, text=True)
+        if out:
+            zones = out.splitlines()
+            idx = paginate_select(zones, L("Select timezone","Seleccione zona horaria"))
+            if idx is None:
+                return "UTC"
+            return zones[idx]
+    except Exception:
+        pass
+    return "UTC"
+
+def ensure_keyring():
+    run_stream("pacman -Sy --noconfirm archlinux-keyring")
+    run_simple("pacman-key --init >/dev/null 2>&1 || true")
+    run_simple("pacman-key --populate archlinux >/dev/null 2>&1 || true")
+
+def safe_mkdir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
 
 state = {
     "lang": "en",
@@ -96,100 +221,17 @@ screens = ["language","identity","passwords","disk","desktop","gpu","review","in
 append_buffer = []
 append_lock = threading.Lock()
 
-def choose_language():
-    while True:
-        print("Select language / Seleccione idioma: 1 = English, 2 = Español")
-        choice = input("> ").strip()
-        if choice == "1":
-            state["lang"] = "en"
-            break
-        elif choice == "2":
-            state["lang"] = "es"
-            break
-        else:
-            print("Invalid / Inválido. Try again.")
-
-def confirm(msg):
-    while True:
-        resp = input(f"{msg} (y/n): ").strip().lower()
-        if resp in ("y","n"):
-            return resp == "y"
-        print(L("Invalid input, try again.","Entrada inválida, intente de nuevo."))
-
-def valid_name(name):
-    return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", name))
-
-def valid_swap(s):
-    return bool(re.match(r"^\d+$", s)) and int(s) > 0
-
-def input_validated(prompt, validator, error_msg):
-    while True:
-        val = input(prompt + " ").strip()
-        if validator(val):
-            return val
-        print(error_msg)
-
-def input_password_prompt(prompt):
-    print(prompt)
-    password = ""
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        while True:
-            ch = sys.stdin.read(1)
-            if ch in ("\n","\r"):
-                print()
-                break
-            elif ch == "\x7f":
-                if password:
-                    password = password[:-1]
-                    print("\b \b", end="", flush=True)
-            else:
-                password += ch
-                print("*", end="", flush=True)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    return password
-
-def paginate_menu(options, title):
-    per_page = 10
-    idx = 0
-    while True:
-        os.system("clear")
-        print(title)
-        page = options[idx:idx+per_page]
-        for i,opt in enumerate(page, start=1):
-            print(f"{i}. {opt}")
-        print()
-        print(L("n: next page, p: prev page, q: cancel","n: siguiente página, p: página anterior, q: cancelar"))
-        choice = input("> ").strip()
-        if choice.isdigit():
-            n = int(choice)
-            if 1 <= n <= len(page):
-                return idx + n - 1
-        elif choice == "n":
-            if idx + per_page < len(options):
-                idx += per_page
-        elif choice == "p":
-            if idx - per_page >= 0:
-                idx -= per_page
-        elif choice == "q":
-            return None
-        else:
-            print(L("Invalid, try again.","Inválido, intente de nuevo."))
-
-def screen_language_tui(stdscr):
+def screen_language_c(stdscr):
     curses.curs_set(0)
     opts = ["English","Español"]
     sel = 0 if state["lang"] == "en" else 1
     while True:
-        stdscr.clear()
+        stdscr.erase()
         stdscr.addstr(1,2,"Language / Idioma")
         for i,opt in enumerate(opts):
             marker = "[x]" if i==sel else "[ ]"
             stdscr.addstr(3+i,4,f"{marker} {opt}")
-        stdscr.addstr(8,4,"Use up/down to change, Enter to select")
+        stdscr.addstr(8,4,"Use up/down Enter to select")
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(opts)
@@ -197,20 +239,26 @@ def screen_language_tui(stdscr):
             sel = (sel + 1) % len(opts)
         elif k in (10,13):
             state["lang"] = "en" if sel==0 else "es"
-            break
+            return
         elif k == ord("q"):
             sys.exit(0)
 
-def get_input_curses(stdscr, y, x, prompt, initial="", secret=False):
+def input_curses(stdscr,y,x,prompt,initial="",secret=False):
     curses.echo() if not secret else curses.noecho()
-    stdscr.addstr(y, x, prompt)
+    stdscr.addstr(y,x,prompt)
     stdscr.refresh()
     win = curses.newwin(1,60,y,x+len(prompt)+1)
-    win.addstr(0,0,initial)
+    try:
+        win.addstr(0,0,initial)
+    except Exception:
+        pass
     win.refresh()
     s = ""
     if not secret:
-        s = win.getstr().decode().strip()
+        try:
+            s = win.getstr().decode().strip()
+        except Exception:
+            s = ""
     else:
         while True:
             ch = win.get_wch()
@@ -228,21 +276,27 @@ def get_input_curses(stdscr, y, x, prompt, initial="", secret=False):
     curses.echo()
     return s
 
-def screen_identity_tui(stdscr):
+def screen_identity_c(stdscr):
     curses.curs_set(1)
-    stdscr.clear()
+    stdscr.erase()
     stdscr.addstr(1,2,"System Identity")
-    state["hostname"] = get_input_curses(stdscr,4,4,"Hostname:",state.get("hostname",""),secret=False)
-    state["username"] = get_input_curses(stdscr,6,4,"Username:",state.get("username",""),secret=False)
+    state["hostname"] = input_curses(stdscr,4,4,"Hostname:",state.get("hostname",""),secret=False)
+    state["username"] = input_curses(stdscr,6,4,"Username:",state.get("username",""),secret=False)
+    if not validate_name(state["hostname"]):
+        state["hostname"] = ""
+    if not validate_name(state["username"]):
+        state["username"] = ""
 
-def screen_passwords_tui(stdscr):
+def screen_passwords_c(stdscr):
     curses.curs_set(1)
-    stdscr.clear()
+    stdscr.erase()
     stdscr.addstr(1,2,"Passwords")
-    state["root_pass"] = get_input_curses(stdscr,4,4,"Root password:",secret=True)
-    state["user_pass"] = get_input_curses(stdscr,6,4,"User password:",secret=True)
+    p1 = input_curses(stdscr,4,4,"Root password:",secret=True)
+    p2 = input_curses(stdscr,6,4,"User password:",secret=True)
+    state["root_pass"] = p1
+    state["user_pass"] = p2
 
-def screen_disk_tui(stdscr):
+def screen_disk_c(stdscr):
     curses.curs_set(0)
     disks = list_disks()
     if not disks:
@@ -252,13 +306,13 @@ def screen_disk_tui(stdscr):
     opts = [f"/dev/{d} ({s} GB)" for d,s in disks]
     sel = 0
     while True:
-        stdscr.clear()
+        stdscr.erase()
         stdscr.addstr(1,2,"Disk & Swap")
         for i,opt in enumerate(opts):
             marker = "[x]" if i==sel else "[ ]"
             stdscr.addstr(3+i,4,f"{marker} {opt}")
         stdscr.addstr(3+len(opts)+1,4,f"Swap size in GB: {state['swap']}")
-        stdscr.addstr(3+len(opts)+3,4,"Use up/down, Enter to select disk, s to change swap")
+        stdscr.addstr(3+len(opts)+3,4,"Up/Down Enter select, s change swap")
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(opts)
@@ -266,28 +320,31 @@ def screen_disk_tui(stdscr):
             sel = (sel + 1) % len(opts)
         elif k in (10,13):
             state["disk"] = disks[sel][0]
-            break
+            return
         elif k == ord("s"):
             curses.echo()
             stdscr.addstr(3+len(opts)+1,4,"Swap size in GB: ")
-            val = stdscr.getstr(3+len(opts)+1,24,6).decode().strip()
+            try:
+                val = stdscr.getstr(3+len(opts)+1,24,6).decode().strip()
+            except Exception:
+                val = ""
             curses.noecho()
-            if re.match(r"^\d+$", val) and int(val)>0:
+            if validate_swap(val):
                 state["swap"] = val
         elif k == ord("q"):
             sys.exit(0)
 
-def screen_desktop_tui(stdscr):
+def screen_desktop_c(stdscr):
     curses.curs_set(0)
     opts = ["KDE Plasma","Cinnamon","None"]
     sel = opts.index(state["desktop"]) if state["desktop"] in opts else 2
     while True:
-        stdscr.clear()
+        stdscr.erase()
         stdscr.addstr(1,2,"Desktop Environment")
         for i,opt in enumerate(opts):
             marker = "[x]" if i==sel else "[ ]"
             stdscr.addstr(3+i,4,f"{marker} {opt}")
-        stdscr.addstr(7,4,"Use up/down to change, Enter to select")
+        stdscr.addstr(7,4,"Up/Down Enter select")
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(opts)
@@ -295,21 +352,21 @@ def screen_desktop_tui(stdscr):
             sel = (sel + 1) % len(opts)
         elif k in (10,13):
             state["desktop"] = opts[sel]
-            break
+            return
         elif k == ord("q"):
             sys.exit(0)
 
-def screen_gpu_tui(stdscr):
+def screen_gpu_c(stdscr):
     curses.curs_set(0)
     opts = ["NVIDIA","AMD / Intel","None"]
     sel = 0 if state["gpu"] == "NVIDIA" else (1 if state["gpu"]=="AMD/Intel" else 2)
     while True:
-        stdscr.clear()
+        stdscr.erase()
         stdscr.addstr(1,2,"GPU Drivers")
         for i,opt in enumerate(opts):
             marker = "[x]" if i==sel else "[ ]"
             stdscr.addstr(3+i,4,f"{marker} {opt}")
-        stdscr.addstr(7,4,"Use up/down to change, Enter to select")
+        stdscr.addstr(7,4,"Up/Down Enter select")
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(opts)
@@ -317,14 +374,14 @@ def screen_gpu_tui(stdscr):
             sel = (sel + 1) % len(opts)
         elif k in (10,13):
             state["gpu"] = "NVIDIA" if sel==0 else ("AMD/Intel" if sel==1 else "None")
-            break
+            return
         elif k == ord("q"):
             sys.exit(0)
 
-def screen_review_tui(stdscr):
+def screen_review_c(stdscr):
     curses.curs_set(0)
     while True:
-        stdscr.clear()
+        stdscr.erase()
         stdscr.addstr(1,2,"Review & Install")
         lines = [
             (L("Language","Idioma"), state["lang"]),
@@ -342,7 +399,7 @@ def screen_review_tui(stdscr):
         for k,v in lines:
             stdscr.addstr(y,4,f"{k}: {v}")
             y += 1
-        stdscr.addstr(y+1,4,L("Press Enter to start install, q to cancel","Presione Enter para iniciar, q para cancelar"))
+        stdscr.addstr(y+1,4,L("Enter to start install, q cancel","Enter para iniciar, q cancelar"))
         k = stdscr.getch()
         if k in (10,13):
             return True
@@ -350,24 +407,24 @@ def screen_review_tui(stdscr):
             sys.exit(0)
 
 class InstallerUI:
-    def __init__(self,stdscr):
+    def __init__(self, stdscr):
         self.stdscr = stdscr
         self.logs = []
         self.progress = 0.0
         self.lock = threading.Lock()
         curses.curs_set(0)
 
-    def add_line(self,line):
+    def add_log(self, line):
         with self.lock:
             self.logs.append(line)
             if len(self.logs) > 500:
                 self.logs = self.logs[-400:]
-        append_log(line)
+        append_buffer_add(line)
         self.redraw()
 
-    def set_progress(self,pct):
+    def set_progress(self, pct):
         with self.lock:
-            self.progress = max(0.0,min(100.0,pct))
+            self.progress = max(0.0, min(100.0, pct))
         self.redraw()
 
     def redraw(self):
@@ -375,7 +432,7 @@ class InstallerUI:
         s.erase()
         s.addstr(1,2,"Installing...")
         s.addstr(3,4,f"Progress: {int(self.progress)}%")
-        width = 60
+        width = min(60, max(20, curses.COLS-20))
         filled = int((self.progress/100.0)*width)
         bar = "[" + "#"*filled + "-"*(width-filled) + "]"
         s.addstr(4,4,bar)
@@ -388,7 +445,7 @@ class InstallerUI:
                 except curses.error:
                     pass
                 y += 1
-        s.addstr(curses.LINES-2,4,L("When finished press r to reboot, q to quit","Cuando termine presione r para reiniciar, q para salir"))
+        s.addstr(curses.LINES-2,4,L("r reboot when finished, q quit","r reiniciar cuando termine, q salir"))
         s.refresh()
 
     def run_steps(self):
@@ -441,17 +498,21 @@ class InstallerUI:
         steps.append(("GRUB", 'arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB && arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg',10))
         total = sum(w for _,_,w in steps)
         done = 0.0
+        if not check_network():
+            self.add_log(L("Network unreachable. Please ensure network before installing.","Red inaccesible. Asegúrese de tener red antes de instalar."))
+            return
+        ensure_keyring()
         for desc,cmd,weight in steps:
-            self.add_line(f"== {desc} ==")
+            self.add_log(f"== {desc} ==")
             self.set_progress((done/total)*100.0)
-            code = run(cmd, stream=True)
+            code = run_stream(cmd, on_line=self.add_log)
             if code != 0:
-                self.add_line(f"ERROR: step failed ({desc}) code={code}")
+                self.add_log(f"ERROR: step failed ({desc}) code={code}")
                 return
             done += weight
             self.set_progress((done/total)*100.0)
             time.sleep(0.2)
-        self.add_line("✔ Installation complete")
+        self.add_log("✔ Installation complete")
         self.set_progress(100.0)
 
     def start(self):
@@ -463,33 +524,33 @@ class InstallerUI:
             if k == ord("q"):
                 break
             if k == ord("r") and self.progress >= 99.0:
-                append_log("Rebooting")
+                append_buffer_add("Rebooting")
                 subprocess.run("umount -R /mnt", shell=True)
                 subprocess.run("reboot", shell=True)
                 break
 
-def screen_install_tui(stdscr):
+def screen_install_c(stdscr):
     ui = InstallerUI(stdscr)
     ui.start()
 
 def main_curses(stdscr):
     idx = 0
     funcs = {
-        "language": screen_language_tui,
-        "identity": screen_identity_tui,
-        "passwords": screen_passwords_tui,
-        "disk": screen_disk_tui,
-        "desktop": screen_desktop_tui,
-        "gpu": screen_gpu_tui,
-        "review": screen_review_tui,
-        "install": screen_install_tui
+        "language": screen_language_c,
+        "identity": screen_identity_c,
+        "passwords": screen_passwords_c,
+        "disk": screen_disk_c,
+        "desktop": screen_desktop_c,
+        "gpu": screen_gpu_c,
+        "review": screen_review_c,
+        "install": screen_install_c
     }
     while True:
         name = screens[idx]
         funcs[name](stdscr)
         if name == "install":
             break
-        stdscr.addstr(curses.LINES-2,2,L("Use ← / → to navigate, q to quit","Use ← / → para navegar, q para salir"))
+        stdscr.addstr(curses.LINES-2,2,L("Use ← / → Enter to navigate q to quit","Use ← / → Enter para navegar q para salir"))
         k = stdscr.getch()
         if k == curses.KEY_RIGHT or k in (10,13):
             if idx < len(screens)-1:
@@ -502,41 +563,52 @@ def main_curses(stdscr):
         elif k == ord("q"):
             break
 
-def run_cli_fallback():
-    choose_language()
-    state["hostname"] = input_validated(L("Enter hostname:","Ingrese el nombre del equipo:"), valid_name, L("Invalid hostname.","Nombre inválido."))
-    state["username"] = input_validated(L("Enter username:","Ingrese nombre de usuario:"), valid_name, L("Invalid username.","Usuario inválido."))
-    state["root_pass"] = input_password_prompt(L("Enter root password:","Ingrese contraseña de root:"))
-    state["user_pass"] = input_password_prompt(L("Enter user password:","Ingrese contraseña de usuario:"))
-    state["swap"] = input_validated(L("Enter swap size in GB (e.g. 8):","Ingrese tamaño de swap en GB (ej. 8):"), valid_swap, L("Invalid swap size.","Tamaño inválido."))
+def fallback_cli():
+    print("TUI failed, falling back to CLI")
     while True:
-        c = input(L("Choose desktop: 1=KDE,2=Cinnamon,0=None:","Seleccione escritorio: 1=KDE,2=Cinnamon,0=Ninguno:")).strip()
-        if c in ("0","1","2"):
-            state["desktop"] = "KDE Plasma" if c=="1" else ("Cinnamon" if c=="2" else "None")
+        c = input(L("Select language: 1=EN 2=ES","Seleccione idioma: 1=EN 2=ES")).strip()
+        if c == "1":
+            state["lang"] = "en"
             break
-    disks = list_disks()
-    if not disks:
-        print(L("No disks found. Aborting.","No se encontraron discos. Abortando."))
-        sys.exit(1)
-    for i,(d,s) in enumerate(disks, start=1):
-        print(f"{i}. /dev/{d} ({s} GB)")
+        elif c == "2":
+            state["lang"] = "es"
+            break
+    state["hostname"] = get_input(L("Enter hostname:","Ingrese nombre equipo:"),"")
+    while not validate_name(state["hostname"]):
+        state["hostname"] = get_input(L("Invalid. Enter hostname:","Inválido. Ingrese nombre:"),"")
+    state["username"] = get_input(L("Enter username:","Ingrese usuario:"),"")
+    while not validate_name(state["username"]):
+        state["username"] = get_input(L("Invalid. Enter username:","Inválido. Ingrese usuario:"),"")
+    state["root_pass"] = prompt_password(L("Enter root password:","Ingrese contraseña root:"))
+    state["user_pass"] = prompt_password(L("Enter user password:","Ingrese contraseña usuario:"))
+    state["swap"] = get_input(L("Enter swap GB (8):","Ingrese swap GB (8):"), "8")
+    while not validate_swap(state["swap"]):
+        state["swap"] = get_input(L("Invalid swap. Enter swap GB:","Swap inválido. Ingrese swap GB:"), "8")
     while True:
-        choice = input(L("Select disk number:","Seleccione número de disco:")).strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(disks):
-            state["disk"] = disks[int(choice)-1][0]
+        d = list_disks()
+        if not d:
+            print(L("No disks found. Aborting.","No se encontraron discos. Abortando."))
+            sys.exit(1)
+        for i,(name,gb) in enumerate(d, start=1):
+            print(f"{i}. /dev/{name} ({gb} GB)")
+        choice = input(L("Select disk number:","Seleccione número disco:")).strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(d):
+            state["disk"] = d[int(choice)-1][0]
             break
-    print(L("Review:","Revisar:"))
+    print(L("Review config and start install","Revise la configuración e inicie"))
     for k in ("lang","hostname","username","disk","swap","desktop","gpu"):
         print(f"{k}: {state.get(k)}")
-    if confirm(L("Proceed with installation?","¿Proceder con la instalación?")):
-        installer = InstallerUI(None)
-        installer.run_steps()
+    ok = input(L("Proceed? (y/n)","Proceder? (y/n)")).strip().lower()
+    if ok == "y":
+        i = InstallerUI(None)
+        i.run_steps()
 
 if __name__ == "__main__":
     if os.geteuid() != 0:
         print("Run as root in the Arch live environment.")
         sys.exit(1)
     try:
+        import shutil
         curses.wrapper(main_curses)
     except Exception:
-        run_cli_fallback()
+        fallback_cli()
