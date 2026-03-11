@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import os
 import re
 import threading
 from datetime import datetime
@@ -13,18 +14,20 @@ def _bootstrap_tk():
     except Exception:
         pass
 
-    print("Tkinter not available. Installing tk package...")
-    result = subprocess.run(
-        ["pacman", "-Sy", "--noconfirm", "tk"],
-        capture_output=False
-    )
-    if result.returncode != 0:
-        print("ERROR: Failed to install tk. Make sure you have internet access.")
+    if os.environ.get("_ARCH_TK_INSTALLED") == "1":
+        print("ERROR: tk was installed but still not working. Try: pacman -S tk")
         sys.exit(1)
 
-    print("tk installed. Restarting...")
-    subprocess.run([sys.executable] + sys.argv)
-    sys.exit(0)
+    print("Tkinter not available. Installing tk...")
+    result = subprocess.run(["pacman", "-Sy", "--noconfirm", "tk"])
+    if result.returncode != 0:
+        print("ERROR: Failed to install tk. Check your internet connection.")
+        sys.exit(1)
+
+    print("Done. Restarting...")
+    env = os.environ.copy()
+    env["_ARCH_TK_INSTALLED"] = "1"
+    os.execve(sys.executable, [sys.executable] + sys.argv, env)
 
 
 _bootstrap_tk()
