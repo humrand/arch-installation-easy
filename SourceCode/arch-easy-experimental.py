@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import curses
 import subprocess
 import sys
@@ -33,24 +34,9 @@ def append_buffer_add(s):
         if len(append_buffer) > 1000:
             del append_buffer[:500]
 
-def run_stream(cmd, on_line=None, progress_anim=None, cwd=None, ignore_error=False):
+def run_stream(cmd, on_line=None, cwd=None, ignore_error=False):
     append_buffer_add(f"Running: {cmd}")
     p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=cwd, executable="/bin/bash")
-    stop_event = threading.Event()
-    anim_thread = None
-    if progress_anim:
-        ui, base, target = progress_anim
-        def _anim():
-            cur = base
-            ui.set_progress(cur)
-            step = max(0.2, (target - base) / 200.0)
-            while not stop_event.is_set() and cur < target:
-                cur = min(target, cur + step)
-                ui.set_progress(cur)
-                time.sleep(0.12)
-            ui.set_progress(target)
-        anim_thread = threading.Thread(target=_anim, daemon=True)
-        anim_thread.start()
     while True:
         line = p.stdout.readline()
         if line == "" and p.poll() is not None:
@@ -61,11 +47,6 @@ def run_stream(cmd, on_line=None, progress_anim=None, cwd=None, ignore_error=Fal
             if on_line:
                 on_line(l)
     rc = p.wait()
-    if progress_anim:
-        stop_event.set()
-        if anim_thread:
-            anim_thread.join(timeout=1.0)
-        ui.set_progress(progress_anim[2])
     if rc != 0 and not ignore_error:
         append_buffer_add(f"ERROR: command returned {rc}: {cmd}")
     return rc
@@ -180,7 +161,7 @@ def validate_swap(s):
     return bool(re.match(r"^\d+$", s)) and int(s) > 0
 
 def curses_picker(stdscr, options, title):
-    per_page = curses.LINES - 6
+    per_page = max(6, curses.LINES - 6)
     idx = 0
     sel = 0
     while True:
@@ -376,18 +357,50 @@ def screen_keymap_c(stdscr):
         run_simple(f"loadkeys {km}", ignore_error=True)
     return
 
+def build_zone_tree(zones):
+    tree = {}
+    for z in zones:
+        parts = z.split('/')
+        node = tree
+        for p in parts:
+            node = node.setdefault(p, {})
+    return tree
+
+def traverse_tree_picker(stdscr, tree, prefix=""):
+    node = tree
+    path = []
+    while True:
+        keys = sorted(node.keys())
+        display = []
+        for k in keys:
+            display.append(k + ("/" if node[k] else ""))
+        idx = curses_picker(stdscr, display, f"Choose {'/'.join(path) if path else 'root'} (q cancel, .. to go up)")
+        if idx is None:
+            return None
+        chosen = keys[idx]
+        path.append(chosen)
+        if node[chosen]:
+            node = node[chosen]
+            continue
+        # leaf => build full zone
+        zone = "/".join(path)
+        return zone
+
 def screen_timezone_c(stdscr):
     curses.curs_set(0)
     stdscr.erase()
     stdscr.addstr(1,2,"Timezone / Zona horaria")
     try:
         out = subprocess.check_output("timedatectl list-timezones 2>/dev/null || true", shell=True, text=True)
-        zones = out.splitlines()
+        zones = [l for l in out.splitlines() if l]
     except Exception:
+        zones = []
+    if not zones:
         zones = ["UTC","Europe/Madrid","America/New_York","America/Los_Angeles","Asia/Tokyo"]
-    idx = curses_picker(stdscr, zones, "Choose timezone")
-    if idx is not None:
-        state["timezone"] = zones[idx]
+    tree = build_zone_tree(zones)
+    tz = traverse_tree_picker(stdscr, tree)
+    if tz is not None:
+        state["timezone"] = tz
     return
 
 def screen_desktop_c(stdscr):
@@ -507,6 +520,15 @@ class InstallerUI:
         s.addstr(curses.LINES-2,4,"r reboot when finished, q quit")
         s.refresh()
 
+    def _gradual_progress(self, base, target, duration=0.9):
+        steps = max(4, int(duration / 0.06))
+        cur = base
+        for i in range(steps):
+            cur = base + (target - base) * ((i+1)/steps)
+            self.set_progress(cur)
+            time.sleep(duration/steps)
+        self.set_progress(target)
+
     def run_steps(self):
         steps = []
         disk_device = state["disk"]
@@ -565,14 +587,17 @@ class InstallerUI:
             if desc == "Pacstrap":
                 base = max(base, 5.0)
                 target = max(target, 15.0)
-            self.set_progress(base + 0.5)
-            code = run_stream(cmd, on_line=self.add_log, progress_anim=(self, base, target), ignore_error=False)
+            # show small bump before running
+            self._gradual_progress(self.progress, base + 0.5, duration=0.15)
+            code = run_stream(cmd, on_line=self.add_log, ignore_error=False)
             if code != 0:
                 self.add_log(f"ERROR: step failed ({desc}) code={code}")
                 return
+            # after successful command, slowly advance from base to target
+            self._gradual_progress(base + 0.5, target, duration=0.9)
             done += weight
             self.set_progress((done/total)*100.0)
-            time.sleep(0.25)
+            time.sleep(0.15)
         self.add_log("✔ Installation complete")
         self.set_progress(100.0)
 
