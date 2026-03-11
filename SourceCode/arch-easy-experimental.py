@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import curses
 import subprocess
 import sys
@@ -10,10 +9,6 @@ import termios
 import tty
 import threading
 import time
-
-# MIT LICENSE, YOU CAN USE IT BUT YOU GOTTA GIVE ME CREDITS,
-# made by humrand https://github.com/humrand/arch-anstallation-easy
-# DO NOT REMOVE THIS FROM YOUR CODE IF YOU USE IT TO MODIFY IT.
 
 LOG_FILE = "/mnt/install_log.txt"
 
@@ -27,6 +22,9 @@ def write_log(line):
     except Exception:
         pass
 
+append_buffer = []
+append_lock = threading.Lock()
+
 def append_buffer_add(s):
     line = f"[{nowtag()}] {s}"
     write_log(line)
@@ -35,9 +33,24 @@ def append_buffer_add(s):
         if len(append_buffer) > 1000:
             del append_buffer[:500]
 
-def run_stream(cmd, on_line=None, cwd=None, ignore_error=False):
+def run_stream(cmd, on_line=None, progress_anim=None, cwd=None, ignore_error=False):
     append_buffer_add(f"Running: {cmd}")
     p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=cwd, executable="/bin/bash")
+    stop_event = threading.Event()
+    anim_thread = None
+    if progress_anim:
+        ui, base, target = progress_anim
+        def _anim():
+            cur = base
+            ui.set_progress(cur)
+            step = max(0.2, (target - base) / 200.0)
+            while not stop_event.is_set() and cur < target:
+                cur = min(target, cur + step)
+                ui.set_progress(cur)
+                time.sleep(0.12)
+            ui.set_progress(target)
+        anim_thread = threading.Thread(target=_anim, daemon=True)
+        anim_thread.start()
     while True:
         line = p.stdout.readline()
         if line == "" and p.poll() is not None:
@@ -48,6 +61,11 @@ def run_stream(cmd, on_line=None, cwd=None, ignore_error=False):
             if on_line:
                 on_line(l)
     rc = p.wait()
+    if progress_anim:
+        stop_event.set()
+        if anim_thread:
+            anim_thread.join(timeout=1.0)
+        ui.set_progress(progress_anim[2])
     if rc != 0 and not ignore_error:
         append_buffer_add(f"ERROR: command returned {rc}: {cmd}")
     return rc
@@ -161,35 +179,39 @@ def validate_name(n):
 def validate_swap(s):
     return bool(re.match(r"^\d+$", s)) and int(s) > 0
 
-def choose_keymap():
-    try:
-        out = subprocess.check_output("localectl list-keymaps 2>/dev/null || true", shell=True, text=True)
-        if out:
-            maps = [l for l in out.splitlines() if l]
-            common = ["us","es","fr","de","it","pt","la-latin1"]
-            options = [m for m in common if m in maps]
-            if not options:
-                options = maps[:40]
-            idx = paginate_select(options, "Select keymap")
-            if idx is None:
-                return "us"
-            return options[idx]
-    except Exception:
-        pass
-    return "us"
-
-def choose_timezone():
-    try:
-        out = subprocess.check_output("timedatectl list-timezones 2>/dev/null || true", shell=True, text=True)
-        if out:
-            zones = out.splitlines()
-            idx = paginate_select(zones, "Select timezone")
-            if idx is None:
-                return "UTC"
-            return zones[idx]
-    except Exception:
-        pass
-    return "UTC"
+def curses_picker(stdscr, options, title):
+    per_page = curses.LINES - 6
+    idx = 0
+    sel = 0
+    while True:
+        stdscr.erase()
+        stdscr.addstr(1,2, title)
+        page = options[idx:idx+per_page]
+        for i,opt in enumerate(page):
+            marker = ">" if i==sel else " "
+            try:
+                stdscr.addstr(3+i,4,f"{marker} {opt}")
+            except curses.error:
+                pass
+        stdscr.addstr(curses.LINES-2,4,"Use ↑/↓ PageUp/PageDown Enter select q cancel")
+        stdscr.refresh()
+        k = stdscr.getch()
+        if k == curses.KEY_UP:
+            sel = (sel - 1) % len(page)
+        elif k == curses.KEY_DOWN:
+            sel = (sel + 1) % len(page)
+        elif k == curses.KEY_NPAGE:
+            if idx + per_page < len(options):
+                idx += per_page
+                sel = 0
+        elif k == curses.KEY_PPAGE:
+            if idx - per_page >= 0:
+                idx -= per_page
+                sel = 0
+        elif k in (10,13):
+            return idx + sel
+        elif k == ord("q"):
+            return None
 
 append_buffer = []
 append_lock = threading.Lock()
@@ -214,7 +236,6 @@ screens = ["language","identity","passwords","disk","keymap","timezone","desktop
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
 
-# TUI screens
 def screen_language_c(stdscr):
     curses.curs_set(0)
     opts = ["English","Español"]
@@ -225,7 +246,8 @@ def screen_language_c(stdscr):
         for i,opt in enumerate(opts):
             marker = "[x]" if i==sel else "[ ]"
             stdscr.addstr(3+i,4,f"{marker} {opt}")
-        stdscr.addstr(8,4,"Use up/down Enter to select")
+        stdscr.addstr(8,4,"Use up/down Enter to select, c to choose from list")
+        stdscr.refresh()
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(opts)
@@ -234,6 +256,11 @@ def screen_language_c(stdscr):
         elif k in (10,13):
             state["lang"] = "en" if sel==0 else "es"
             return
+        elif k == ord("c"):
+            idx = curses_picker(stdscr, opts, "Choose Language")
+            if idx is not None:
+                state["lang"] = "en" if idx==0 else "es"
+                return
         elif k == ord("q"):
             sys.exit(0)
 
@@ -307,6 +334,7 @@ def screen_disk_c(stdscr):
             stdscr.addstr(3+i,4,f"{marker} {opt}")
         stdscr.addstr(3+len(opts)+1,4,f"Swap size in GB: {state['swap']}")
         stdscr.addstr(3+len(opts)+3,4,"Up/Down Enter select, s change swap")
+        stdscr.refresh()
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(opts)
@@ -332,10 +360,18 @@ def screen_keymap_c(stdscr):
     curses.curs_set(0)
     stdscr.erase()
     stdscr.addstr(1,2,"Keymap / Teclado")
-    stdscr.addstr(3,4,"Press 'c' to choose from list or 'd' to keep default (us)")
-    k = stdscr.getch()
-    if k == ord("c"):
-        km = choose_keymap()
+    try:
+        out = subprocess.check_output("localectl list-keymaps 2>/dev/null || true", shell=True, text=True)
+        maps = [l for l in out.splitlines() if l]
+    except Exception:
+        maps = []
+    common = ["us","es","fr","de","it","pt","la-latin1"]
+    options = [m for m in common if m in maps]
+    if not options:
+        options = maps[:60] if maps else common
+    idx = curses_picker(stdscr, options, "Choose keymap")
+    if idx is not None:
+        km = options[idx]
         state["keymap"] = km
         run_simple(f"loadkeys {km}", ignore_error=True)
     return
@@ -344,11 +380,14 @@ def screen_timezone_c(stdscr):
     curses.curs_set(0)
     stdscr.erase()
     stdscr.addstr(1,2,"Timezone / Zona horaria")
-    stdscr.addstr(3,4,"Press 'c' to choose timezone or 'd' to keep default (UTC)")
-    k = stdscr.getch()
-    if k == ord("c"):
-        tz = choose_timezone()
-        state["timezone"] = tz
+    try:
+        out = subprocess.check_output("timedatectl list-timezones 2>/dev/null || true", shell=True, text=True)
+        zones = out.splitlines()
+    except Exception:
+        zones = ["UTC","Europe/Madrid","America/New_York","America/Los_Angeles","Asia/Tokyo"]
+    idx = curses_picker(stdscr, zones, "Choose timezone")
+    if idx is not None:
+        state["timezone"] = zones[idx]
     return
 
 def screen_desktop_c(stdscr):
@@ -362,6 +401,7 @@ def screen_desktop_c(stdscr):
             marker = "[x]" if i==sel else "[ ]"
             stdscr.addstr(3+i,4,f"{marker} {opt}")
         stdscr.addstr(7,4,"Up/Down Enter select")
+        stdscr.refresh()
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(opts)
@@ -384,6 +424,7 @@ def screen_gpu_c(stdscr):
             marker = "[x]" if i==sel else "[ ]"
             stdscr.addstr(3+i,4,f"{marker} {opt}")
         stdscr.addstr(7,4,"Up/Down Enter select")
+        stdscr.refresh()
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(opts)
@@ -417,6 +458,7 @@ def screen_review_c(stdscr):
             stdscr.addstr(y,4,f"{k}: {v}")
             y += 1
         stdscr.addstr(y+1,4,"Enter to start install, q cancel")
+        stdscr.refresh()
         k = stdscr.getch()
         if k in (10,13):
             return True
@@ -505,7 +547,7 @@ class InstallerUI:
         elif state['gpu'] == "AMD/Intel":
             desktop_cmds.append("pacman -S --noconfirm mesa vulkan-radeon libva-mesa-driver")
         if desktop_cmds:
-            joined = " && ".join([f'arch-chroot /mnt /bin/bash -c "{c}"' for c in desktop_cmds])
+            joined = " && ".join([f'arch-chroot /mnt /bin/bash -c \"{c}\"' for c in desktop_cmds])
             steps.append(("Desktop & GPU", joined,10))
         else:
             steps.append(("Desktop & GPU","true",10))
@@ -518,14 +560,19 @@ class InstallerUI:
         run_stream("pacman -Sy --noconfirm archlinux-keyring", on_line=self.add_log, ignore_error=True)
         for desc,cmd,weight in steps:
             self.add_log(f"== {desc} ==")
-            self.set_progress((done/total)*100.0)
-            code = run_stream(cmd, on_line=self.add_log, ignore_error=False)
+            base = (done/total)*100.0
+            target = ((done+weight)/total)*100.0
+            if desc == "Pacstrap":
+                base = max(base, 5.0)
+                target = max(target, 15.0)
+            self.set_progress(base + 0.5)
+            code = run_stream(cmd, on_line=self.add_log, progress_anim=(self, base, target), ignore_error=False)
             if code != 0:
                 self.add_log(f"ERROR: step failed ({desc}) code={code}")
                 return
             done += weight
             self.set_progress((done/total)*100.0)
-            time.sleep(0.2)
+            time.sleep(0.25)
         self.add_log("✔ Installation complete")
         self.set_progress(100.0)
 
@@ -567,6 +614,7 @@ def main_curses(stdscr):
         if name == "install":
             break
         stdscr.addstr(curses.LINES-2,2,"Use ← / → Enter to navigate q to quit")
+        stdscr.refresh()
         k = stdscr.getch()
         if k == curses.KEY_RIGHT or k in (10,13):
             if idx < len(screens)-1:
@@ -580,7 +628,6 @@ def main_curses(stdscr):
             break
 
 def fallback_cli():
-    print("TUI failed, falling back to CLI")
     while True:
         c = input("Select language: 1=EN 2=ES ").strip()
         if c == "1":
