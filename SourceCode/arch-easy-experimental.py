@@ -1,10 +1,14 @@
+#!/usr/bin/env python3
+import curses
 import subprocess
 import sys
-import re
 import os
+import re
+import shutil
 from datetime import datetime
 import termios
 import tty
+import threading
 import time
 
 # MIT LICENSE, YOU CAN USE IT BUT YOU GOTTA GIVE ME CREDITS,
@@ -13,58 +17,58 @@ import time
 
 LOG_FILE = "/mnt/install_log.txt"
 
-def log(msg):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] {msg}"
-    print(line)
+def nowtag():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def write_log(line):
     try:
         with open(LOG_FILE, "a") as f:
             f.write(line + "\n")
-    except:
+    except Exception:
         pass
 
-def run(cmd, ignore_error=False, capture=False):
-    log(f"Running: {cmd}")
-    try:
-        if capture:
-            p = subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, executable="/bin/bash")
-            if p.stdout:
-                for l in p.stdout.splitlines():
-                    log(l)
-            rc = p.returncode
-        else:
-            rc = subprocess.call(cmd, shell=True, executable="/bin/bash")
-        if rc != 0:
-            log(f"ERROR: Command failed ({rc}): {cmd}")
-            if not ignore_error:
-                print("Command failed. Aborting.")
-                sys.exit(1)
-        return rc
-    except Exception as e:
-        log(f"EXCEPTION running command: {e}")
-        if not ignore_error:
-            sys.exit(1)
-        return 1
+def append_buffer_add(s):
+    line = f"[{nowtag()}] {s}"
+    write_log(line)
+    with append_lock:
+        append_buffer.append(line)
+        if len(append_buffer) > 1000:
+            del append_buffer[:500]
 
-def confirm(msg):
+def run_stream(cmd, on_line=None, cwd=None, ignore_error=False):
+    append_buffer_add(f"Running: {cmd}")
+    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=cwd, executable="/bin/bash")
     while True:
-        resp = input(f"{msg} (y/n): ").strip().lower()
-        if resp in ("y","n"):
-            return resp == "y"
-        print("Invalid command, try again.")
+        line = p.stdout.readline()
+        if line == "" and p.poll() is not None:
+            break
+        if line:
+            l = line.rstrip("\n")
+            append_buffer_add(l)
+            if on_line:
+                on_line(l)
+    rc = p.wait()
+    if rc != 0 and not ignore_error:
+        append_buffer_add(f"ERROR: command returned {rc}: {cmd}")
+    return rc
 
-def valid_name(name):
-    return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", name))
+def run_simple(cmd, ignore_error=False):
+    append_buffer_add(f"Running: {cmd}")
+    r = subprocess.call(cmd, shell=True, executable="/bin/bash")
+    if r != 0 and not ignore_error:
+        append_buffer_add(f"ERROR: command returned {r}: {cmd}")
+    return r
 
-def input_validated(prompt, validator, error_msg):
-    while True:
-        val = input(prompt).strip()
-        if validator(val):
-            return val
-        print(error_msg)
-
-def valid_swap(size_str):
-    return bool(re.match(r"^\d+$", size_str)) and int(size_str) > 0
+def ensure_network():
+    rc = subprocess.call("ping -c1 -W2 8.8.8.8 >/dev/null 2>&1", shell=True, executable="/bin/bash")
+    if rc == 0:
+        return True
+    if shutil.which("dhcpcd"):
+        run_simple("dhcpcd --nobackground >/dev/null 2>&1 &", ignore_error=True)
+        time.sleep(3)
+        rc2 = subprocess.call("ping -c1 -W2 8.8.8.8 >/dev/null 2>&1", shell=True, executable="/bin/bash")
+        return rc2 == 0
+    return False
 
 def list_disks():
     try:
@@ -84,236 +88,548 @@ def list_disks():
         disks.append((name, size_gb))
     return disks
 
-def choose_disk():
-    disks = list_disks()
-    if not disks:
-        print("No disks found. Aborting.")
-        sys.exit(1)
-    print("Available disks:")
-    for i, (name, size) in enumerate(disks, start=1):
-        print(f"  {i}. /dev/{name} ({size} GB)")
-    while True:
-        choice = input("Select disk number: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(disks):
-            sel = disks[int(choice)-1][0]
-            if os.path.exists(f"/dev/{sel}"):
-                return sel
-            else:
-                print("Device not present, choose another.")
-        else:
-            print("Invalid command, try again.")
-
-def input_password(prompt):
-    sys.stdout.write(prompt + " ")
-    sys.stdout.flush()
-    password = ""
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        while True:
-            ch = sys.stdin.read(1)
-            if ch in ('\n', '\r'):
-                sys.stdout.write("\n")
-                break
-            elif ch == '\x7f':
-                if password:
-                    password = password[:-1]
-                    sys.stdout.write('\b \b')
-                    sys.stdout.flush()
-            else:
-                password += ch
-                sys.stdout.write('*')
-                sys.stdout.flush()
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return password
-
 def partition_paths_for(disk_path):
     if "nvme" in disk_path or "mmcblk" in disk_path:
         return f"{disk_path}p1", f"{disk_path}p2", f"{disk_path}p3"
     return f"{disk_path}1", f"{disk_path}2", f"{disk_path}3"
 
-def ensure_network():
-    rc = subprocess.call("ping -c1 -W2 8.8.8.8 >/dev/null 2>&1", shell=True, executable="/bin/bash")
-    if rc == 0:
-        return True
-    if shutil_exists("dhcpcd"):
-        run("dhcpcd --nobackground >/dev/null 2>&1 &", ignore_error=True)
-        time.sleep(3)
-        rc2 = subprocess.call("ping -c1 -W2 8.8.8.8 >/dev/null 2>&1", shell=True, executable="/bin/bash")
-        return rc2 == 0
-    return False
-
-def shutil_exists(cmd):
-    try:
-        return bool(subprocess.check_output(f"command -v {cmd} || true", shell=True, text=True).strip())
-    except Exception:
-        return False
-
 def partprobe_and_settle(disk_path):
-    run(f"partprobe {disk_path}", ignore_error=True)
-    run("udevadm settle --exit-if-exists=/dev/null", ignore_error=True)
+    run_simple(f"partprobe {disk_path}", ignore_error=True)
+    run_simple("udevadm settle --exit-if-exists=/dev/null", ignore_error=True)
     time.sleep(1)
 
-if os.geteuid() != 0:
-    print("Run as root in the Arch live environment.")
-    sys.exit(1)
+def prompt_password(prompt):
+    sys.stdout.write(prompt + " ")
+    sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    passwd = ""
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\n", "\r"):
+                sys.stdout.write("\n")
+                break
+            if ch == "\x7f":
+                if passwd:
+                    passwd = passwd[:-1]
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+            else:
+                passwd += ch
+                sys.stdout.write("*")
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return passwd
 
-lang = None
-while True:
-    print("Select language: 1 = English, 2 = Español")
-    choice = input("> ").strip()
-    if choice == "1":
-        lang = "en"
-        break
-    elif choice == "2":
-        lang = "es"
-        break
+def paginate_select(options, title):
+    per = 12
+    idx = 0
+    while True:
+        os.system("clear")
+        print(title)
+        page = options[idx:idx+per]
+        for i, opt in enumerate(page, start=1):
+            print(f"{i}. {opt}")
+        print()
+        print("n: next page, p: prev page, q: cancel")
+        choice = input("> ").strip()
+        if choice.isdigit():
+            n = int(choice)
+            if 1 <= n <= len(page):
+                return idx + n - 1
+        elif choice == "n":
+            if idx + per < len(options):
+                idx += per
+        elif choice == "p":
+            if idx - per >= 0:
+                idx -= per
+        elif choice == "q":
+            return None
+
+def get_input(prompt, default=""):
+    sys.stdout.write(prompt + (" [" + str(default) + "]" if default else "") + " ")
+    sys.stdout.flush()
+    s = input().strip()
+    return s if s else default
+
+def validate_name(n):
+    return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", n))
+
+def validate_swap(s):
+    return bool(re.match(r"^\d+$", s)) and int(s) > 0
+
+def choose_keymap():
+    try:
+        out = subprocess.check_output("localectl list-keymaps 2>/dev/null || true", shell=True, text=True)
+        if out:
+            maps = [l for l in out.splitlines() if l]
+            common = ["us","es","fr","de","it","pt","la-latin1"]
+            options = [m for m in common if m in maps]
+            if not options:
+                options = maps[:40]
+            idx = paginate_select(options, "Select keymap")
+            if idx is None:
+                return "us"
+            return options[idx]
+    except Exception:
+        pass
+    return "us"
+
+def choose_timezone():
+    try:
+        out = subprocess.check_output("timedatectl list-timezones 2>/dev/null || true", shell=True, text=True)
+        if out:
+            zones = out.splitlines()
+            idx = paginate_select(zones, "Select timezone")
+            if idx is None:
+                return "UTC"
+            return zones[idx]
+    except Exception:
+        pass
+    return "UTC"
+
+append_buffer = []
+append_lock = threading.Lock()
+
+state = {
+    "lang": "en",
+    "hostname": "",
+    "username": "",
+    "root_pass": "",
+    "user_pass": "",
+    "swap": "8",
+    "disk": None,
+    "desktop": "None",
+    "gpu": "None",
+    "keymap": "us",
+    "timezone": "UTC",
+    "locale": "en_US.UTF-8"
+}
+
+screens = ["language","identity","passwords","disk","keymap","timezone","desktop","gpu","review","install"]
+
+def L(en, es):
+    return en if state.get("lang", "en") == "en" else es
+
+# TUI screens
+def screen_language_c(stdscr):
+    curses.curs_set(0)
+    opts = ["English","Español"]
+    sel = 0 if state["lang"] == "en" else 1
+    while True:
+        stdscr.erase()
+        stdscr.addstr(1,2,"Language / Idioma")
+        for i,opt in enumerate(opts):
+            marker = "[x]" if i==sel else "[ ]"
+            stdscr.addstr(3+i,4,f"{marker} {opt}")
+        stdscr.addstr(8,4,"Use up/down Enter to select")
+        k = stdscr.getch()
+        if k == curses.KEY_UP:
+            sel = (sel - 1) % len(opts)
+        elif k == curses.KEY_DOWN:
+            sel = (sel + 1) % len(opts)
+        elif k in (10,13):
+            state["lang"] = "en" if sel==0 else "es"
+            return
+        elif k == ord("q"):
+            sys.exit(0)
+
+def input_curses(stdscr,y,x,prompt,initial="",secret=False):
+    curses.echo() if not secret else curses.noecho()
+    stdscr.addstr(y,x,prompt)
+    stdscr.refresh()
+    win = curses.newwin(1,60,y,x+len(prompt)+1)
+    try:
+        win.addstr(0,0,initial)
+    except Exception:
+        pass
+    win.refresh()
+    s = ""
+    if not secret:
+        try:
+            s = win.getstr().decode().strip()
+        except Exception:
+            s = ""
     else:
-        print("Invalid command, try again")
+        while True:
+            ch = win.get_wch()
+            if ch in ("\n","\r"):
+                break
+            if ch == "\x7f":
+                if len(s)>0:
+                    s = s[:-1]
+                    yx = win.getyx()
+                    if yx[1]>0:
+                        win.delch(0,yx[1]-1)
+            else:
+                s += ch
+                win.addstr("*")
+    curses.echo()
+    return s
 
-def L(msg_en, msg_es):
-    return msg_en if lang == "en" else msg_es
+def screen_identity_c(stdscr):
+    curses.curs_set(1)
+    stdscr.erase()
+    stdscr.addstr(1,2,"System Identity")
+    state["hostname"] = input_curses(stdscr,4,4,"Hostname:",state.get("hostname",""),secret=False)
+    state["username"] = input_curses(stdscr,6,4,"Username:",state.get("username",""),secret=False)
+    if not validate_name(state["hostname"]):
+        state["hostname"] = ""
+    if not validate_name(state["username"]):
+        state["username"] = ""
 
-hostname = input_validated(L("Enter hostname:","Ingrese el nombre del equipo:"), valid_name, L("Invalid hostname.","Nombre inválido."))
-username = input_validated(L("Enter username:","Ingrese nombre de usuario:"), valid_name, L("Invalid username.","Usuario inválido."))
-root_pass = input_password(L("Enter root password:","Ingrese contraseña de root:"))
-user_pass = input_password(L("Enter user password:","Ingrese contraseña de usuario:"))
-swap_size = input_validated(L("Enter swap size in GB (example 8):","Ingrese tamaño de swap en GB (ej 8):"), valid_swap, L("Invalid swap size.","Tamaño de swap inválido."))
-desktop_choice = None
-while True:
-    c = input(L("Choose desktop: 1 = KDE Plasma, 2 = Cinnamon, 0 = None: ","Seleccione escritorio: 1 = KDE Plasma, 2 = Cinnamon, 0 = Ninguno: ")).strip()
-    if c in ("0","1","2"):
-        desktop_choice = c
-        break
-    print(L("Invalid command, try again.","Comando inválido, intente de nuevo."))
+def screen_passwords_c(stdscr):
+    curses.curs_set(1)
+    stdscr.erase()
+    stdscr.addstr(1,2,"Passwords")
+    p1 = input_curses(stdscr,4,4,"Root password:",secret=True)
+    p2 = input_curses(stdscr,6,4,"User password:",secret=True)
+    state["root_pass"] = p1
+    state["user_pass"] = p2
 
-disk = choose_disk()
-disk_path = f"/dev/{disk}"
-if not os.path.exists(disk_path):
-    print(L("Selected disk not found. Aborting.","Disco seleccionado no encontrado. Abortando."))
-    sys.exit(1)
-log(L("Selected disk","Disco seleccionado") + f": {disk_path}")
-
-parts_out = subprocess.check_output(f"lsblk -n -o NAME {disk_path}", shell=True, text=True).splitlines()[1:]
-if parts_out:
-    print(f"{L('Partitions detected on','Particiones detectadas en')} {disk_path}: {', '.join(p.strip() for p in parts_out)}")
-    if confirm(L("Do you want to erase all existing partitions?","Desea borrar todas las particiones existentes?")):
-        run(f"sgdisk -Z {disk_path}")
-        partprobe_and_settle(disk_path)
-    else:
-        print(L("Cannot continue with existing partitions. Aborting.","No se puede continuar con particiones existentes. Abortando."))
-        sys.exit(0)
-
-log(L("Creating partitions...","Creando particiones..."))
-rc = run(f"sgdisk -n1:0:+1G -t1:ef00 {disk_path}", ignore_error=True, capture=True)
-rc |= run(f"sgdisk -n2:0:+{swap_size}G -t2:8200 {disk_path}", ignore_error=True, capture=True)
-rc |= run(f"sgdisk -n3:0:0 -t3:8300 {disk_path}", ignore_error=True, capture=True)
-partprobe_and_settle(disk_path)
-
-p1, p2, p3 = partition_paths_for(disk_path)
-
-if not os.path.exists(p1) or not os.path.exists(p2) or not os.path.exists(p3):
-    time.sleep(1)
-    partprobe_and_settle(disk_path)
-if not os.path.exists(p1) or not os.path.exists(p2) or not os.path.exists(p3):
-    log("ERROR: partitions not visible after creation.")
-    print(L("Partitions not created or not visible. Aborting.","Particiones no creadas o no visibles. Abortando."))
-    sys.exit(1)
-
-log(L("Formatting partitions...","Formateando particiones..."))
-run(f"mkfs.fat -F32 {p1}")
-run(f"mkswap {p2}")
-run(f"swapon {p2}")
-run(f"mkfs.ext4 -F {p3}")
-
-log(L("Mounting partitions...","Montando particiones..."))
-if os.path.ismount("/mnt"):
-    log("/mnt already mounted. Attempting to unmount first.")
-    run("umount -R /mnt", ignore_error=True)
-run(f"mount {p3} /mnt")
-run("mkdir -p /mnt/boot/efi")
-run(f"mount {p1} /mnt/boot/efi")
-
-log(L("Checking network...","Comprobando red..."))
-if not ensure_network():
-    print(L("Network unreachable. Try enabling network (e.g. 'dhcpcd') and rerun.","Red inaccesible. Active la red (ej. 'dhcpcd') y reintente."))
-    sys.exit(1)
-
-log(L("Updating keyring and mirrors...","Actualizando keyring y mirrors..."))
-run("pacman -Sy --noconfirm archlinux-keyring", ignore_error=True, capture=True)
-run("pacman -Syu --noconfirm --needed", ignore_error=True, capture=True)
-
-log(L("Installing base system...","Instalando sistema base..."))
-packages = "base linux linux-firmware linux-headers sof-firmware base-devel grub efibootmgr vim nano networkmanager sudo bash-completion"
-rc = run(f"pacstrap /mnt {packages}", capture=True, ignore_error=True)
-if rc != 0:
-    log("ERROR: pacstrap failed. Checking common causes.")
-    log("Attempting to refresh mirrors and retry pacstrap once.")
-    run("pacman -Sy --noconfirm --needed pacman", ignore_error=True, capture=True)
-    run("pacman -S --noconfirm --needed reflector || true", ignore_error=True, capture=True)
-    run("reflector --latest 20 --sort rate --save /etc/pacman.d/mirrorlist || true", ignore_error=True, capture=True)
-    rc2 = run(f"pacstrap /mnt {packages}", capture=True, ignore_error=True)
-    if rc2 != 0:
-        log("ERROR: pacstrap retry failed. Aborting.")
-        print(L("Failed to install packages to new root. Check network, mirrors and pacman keys.","Fallo al instalar paquetes en la nueva raíz. Revise red, mirrors y llaves de pacman."))
+def screen_disk_c(stdscr):
+    curses.curs_set(0)
+    disks = list_disks()
+    if not disks:
+        stdscr.addstr(2,2,L("No disks found. Aborting.","No se encontraron discos. Abortando."))
+        stdscr.getch()
         sys.exit(1)
+    opts = [f"/dev/{d} ({s} GB)" for d,s in disks]
+    sel = 0
+    while True:
+        stdscr.erase()
+        stdscr.addstr(1,2,"Disk & Swap")
+        for i,opt in enumerate(opts):
+            marker = "[x]" if i==sel else "[ ]"
+            stdscr.addstr(3+i,4,f"{marker} {opt}")
+        stdscr.addstr(3+len(opts)+1,4,f"Swap size in GB: {state['swap']}")
+        stdscr.addstr(3+len(opts)+3,4,"Up/Down Enter select, s change swap")
+        k = stdscr.getch()
+        if k == curses.KEY_UP:
+            sel = (sel - 1) % len(opts)
+        elif k == curses.KEY_DOWN:
+            sel = (sel + 1) % len(opts)
+        elif k in (10,13):
+            state["disk"] = disks[sel][0]
+            return
+        elif k == ord("s"):
+            curses.echo()
+            stdscr.addstr(3+len(opts)+1,4,"Swap size in GB: ")
+            try:
+                val = stdscr.getstr(3+len(opts)+1,24,6).decode().strip()
+            except Exception:
+                val = ""
+            curses.noecho()
+            if validate_swap(val):
+                state["swap"] = val
+        elif k == ord("q"):
+            sys.exit(0)
 
-run("genfstab -U /mnt >> /mnt/etc/fstab")
+def screen_keymap_c(stdscr):
+    curses.curs_set(0)
+    stdscr.erase()
+    stdscr.addstr(1,2,"Keymap / Teclado")
+    stdscr.addstr(3,4,"Press 'c' to choose from list or 'd' to keep default (us)")
+    k = stdscr.getch()
+    if k == ord("c"):
+        km = choose_keymap()
+        state["keymap"] = km
+        run_simple(f"loadkeys {km}", ignore_error=True)
+    return
 
-log(L("Configuring system...","Configurando sistema..."))
-with open("/mnt/etc/hostname", "w") as f:
-    f.write(hostname + "\n")
+def screen_timezone_c(stdscr):
+    curses.curs_set(0)
+    stdscr.erase()
+    stdscr.addstr(1,2,"Timezone / Zona horaria")
+    stdscr.addstr(3,4,"Press 'c' to choose timezone or 'd' to keep default (UTC)")
+    k = stdscr.getch()
+    if k == ord("c"):
+        tz = choose_timezone()
+        state["timezone"] = tz
+    return
 
-cfg_lines = []
-cfg_lines.append(f"ln -sf /usr/share/zoneinfo/UTC /etc/localtime")
-cfg_lines.append("hwclock --systohc")
-cfg_lines.append("sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen || true")
-if lang == "es":
-    cfg_lines.append("sed -i 's/^#es_ES.UTF-8/es_ES.UTF-8/' /etc/locale.gen || true")
-cfg_lines.append("locale-gen")
-cfg_lines.append("echo 'LANG=en_US.UTF-8' > /etc/locale.conf")
-cfg_lines.append("mkinitcpio -P")
-cfg_lines.append(f"useradd -m -G wheel -s /bin/bash {username}")
-cfg_lines.append(f"echo '{username}:{user_pass}' | chpasswd")
-cfg_lines.append(f"echo 'root:{root_pass}' | chpasswd")
-cfg_lines.append("sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers || true")
-cfg_script = " && ".join(cfg_lines)
-run(f'arch-chroot /mnt /bin/bash -c "{cfg_script}"', capture=True, ignore_error=False)
+def screen_desktop_c(stdscr):
+    curses.curs_set(0)
+    opts = ["KDE Plasma","Cinnamon","None"]
+    sel = opts.index(state["desktop"]) if state["desktop"] in opts else 2
+    while True:
+        stdscr.erase()
+        stdscr.addstr(1,2,"Desktop Environment")
+        for i,opt in enumerate(opts):
+            marker = "[x]" if i==sel else "[ ]"
+            stdscr.addstr(3+i,4,f"{marker} {opt}")
+        stdscr.addstr(7,4,"Up/Down Enter select")
+        k = stdscr.getch()
+        if k == curses.KEY_UP:
+            sel = (sel - 1) % len(opts)
+        elif k == curses.KEY_DOWN:
+            sel = (sel + 1) % len(opts)
+        elif k in (10,13):
+            state["desktop"] = opts[sel]
+            return
+        elif k == ord("q"):
+            sys.exit(0)
 
-run("arch-chroot /mnt systemctl enable NetworkManager", ignore_error=True)
+def screen_gpu_c(stdscr):
+    curses.curs_set(0)
+    opts = ["NVIDIA","AMD / Intel","None"]
+    sel = 0 if state["gpu"] == "NVIDIA" else (1 if state["gpu"]=="AMD/Intel" else 2)
+    while True:
+        stdscr.erase()
+        stdscr.addstr(1,2,"GPU Drivers")
+        for i,opt in enumerate(opts):
+            marker = "[x]" if i==sel else "[ ]"
+            stdscr.addstr(3+i,4,f"{marker} {opt}")
+        stdscr.addstr(7,4,"Up/Down Enter select")
+        k = stdscr.getch()
+        if k == curses.KEY_UP:
+            sel = (sel - 1) % len(opts)
+        elif k == curses.KEY_DOWN:
+            sel = (sel + 1) % len(opts)
+        elif k in (10,13):
+            state["gpu"] = "NVIDIA" if sel==0 else ("AMD/Intel" if sel==1 else "None")
+            return
+        elif k == ord("q"):
+            sys.exit(0)
 
-if desktop_choice == "1":
-    log(L("Installing KDE Plasma...","Instalando KDE Plasma..."))
-    run('arch-chroot /mnt /bin/bash -c "pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput plasma-meta konsole dolphin ark kate plasma-nm firefox sddm"', capture=True, ignore_error=False)
-    run('arch-chroot /mnt /bin/bash -c "systemctl enable sddm"', ignore_error=True)
-elif desktop_choice == "2":
-    log(L("Installing Cinnamon...","Instalando Cinnamon..."))
-    run('arch-chroot /mnt /bin/bash -c "pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput cinnamon lightdm lightdm-gtk-greeter alacritty firefox"', capture=True, ignore_error=False)
-    run('arch-chroot /mnt /bin/bash -c "systemctl enable lightdm"', ignore_error=True)
+def screen_review_c(stdscr):
+    curses.curs_set(0)
+    while True:
+        stdscr.erase()
+        stdscr.addstr(1,2,"Review & Install")
+        lines = [
+            ("Language", state["lang"]),
+            ("Hostname", state["hostname"]),
+            ("Username", state["username"]),
+            ("Disk", state["disk"]),
+            ("Swap", f"{state['swap']} GB"),
+            ("Desktop", state["desktop"]),
+            ("GPU", state["gpu"]),
+            ("Keymap", state["keymap"]),
+            ("Timezone", state["timezone"]),
+            ("Locale", state["locale"])
+        ]
+        y = 3
+        for k,v in lines:
+            stdscr.addstr(y,4,f"{k}: {v}")
+            y += 1
+        stdscr.addstr(y+1,4,"Enter to start install, q cancel")
+        k = stdscr.getch()
+        if k in (10,13):
+            return True
+        elif k == ord("q"):
+            sys.exit(0)
 
-gpu = None
-while True:
-    g = input(L("Select GPU: 1 = NVIDIA, 2 = AMD/Intel, 0 = None:","Seleccione GPU: 1 = NVIDIA, 2 = AMD/Intel, 0 = Ninguna:")).strip()
-    if g in ("0","1","2"):
-        gpu = g
-        break
-    print(L("Invalid command, try again.","Comando inválido, intente de nuevo."))
+class InstallerUI:
+    def __init__(self, stdscr):
+        self.stdscr = stdscr
+        self.logs = []
+        self.progress = 0.0
+        self.lock = threading.Lock()
+        curses.curs_set(0)
 
-if gpu == "1":
-    run('arch-chroot /mnt /bin/bash -c "pacman -S --noconfirm nvidia nvidia-utils nvidia-settings"', capture=True, ignore_error=False)
-elif gpu == "2":
-    run('arch-chroot /mnt /bin/bash -c "pacman -S --noconfirm mesa vulkan-radeon libva-mesa-driver"', capture=True, ignore_error=False)
+    def add_log(self, line):
+        with self.lock:
+            self.logs.append(line)
+            if len(self.logs) > 500:
+                self.logs = self.logs[-400:]
+        append_buffer_add(line)
+        self.redraw()
 
-log(L("Installing GRUB...","Instalando GRUB..."))
-if "nvme" in disk_path or "mmcblk" in disk_path:
-    run(f'arch-chroot /mnt /bin/bash -c "grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB"', capture=True, ignore_error=False)
-else:
-    run(f'arch-chroot /mnt /bin/bash -c "grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB"', capture=True, ignore_error=False)
-run('arch-chroot /mnt /bin/bash -c "grub-mkconfig -o /boot/grub/grub.cfg"', capture=True, ignore_error=False)
+    def set_progress(self, pct):
+        with self.lock:
+            self.progress = max(0.0, min(100.0, pct))
+        self.redraw()
 
-log(L("Installation finished.","Instalación finalizada."))
-if confirm(L("Reboot now?","Reiniciar ahora?")):
-    run("umount -R /mnt", ignore_error=True)
-    run("reboot", ignore_error=True)
+    def redraw(self):
+        s = self.stdscr
+        s.erase()
+        s.addstr(1,2,"Installing...")
+        s.addstr(3,4,f"Progress: {int(self.progress)}%")
+        width = min(60, max(20, curses.COLS-20))
+        filled = int((self.progress/100.0)*width)
+        bar = "[" + "#"*filled + "-"*(width-filled) + "]"
+        s.addstr(4,4,bar)
+        s.addstr(6,4,"Log:")
+        y = 7
+        with self.lock:
+            for line in self.logs[-(curses.LINES - y - 4):]:
+                try:
+                    s.addstr(y,4,line[:curses.COLS-8])
+                except curses.error:
+                    pass
+                y += 1
+        s.addstr(curses.LINES-2,4,"r reboot when finished, q quit")
+        s.refresh()
+
+    def run_steps(self):
+        steps = []
+        disk_device = state["disk"]
+        steps.append(("Wipe disk",f"sgdisk -Z /dev/{disk_device}",5))
+        steps.append(("Create partitions",f"sgdisk -n1:0:+1G -t1:ef00 /dev/{disk_device} && sgdisk -n2:0:+{state['swap']}G -t2:8200 /dev/{disk_device} && sgdisk -n3:0:0 -t3:8300 /dev/{disk_device}",10))
+        diskpath = f"/dev/{disk_device}"
+        p1,p2,p3 = partition_paths_for(diskpath)
+        steps.append(("Format",f"mkfs.fat -F32 {p1} && mkswap {p2} && swapon {p2} && mkfs.ext4 -F {p3}",10))
+        steps.append(("Mount",f"mount {p3} /mnt && mkdir -p /mnt/boot/efi && mount {p1} /mnt/boot/efi",5))
+        pkgs = "base linux linux-firmware linux-headers sof-firmware base-devel grub efibootmgr vim nano networkmanager sudo bash-completion"
+        steps.append(("Pacstrap",f"pacstrap /mnt {pkgs}",30))
+        steps.append(("fstab", "genfstab -U /mnt >> /mnt/etc/fstab",5))
+        cfg = []
+        cfg.append(f"echo '{state['hostname']}' > /etc/hostname")
+        cfg.append(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
+        cfg.append("hwclock --systohc")
+        cfg.append("sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen || true")
+        if state['locale'].startswith("es"):
+            cfg.append("sed -i 's/^#es_ES.UTF-8/es_ES.UTF-8/' /etc/locale.gen || true")
+        cfg.append("locale-gen")
+        cfg.append(f"echo 'LANG={state['locale']}' > /etc/locale.conf")
+        cfg.append("mkinitcpio -P")
+        cfg.append(f"useradd -m -G wheel -s /bin/bash {state['username']}")
+        cfg.append(f"echo '{state['username']}:{state['user_pass']}' | chpasswd")
+        cfg.append(f"echo 'root:{state['root_pass']}' | chpasswd")
+        cfg.append("sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers || true")
+        cfg_script = " && ".join(cfg)
+        steps.append(("Configure system",f'arch-chroot /mnt /bin/bash -c "{cfg_script}"',10))
+        desktop_cmds = []
+        if state['desktop'] == "KDE Plasma":
+            desktop_cmds.append("pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput plasma-meta konsole dolphin ark kate plasma-nm firefox sddm")
+            desktop_cmds.append("systemctl enable sddm")
+        elif state['desktop'] == "Cinnamon":
+            desktop_cmds.append("pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput cinnamon lightdm lightdm-gtk-greeter alacritty firefox")
+            desktop_cmds.append("systemctl enable lightdm")
+        if state['gpu'] == "NVIDIA":
+            desktop_cmds.append("pacman -S --noconfirm nvidia nvidia-utils nvidia-settings")
+        elif state['gpu'] == "AMD/Intel":
+            desktop_cmds.append("pacman -S --noconfirm mesa vulkan-radeon libva-mesa-driver")
+        if desktop_cmds:
+            joined = " && ".join([f'arch-chroot /mnt /bin/bash -c "{c}"' for c in desktop_cmds])
+            steps.append(("Desktop & GPU", joined,10))
+        else:
+            steps.append(("Desktop & GPU","true",10))
+        steps.append(("GRUB", f'arch-chroot /mnt /bin/bash -c "grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB" && arch-chroot /mnt /bin/bash -c "grub-mkconfig -o /boot/grub/grub.cfg"',10))
+        total = sum(w for _,_,w in steps)
+        done = 0.0
+        if not ensure_network():
+            self.add_log("Network unreachable. Ensure network before installing.")
+            return
+        run_stream("pacman -Sy --noconfirm archlinux-keyring", on_line=self.add_log, ignore_error=True)
+        for desc,cmd,weight in steps:
+            self.add_log(f"== {desc} ==")
+            self.set_progress((done/total)*100.0)
+            code = run_stream(cmd, on_line=self.add_log, ignore_error=False)
+            if code != 0:
+                self.add_log(f"ERROR: step failed ({desc}) code={code}")
+                return
+            done += weight
+            self.set_progress((done/total)*100.0)
+            time.sleep(0.2)
+        self.add_log("✔ Installation complete")
+        self.set_progress(100.0)
+
+    def start(self):
+        t = threading.Thread(target=self.run_steps, daemon=True)
+        t.start()
+        while True:
+            self.redraw()
+            k = self.stdscr.getch()
+            if k == ord("q"):
+                break
+            if k == ord("r") and self.progress >= 99.0:
+                append_buffer_add("Rebooting")
+                subprocess.run("umount -R /mnt", shell=True)
+                subprocess.run("reboot", shell=True)
+                break
+
+def screen_install_c(stdscr):
+    ui = InstallerUI(stdscr)
+    ui.start()
+
+def main_curses(stdscr):
+    idx = 0
+    funcs = {
+        "language": screen_language_c,
+        "identity": screen_identity_c,
+        "passwords": screen_passwords_c,
+        "disk": screen_disk_c,
+        "keymap": screen_keymap_c,
+        "timezone": screen_timezone_c,
+        "desktop": screen_desktop_c,
+        "gpu": screen_gpu_c,
+        "review": screen_review_c,
+        "install": screen_install_c
+    }
+    while True:
+        name = screens[idx]
+        funcs[name](stdscr)
+        if name == "install":
+            break
+        stdscr.addstr(curses.LINES-2,2,"Use ← / → Enter to navigate q to quit")
+        k = stdscr.getch()
+        if k == curses.KEY_RIGHT or k in (10,13):
+            if idx < len(screens)-1:
+                idx += 1
+            else:
+                break
+        elif k == curses.KEY_LEFT:
+            if idx > 0:
+                idx -= 1
+        elif k == ord("q"):
+            break
+
+def fallback_cli():
+    print("TUI failed, falling back to CLI")
+    while True:
+        c = input("Select language: 1=EN 2=ES ").strip()
+        if c == "1":
+            state["lang"] = "en"
+            break
+        elif c == "2":
+            state["lang"] = "es"
+            break
+    state["hostname"] = get_input("Enter hostname:", "")
+    while not validate_name(state["hostname"]):
+        state["hostname"] = get_input("Invalid. Enter hostname:", "")
+    state["username"] = get_input("Enter username:", "")
+    while not validate_name(state["username"]):
+        state["username"] = get_input("Invalid. Enter username:", "")
+    state["root_pass"] = prompt_password("Enter root password:")
+    state["user_pass"] = prompt_password("Enter user password:")
+    state["swap"] = get_input("Enter swap GB (8):", "8")
+    while not validate_swap(state["swap"]):
+        state["swap"] = get_input("Invalid swap. Enter swap GB:", "8")
+    while True:
+        d = list_disks()
+        if not d:
+            print("No disks found. Aborting.")
+            sys.exit(1)
+        for i,(name,gb) in enumerate(d, start=1):
+            print(f"{i}. /dev/{name} ({gb} GB)")
+        choice = input("Select disk number:").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(d):
+            state["disk"] = d[int(choice)-1][0]
+            break
+    print("Review config and start install")
+    for k in ("lang","hostname","username","disk","swap","desktop","gpu"):
+        print(f"{k}: {state.get(k)}")
+    ok = input("Proceed? (y/n)").strip().lower()
+    if ok == "y":
+        i = InstallerUI(None)
+        i.run_steps()
+
+def get_input(prompt, default=""):
+    sys.stdout.write(prompt + (" [" + str(default) + "]" if default else "") + " ")
+    sys.stdout.flush()
+    s = input().strip()
+    return s if s else default
+
+if __name__ == "__main__":
+    if os.geteuid() != 0:
+        print("Run as root in the Arch live environment.")
+        sys.exit(1)
+    try:
+        curses.wrapper(main_curses)
+    except Exception:
+        fallback_cli()
