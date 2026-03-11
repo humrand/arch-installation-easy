@@ -11,6 +11,7 @@ import tty
 import threading
 import time
 import base64
+import shlex
 
 LOG_FILE = "/mnt/install_log.txt"
 
@@ -550,38 +551,6 @@ class InstallerUI:
         up_b64 = base64.b64encode(up.encode()).decode()
         rp_b64 = base64.b64encode(rp.encode()).decode()
 
-        setup_lines = [
-            "#!/bin/bash",
-            "set -e",
-            f"echo '{state['hostname']}' > /etc/hostname",
-            f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime",
-            "hwclock --systohc",
-            "sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen || true",
-        ]
-        if state['locale'].startswith("es"):
-            setup_lines.append("sed -i 's/^#es_ES.UTF-8/es_ES.UTF-8/' /etc/locale.gen || true")
-        setup_lines += [
-            "locale-gen",
-            f"echo 'LANG={state['locale']}' > /etc/locale.conf",
-            f"useradd -m -G wheel -s /bin/bash {state['username']} || true",
-            f"echo '{rp_b64}' | base64 -d | chpasswd",
-            f"echo '{up_b64}' | base64 -d | chpasswd",
-            "sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers || true",
-            "systemctl enable NetworkManager || true",
-        ]
-
-        setup_sh = "\n".join(setup_lines)
-        setup_sh = setup_sh.replace("\r\n", "\n")
-
-        try:
-            os.makedirs("/mnt/root", exist_ok=True)
-            with open("/mnt/root/setup_user.sh", "w", newline="\n") as fh:
-                fh.write(setup_sh)
-            os.chmod("/mnt/root/setup_user.sh", 0o755)
-        except Exception as e:
-            self.add_log(f"ERROR: no se pudo crear /mnt/root/setup_user.sh: {e}")
-            return
-
         desktop_cmds = []
         if state['desktop'] == "KDE Plasma":
             desktop_cmds.append("pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput")
@@ -608,10 +577,27 @@ class InstallerUI:
         else:
             steps.append(("Desktop & GPU","true",10))
 
-        steps.append(("Check setup script", "ls -l /mnt/root/setup_user.sh || true; file /mnt/root/setup_user.sh || true; sed -n '1,120p' /mnt/root/setup_user.sh || true", 1))
+        # ahora construimos un script inline para ejecutar dentro del chroot (sin crear .sh)
+        inner_cmds = []
+        inner_cmds.append("set -e")
+        inner_cmds.append(f"echo '{state['hostname']}' > /etc/hostname")
+        inner_cmds.append(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
+        inner_cmds.append("hwclock --systohc")
+        inner_cmds.append("sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen || true")
+        if state['locale'].startswith("es"):
+            inner_cmds.append("sed -i 's/^#es_ES.UTF-8/es_ES.UTF-8/' /etc/locale.gen || true")
+        inner_cmds.append("locale-gen")
+        inner_cmds.append(f"echo 'LANG={state['locale']}' > /etc/locale.conf")
+        inner_cmds.append(f"useradd -m -G wheel -s /bin/bash {state['username']} || true")
+        # decodificar las credenciales pasadas en base64 (root:pass y user:pass) y fijar contraseñas con passwd
+        inner_cmds.append(f"printf '%s\\n' '{rp_b64}' '{up_b64}' | base64 -d | while IFS=':' read -r user pass; do printf '%s\\n%s\\n' \"$pass\" \"$pass\" | passwd \"$user\"; done")
+        inner_cmds.append("sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers || true")
+        inner_cmds.append("systemctl enable NetworkManager || true")
 
-        steps.append(("Configure system", "arch-chroot /mnt /bin/bash -c \"[ -f /root/setup_user.sh ] && chmod +x /root/setup_user.sh && /root/setup_user.sh || (echo '/root/setup_user.sh missing' >&2; exit 127)\"",10))
-        steps.append(("Cleanup setup script", "rm -f /mnt/root/setup_user.sh",1))
+        inner_script = "\n".join(inner_cmds)
+        arch_chroot_cmd = "arch-chroot /mnt /bin/bash -c " + shlex.quote(inner_script)
+        steps.append(("Configure system", arch_chroot_cmd,10))
+
         steps.append(("GRUB", f'arch-chroot /mnt /bin/bash -c \"grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB && grub-mkconfig -o /boot/grub/grub.cfg\"',10))
 
         total = sum(w for _,_,w in steps)
