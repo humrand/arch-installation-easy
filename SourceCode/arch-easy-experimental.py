@@ -2,9 +2,35 @@ import subprocess
 import sys
 import re
 import threading
+from datetime import datetime
+
+
+def _bootstrap_tk():
+    try:
+        import tkinter
+        tkinter.Tk().destroy()
+        return
+    except Exception:
+        pass
+
+    print("Tkinter not available. Installing tk package...")
+    result = subprocess.run(
+        ["pacman", "-Sy", "--noconfirm", "tk"],
+        capture_output=False
+    )
+    if result.returncode != 0:
+        print("ERROR: Failed to install tk. Make sure you have internet access.")
+        sys.exit(1)
+
+    print("tk installed. Restarting...")
+    subprocess.run([sys.executable] + sys.argv)
+    sys.exit(0)
+
+
+_bootstrap_tk()
+
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
-from datetime import datetime
 
 LOG_FILE = "/mnt/install_log.txt"
 lang = "en"
