@@ -51,4 +51,4 @@ The ISO image is available in the releases.
 2. Run the installer:
 
 ```bash
-python arch-easy_v0.0.4-stable.py
+python install.py
