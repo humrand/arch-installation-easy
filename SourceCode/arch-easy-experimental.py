@@ -650,6 +650,7 @@ class InstallerUI:
         chroot(f"echo 'root:{root_pass}' | chpasswd")
         self.set_progress(63)
 
+
         self.add_log(L(f"== Creating user {username} ==",
                        f"== Creando usuario {username} =="))
         chroot(f"useradd -m -G wheel -s /bin/bash {username}")
