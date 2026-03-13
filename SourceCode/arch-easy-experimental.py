@@ -47,16 +47,28 @@ def run(cmd, ignore_error=False):
 def run_stream(cmd, on_line=None, cwd=None, ignore_error=False):
     append_buffer_add(f"Running: {cmd}")
     p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, cwd=cwd, executable="/bin/bash")
+                         cwd=cwd, executable="/bin/bash")
+    buf = b""
     while True:
-        line = p.stdout.readline()
-        if line == "" and p.poll() is not None:
-            break
-        if line:
-            l = line.rstrip("\n")
-            append_buffer_add(l)
-            if on_line:
-                on_line(l)
+        chunk = p.stdout.read(512)
+        if not chunk:
+            if p.poll() is not None:
+                break
+            continue
+        buf += chunk
+        parts = re.split(b"[\r\n]+", buf)
+        buf = parts[-1]
+        for part in parts[:-1]:
+            line = part.decode("utf-8", errors="replace").strip()
+            if line:
+                append_buffer_add(line)
+                if on_line:
+                    on_line(line)
+    if buf.strip():
+        line = buf.decode("utf-8", errors="replace").strip()
+        append_buffer_add(line)
+        if on_line:
+            on_line(line)
     rc = p.wait()
     if rc != 0 and not ignore_error:
         append_buffer_add(f"ERROR: command returned {rc}: {cmd}")
@@ -496,7 +508,7 @@ class InstallerUI:
                 except curses.error:
                     pass
                 y += 1
-        s.addstr(curses.LINES-2, 4, L("r=reboot when done   q=quit", "r=reiniciar al terminar   q=salir"))
+        s.addstr(curses.LINES-2, 4, "")
         s.refresh()
 
     def _gradual_progress(self, base, target, duration=0.9):
@@ -508,6 +520,33 @@ class InstallerUI:
             time.sleep(duration/steps)
         self.set_progress(target)
 
+    def _run_pacman_progress(self, cmd, start_pct, end_pct, ignore_error=False):
+        pat_install = re.compile(r"\((\d+)/(\d+)\)")
+        pat_download = re.compile(r"(\S+)\s+(\d+(?:\.\d+)?)\s*(B|KiB|MiB|GiB)\s+(\d+(?:\.\d+)?)\s*(B|KiB|MiB|GiB)/s")
+        download_phase = [True]
+        install_phase_start = [None]
+
+        def on_line(line):
+            self.add_log(line)
+            m = pat_install.search(line)
+            if m:
+                download_phase[0] = False
+                cur, total = int(m.group(1)), int(m.group(2))
+                if install_phase_start[0] is None:
+                    install_phase_start[0] = start_pct + (end_pct - start_pct) * 0.5
+                phase_start = install_phase_start[0]
+                if total > 0:
+                    pct = phase_start + (cur / total) * (end_pct - phase_start)
+                    self.set_progress(min(pct, end_pct - 0.5))
+                return
+            if download_phase[0] and pat_download.search(line):
+                cur_p = self.progress
+                if cur_p < start_pct + (end_pct - start_pct) * 0.45:
+                    self.set_progress(cur_p + 0.3)
+
+        rc = run_stream(cmd, on_line=on_line, ignore_error=ignore_error)
+        self.set_progress(end_pct)
+        return rc
 
     def run_steps(self):
         disk = state["disk"]
@@ -569,11 +608,10 @@ class InstallerUI:
         packages = ("base linux linux-firmware linux-headers sof-firmware "
                     "base-devel grub efibootmgr vim nano networkmanager "
                     "sudo bash-completion")
-        rc = run_stream(f"pacstrap /mnt {packages}", on_line=self.add_log)
+        rc = self._run_pacman_progress(f"pacstrap -K /mnt {packages}", 18, 52)
         if rc != 0:
             self.add_log(L("ERROR: pacstrap failed.", "ERROR: pacstrap falló."))
             return
-        self.set_progress(50)
 
 
         self.add_log("== fstab ==")
@@ -628,24 +666,38 @@ class InstallerUI:
 
         if state["gpu"] == "NVIDIA":
             self.add_log(L("== Installing NVIDIA drivers ==", "== Instalando drivers NVIDIA =="))
-            chroot("pacman -S --noconfirm nvidia nvidia-utils nvidia-settings")
+            self._run_pacman_progress(
+                "arch-chroot /mnt pacman -S --noconfirm nvidia nvidia-utils nvidia-settings",
+                70, 76, ignore_error=True)
         elif state["gpu"] == "AMD/Intel":
             self.add_log(L("== Installing AMD/Intel drivers ==", "== Instalando drivers AMD/Intel =="))
-            chroot("pacman -S --noconfirm mesa vulkan-radeon libva-mesa-driver")
-        self.set_progress(75)
+            self._run_pacman_progress(
+                "arch-chroot /mnt pacman -S --noconfirm mesa vulkan-radeon libva-mesa-driver",
+                70, 76, ignore_error=True)
+        else:
+            self.set_progress(76)
 
 
         if state["desktop"] == "KDE Plasma":
             self.add_log(L("== Installing KDE Plasma ==", "== Instalando KDE Plasma =="))
-            chroot("pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput")
-            chroot("pacman -S --noconfirm plasma-meta konsole dolphin ark kate plasma-nm firefox sddm")
+            self._run_pacman_progress(
+                "arch-chroot /mnt pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput",
+                76, 82, ignore_error=True)
+            self._run_pacman_progress(
+                "arch-chroot /mnt pacman -S --noconfirm plasma-meta konsole dolphin ark kate plasma-nm firefox sddm",
+                82, 92, ignore_error=True)
             chroot("systemctl enable sddm")
         elif state["desktop"] == "Cinnamon":
             self.add_log(L("== Installing Cinnamon ==", "== Instalando Cinnamon =="))
-            chroot("pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput")
-            chroot("pacman -S --noconfirm cinnamon lightdm lightdm-gtk-greeter alacritty firefox")
+            self._run_pacman_progress(
+                "arch-chroot /mnt pacman -S --noconfirm xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput",
+                76, 82, ignore_error=True)
+            self._run_pacman_progress(
+                "arch-chroot /mnt pacman -S --noconfirm cinnamon lightdm lightdm-gtk-greeter alacritty firefox",
+                82, 92, ignore_error=True)
             chroot("systemctl enable lightdm")
-        self.set_progress(90)
+        else:
+            self.set_progress(92)
 
 
         self.add_log(L("== Installing GRUB ==", "== Instalando GRUB =="))
@@ -658,22 +710,42 @@ class InstallerUI:
                        "✔ ¡Instalación completa! Presiona r para reiniciar."))
         self.set_progress(100.0)
 
+    def _reboot_prompt(self):
+        opts = [L("Yes", "Sí"), "No"]
+        sel = 0
+        while True:
+            self.stdscr.erase()
+            self.stdscr.addstr(1, 2, L("Reboot now?", "¿Reiniciar ahora?"))
+            for i, opt in enumerate(opts):
+                marker = "[x]" if i == sel else "[ ]"
+                self.stdscr.addstr(3+i, 4, f"{marker} {opt}")
+            self.stdscr.addstr(7, 4, L("UP/DOWN Enter=select", "Arriba/Abajo Enter=seleccionar"))
+            self.stdscr.refresh()
+            k = self.stdscr.getch()
+            if k == curses.KEY_UP:
+                sel = (sel - 1) % len(opts)
+            elif k == curses.KEY_DOWN:
+                sel = (sel + 1) % len(opts)
+            elif k in (10, 13):
+                if sel == 0:
+                    append_buffer_add("Rebooting...")
+                    subprocess.run("umount -R /mnt", shell=True)
+                    subprocess.run("reboot", shell=True)
+                else:
+                    sys.exit(0)
+
     def start(self):
         t = threading.Thread(target=self.run_steps, daemon=True)
         t.start()
         if self.stdscr is None:
             t.join()
             return
-        while True:
+        while t.is_alive() or self.progress < 100.0:
             self.redraw()
-            k = self.stdscr.getch()
-            if k == ord("q"):
-                break
-            if k == ord("r") and self.progress >= 99.0:
-                append_buffer_add("Rebooting...")
-                subprocess.run("umount -R /mnt", shell=True)
-                subprocess.run("reboot", shell=True)
-                break
+            self.stdscr.timeout(200)
+            self.stdscr.getch()
+        self.stdscr.timeout(-1)
+        self._reboot_prompt()
 
 def screen_install_c(stdscr):
     ui = InstallerUI(stdscr)
