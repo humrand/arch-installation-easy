@@ -477,12 +477,8 @@ def screen_keymap_c(stdscr):
         maps = [l for l in out.splitlines() if l]
     except Exception:
         maps = []
-    common = ["us", "es", "fr", "de", "it", "pt", "uk", "la-latin1",
-              "br-abnt2", "dvorak"]
-    options = [m for m in common if m in maps] +\
-              [m for m in maps if m not in common]
-    if not options:
-        options = common
+    wanted = ["us", "es", "fr", "de", "ru", "ara"]
+    options = [m for m in wanted if m in maps] if maps else wanted
     idx = curses_picker(stdscr, options, L("Choose keymap", "Seleccionar teclado"))
     if idx is None:
         return BACK
