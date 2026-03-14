@@ -824,21 +824,19 @@ class InstallerUI:
             if len(self.logs) > 500:
                 self.logs = self.logs[-400:]
         append_buffer_add(line)
-        self.redraw()
 
     def set_stage(self, msg):
-        prev = self.stage
-        if prev and prev not in self.completed:
-            with self.lock:
+        with self.lock:
+            prev = self.stage
+            if prev and prev not in self.completed:
                 self.completed.append(prev)
-        self.stage = msg
+            self.stage = msg
         self.add_log(f">>> {msg}")
 
     def set_progress(self, pct):
         with self.lock:
             clamped       = max(0.0, min(100.0, float(pct)))
             self.progress = max(self.progress, clamped)
-        self.redraw()
 
     def redraw(self):
         if not self.stdscr or self.done:
@@ -852,7 +850,18 @@ class InstallerUI:
             if w < 20 or h < 10:
                 return
 
-            mid = w // 2
+            mid    = w // 2
+            left_w = mid - 2
+            log_x  = mid + 2
+            log_w  = max(1, w - mid - 4)
+            log_rows = max(1, (h - 3) - 5)
+
+            with self.lock:
+                pct_f     = self.progress
+                comp      = list(self.completed)
+                cur_stage = self.stage
+                failed    = self.failed
+                visible   = list(self.logs[-log_rows:])
 
             draw_box(s, 0, 0, h, w)
             draw_hline_split(s, 2,     w, mid, cross_top=True)
@@ -867,40 +876,30 @@ class InstallerUI:
             safe_addstr(s, 1, w - len(elapsed_str) - 1, elapsed_str,
                         _C.get("w", 0))
 
-            left_w = mid - 2
-
             safe_addstr(s, 3, 2,
                 L("Installing Arch Linux…", "Instalando Arch Linux…"),
                 _C.get("n", 0) | curses.A_BOLD)
-
-            with self.lock:
-                pct_f = self.progress
 
             pct    = int(pct_f)
             bar_w  = max(4, left_w - 8)
             filled = min(bar_w, max(0, int((pct_f / 100.0) * bar_w)))
             bar    = "█" * filled + "░" * (bar_w - filled)
 
-            prog_attr  = _C.get("e", 0) if self.failed else _C.get("s", 0)
-            pct_label  = f"{pct:>3}%"
-            safe_addstr(s, 5, 2, pct_label, _C.get("n", 0) | curses.A_BOLD)
-            safe_addstr(s, 5, 7, bar,        prog_attr)
+            prog_attr = _C.get("e", 0) if failed else _C.get("s", 0)
+            safe_addstr(s, 5, 2, f"{pct:>3}%", _C.get("n", 0) | curses.A_BOLD)
+            safe_addstr(s, 5, 7, bar,           prog_attr)
 
             spin       = SPINNER[self.spin_idx % len(SPINNER)]
-            stage_attr = _C.get("e", 0) if self.failed else _C.get("a", 0)
+            stage_attr = _C.get("e", 0) if failed else _C.get("a", 0)
             safe_addstr(s, 7, 2,
-                (spin + " " + self.stage)[:left_w - 2],
+                (spin + " " + cur_stage)[:left_w - 2],
                 stage_attr | curses.A_BOLD)
 
             safe_addstr(s, 9, 2, L("Steps:", "Pasos:"),
                         _C.get("n", 0) | curses.A_BOLD)
 
-            with self.lock:
-                comp      = list(self.completed)
-                cur_stage = self.stage
-
             y          = 10
-            max_step_y = h - 5
+            max_step_y = h - 4
             for st in comp:
                 if y >= max_step_y:
                     break
@@ -908,23 +907,19 @@ class InstallerUI:
                             _C.get("s", 0))
                 y += 1
 
-            if cur_stage and y < max_step_y and not self.failed:
+            if cur_stage and y < max_step_y and not failed:
                 safe_addstr(s, y, 2,
                     (SPINNER[self.spin_idx % len(SPINNER)] + " " + cur_stage)[:left_w - 2],
                     _C.get("w", 0))
-
-            log_x    = mid + 2
-            log_w    = w - mid - 4
-            log_rows = max(1, h - 3 - 5)
 
             safe_addstr(s, 3, log_x,
                 L("Live log:", "Log en vivo:"),
                 _C.get("a", 0) | curses.A_BOLD)
 
-            with self.lock:
-                visible = self.logs[-log_rows:]
-
             for i, line in enumerate(visible):
+                row = 5 + i
+                if row >= h - 3:
+                    break
                 ll   = line.lower()
                 attr = _C.get("n", 0)
                 if "error" in ll or "fail" in ll or "✗" in line or "fatal" in ll:
@@ -933,7 +928,7 @@ class InstallerUI:
                     attr = _C.get("w", 0)
                 elif "✔" in line or "complete" in ll or "success" in ll:
                     attr = _C.get("s", 0)
-                safe_addstr(s, 5 + i, log_x, line[:log_w], attr)
+                safe_addstr(s, row, log_x, line[:log_w], attr)
 
             s.refresh()
         except curses.error:
