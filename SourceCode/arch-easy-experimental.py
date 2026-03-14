@@ -650,16 +650,16 @@ class InstallerUI:
             s.addstr(0, 2, "── Arch Linux Installer ──", curses.A_BOLD)
             s.addstr(1, 2, "─" * (curses.COLS - 4))
             s.addstr(2, 4, L("Installing Arch Linux…", "Instalando Arch Linux…"), curses.A_BOLD)
-            s.addstr(3, 4, self.stage[: curses.COLS - 6])
 
-            pct   = int(self.progress)
-            width = max(10, min(60, curses.COLS - 14))
-            filled = int((self.progress / 100.0) * width)
-            bar = "[" + "█" * filled + "░" * (width - filled) + "]"
-            s.addstr(5, 4, f"{bar} {pct:3}%")
+            pct    = int(self.progress)
+            bar_w  = 20
+            filled = int((self.progress / 100.0) * bar_w)
+            bar    = "█" * filled + "░" * (bar_w - filled)
+            label  = self.stage[:curses.COLS - bar_w - 14]
+            s.addstr(4, 4, f"{bar}  {label}  {pct}%")
 
-            s.addstr(7, 4, "Log:")
-            y = 8
+            s.addstr(6, 4, "Log:")
+            y = 7
             with self.lock:
                 visible = self.logs[-(curses.LINES - y - 2):]
             for line in visible:
