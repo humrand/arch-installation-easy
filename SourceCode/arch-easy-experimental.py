@@ -176,49 +176,33 @@ def draw_footer(stdscr, msg):
 def input_curses(stdscr, y, x, prompt, initial="", secret=False):
     curses.curs_set(1)
     curses.noecho()
-    try:
-        stdscr.addstr(y, x, prompt, curses.A_BOLD)
-    except curses.error:
-        pass
-    fx = x + len(prompt) + 1
-    win_w = max(2, curses.COLS - fx - 2)
-    win = curses.newwin(1, win_w, y, fx)
-    win.keypad(True)
+    stdscr.keypad(True)
     s = initial
-    display = ("*" * len(s)) if secret else s
-    try:
-        win.addstr(0, 0, display)
-        win.move(0, len(display))
-    except curses.error:
-        pass
-    win.refresh()
+    fx = x + len(prompt) + 1
+    field_w = max(2, curses.COLS - fx - 2)
     while True:
+        display = "*" * len(s) if secret else s
         try:
-            ch = win.get_wch()
+            stdscr.addstr(y, x, prompt, curses.A_BOLD)
+            stdscr.addstr(y, fx, " " * field_w)
+            stdscr.addstr(y, fx, display[:field_w])
+            stdscr.move(y, min(fx + len(display), curses.COLS - 1))
+        except curses.error:
+            pass
+        stdscr.refresh()
+        try:
+            ch = stdscr.get_wch()
         except Exception:
             continue
-        if ch in ("\n", "\r", 10, 13, curses.KEY_ENTER):
+        if ch in (10, 13, "\n", "\r") or ch == curses.KEY_ENTER:
             break
-        if isinstance(ch, int) and ch == ESC:
+        if (isinstance(ch, int) and ch == ESC) or ch == "\x1b":
             curses.curs_set(0)
             return None
-        if ch in ("\x7f", "\b", curses.KEY_BACKSPACE, 127):
-            if s:
-                s = s[:-1]
-                yx = win.getyx()
-                pos = max(0, yx[1] - 1)
-                try:
-                    win.move(0, pos)
-                    win.clrtoeol()
-                except curses.error:
-                    pass
+        if ch in ("\x7f", "\b", 127) or ch == curses.KEY_BACKSPACE:
+            s = s[:-1] if s else s
         elif isinstance(ch, str) and ch.isprintable():
             s += ch
-            try:
-                win.addstr("*" if secret else ch)
-            except curses.error:
-                pass
-        win.refresh()
     curses.curs_set(0)
     return s
 
