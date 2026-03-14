@@ -11,14 +11,60 @@ import tty
 import threading
 import time
 
+VERSION = "2.0"
 LOG_FILE = "/mnt/install_log.txt"
 ESC = 27
 BACK = "back"
 
-_PAT_INSTALL  = re.compile(r"\((\d+)/(\d+)\)")
+SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+
+ARCH_LOGO = [
+    "           -`           ",
+    "          .o+`          ",
+    "         `ooo/          ",
+    "        `+oooo:         ",
+    "       `+oooooo:        ",
+    "       -+oooooo+:       ",
+    "     `/:-:++oooo+:      ",
+    "    `/++++/+++++++:     ",
+    "   `/++++++++++++++:    ",
+    "  `/+++ooooooooooooo/`  ",
+    " ./ooosssso++osssssso+` ",
+    "`/ossssso+/` :ssssssso/.",
+    "`osssssso/.   osssssso+ ",
+    "-+sssso+/.     +ssssso+.",
+    " :+sso/.        +sso+.  ",
+    "  :+/.           ++.    ",
+    "   `/`             `.   ",
+]
+
+_PAT_INSTALL = re.compile(r"\((\d+)/(\d+)\)")
 _PAT_DOWNLOAD = re.compile(
     r"\S+\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)/s"
 )
+
+_C = {}
+
+def init_colors():
+    curses.start_color()
+    try:
+        curses.use_default_colors()
+    except Exception:
+        pass
+    curses.init_pair(1, curses.COLOR_WHITE,  curses.COLOR_BLUE)
+    curses.init_pair(2, curses.COLOR_GREEN,  curses.COLOR_BLUE)
+    curses.init_pair(3, curses.COLOR_RED,    curses.COLOR_BLUE)
+    curses.init_pair(4, curses.COLOR_YELLOW, curses.COLOR_BLUE)
+    curses.init_pair(5, curses.COLOR_BLACK,  curses.COLOR_CYAN)
+    curses.init_pair(6, curses.COLOR_CYAN,   curses.COLOR_BLUE)
+    curses.init_pair(7, curses.COLOR_WHITE,  curses.COLOR_RED)
+    _C["n"] = curses.color_pair(1)
+    _C["s"] = curses.color_pair(2)
+    _C["e"] = curses.color_pair(3)
+    _C["w"] = curses.color_pair(4)
+    _C["l"] = curses.color_pair(5)
+    _C["a"] = curses.color_pair(6)
+    _C["d"] = curses.color_pair(7)
 
 def nowtag():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -87,7 +133,6 @@ def ensure_network():
             "ping -c1 -W2 8.8.8.8 >/dev/null 2>&1",
             shell=True, executable="/bin/bash"
         ) == 0
-
     if ping():
         return True
     for tool in ("dhcpcd", "dhclient"):
@@ -146,92 +191,72 @@ state = {
 }
 
 screens = [
-    "language", "identity", "passwords", "disk",
+    "welcome", "language", "identity", "passwords", "disk",
     "keymap", "timezone", "desktop", "gpu", "review", "install"
 ]
 
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
 
-def init_colors():
+def safe_addstr(win, y, x, s, attr=0):
     try:
-        curses.start_color()
-        curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)
-        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_GREEN)
-        curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_RED)
-        curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(5, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(6, curses.COLOR_GREEN, -1)
-        curses.init_pair(7, curses.COLOR_RED, -1)
-        curses.init_pair(8, curses.COLOR_YELLOW, -1)
-        curses.init_pair(9, curses.COLOR_CYAN, -1)
-    except Exception:
+        mh, mw = win.getmaxyx()
+        if y < 0 or y >= mh or x < 0 or x >= mw:
+            return
+        max_len = mw - x
+        if max_len <= 0:
+            return
+        win.addstr(y, x, s[:max_len], attr)
+    except curses.error:
         pass
 
-def fade_print(stdscr, y, x, text, delay=0.005):
-    for i, ch in enumerate(text):
+def draw_box(win, y, x, h, w, attr=0):
+    if not attr:
+        attr = _C.get("n", 0)
+    safe_addstr(win, y, x, "╔" + "═"*(w-2) + "╗", attr)
+    for i in range(1, h-1):
+        safe_addstr(win, y+i, x,     "║", attr)
+        safe_addstr(win, y+i, x+w-1, "║", attr)
+    try:
+        win.addstr(y+h-1, x, "╚" + "═"*(w-2) + "╝", attr)
+    except curses.error:
         try:
-            stdscr.addstr(y, x + i, ch)
-            stdscr.refresh()
+            win.insstr(y+h-1, x, "╚" + "═"*(w-2) + "╝", attr)
         except curses.error:
             pass
-        time.sleep(delay)
 
-def splash_screen(stdscr):
-    init_colors()
-    logo = [
-        "      /\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\ ",
-        "     /  Arch Linux Installer - custom UI  ",
-        "    /___________________________________",
-    ]
-    h, w = stdscr.getmaxyx()
-    stdscr.erase()
-    for i, line in enumerate(logo):
-        fade_print(stdscr, h // 2 - len(logo) + i, (w - len(line)) // 2, line, 0.002)
-    info = f"version 1.0  {datetime.now().strftime('%Y-%m-%d')}"
-    try:
-        stdscr.addstr(h // 2 + 2, (w - len(info)) // 2, info, curses.color_pair(9) | curses.A_BOLD)
-    except curses.error:
-        pass
-    stdscr.addstr(h - 2, 2, L("Press any key to start", "Presiona cualquier tecla para empezar"))
-    stdscr.refresh()
-    stdscr.getch()
+def draw_hline(win, y, w, attr=0):
+    if not attr:
+        attr = _C.get("n", 0)
+    safe_addstr(win, y, 0, "╠" + "═"*(w-2) + "╣", attr)
 
-def draw_box(s, y, x, h, w, title=None):
-    try:
-        s.addstr(y, x, "╔" + "═" * (w - 2) + "╗")
-        for i in range(1, h - 1):
-            s.addstr(y + i, x, "║")
-            s.addstr(y + i, x + w - 1, "║")
-        s.addstr(y + h - 1, x, "╚" + "═" * (w - 2) + "╝")
-        if title:
-            t = f" {title} "
-            s.addstr(y, x + 2, t)
-    except curses.error:
-        pass
+def draw_hline_split(win, y, w, mid, cross_top=True, attr=0):
+    if not attr:
+        attr = _C.get("n", 0)
+    cross = "╦" if cross_top else "╩"
+    line = "╠" + "═"*(mid-1) + cross + "═"*(w-mid-2) + "╣"
+    safe_addstr(win, y, 0, line, attr)
 
 def draw_header(stdscr, title, step=None, total=None):
     stdscr.erase()
-    try:
-        banner = " Arch Linux Installer "
-        stdscr.attron(curses.color_pair(1))
-        stdscr.addstr(0, 2, banner, curses.A_BOLD)
-        stdscr.attroff(curses.color_pair(1))
-        if step and total:
-            tag = f"Step {step}/{total}"
-            stdscr.addstr(0, curses.COLS - len(tag) - 2, tag)
-        stdscr.addstr(1, 2, "─" * (curses.COLS - 4))
-        stdscr.addstr(2, 4, title, curses.A_BOLD)
-    except curses.error:
-        pass
+    stdscr.bkgd(' ', _C.get("n", 0))
+    h, w = curses.LINES, curses.COLS
+    draw_box(stdscr, 0, 0, h, w)
+    stdscr.refresh()
+    time.sleep(0.018)
+    draw_hline(stdscr, 2, w)
+    draw_hline(stdscr, h-3, w)
+    safe_addstr(stdscr, 1, 2, " ❱ Arch Linux Installer ", _C.get("a", 0) | curses.A_BOLD)
+    if step and total:
+        tag = f" Step {step}/{total} "
+        safe_addstr(stdscr, 1, w - len(tag) - 1, tag, _C.get("w", 0) | curses.A_BOLD)
+    safe_addstr(stdscr, 3, 3, title, _C.get("n", 0) | curses.A_BOLD)
+    stdscr.refresh()
+    time.sleep(0.018)
 
 def draw_footer(stdscr, msg):
-    try:
-        stdscr.addstr(curses.LINES - 2, 2, "─" * (curses.COLS - 4))
-        stdscr.addstr(curses.LINES - 1, 2, msg)
-    except curses.error:
-        pass
+    h, w = curses.LINES, curses.COLS
+    safe_addstr(stdscr, h-2, 3, msg, _C.get("a", 0))
 
 def input_curses(stdscr, y, x, prompt, initial="", secret=False):
     curses.curs_set(1)
@@ -239,14 +264,14 @@ def input_curses(stdscr, y, x, prompt, initial="", secret=False):
     stdscr.keypad(True)
     s = initial
     fx = x + len(prompt) + 1
-    field_w = max(2, curses.COLS - fx - 2)
+    field_w = max(2, curses.COLS - fx - 3)
     while True:
         display = "*" * len(s) if secret else s
+        safe_addstr(stdscr, y, x, prompt, _C.get("n", 0) | curses.A_BOLD)
+        safe_addstr(stdscr, y, fx, " " * field_w, _C.get("n", 0))
+        safe_addstr(stdscr, y, fx, display[:field_w], _C.get("w", 0))
         try:
-            stdscr.addstr(y, x, prompt, curses.A_BOLD)
-            stdscr.addstr(y, fx, " " * field_w)
-            stdscr.addstr(y, fx, display[:field_w])
-            stdscr.move(y, min(fx + len(display), curses.COLS - 1))
+            stdscr.move(y, min(fx + len(display), curses.COLS - 2))
         except curses.error:
             pass
         stdscr.refresh()
@@ -269,37 +294,32 @@ def input_curses(stdscr, y, x, prompt, initial="", secret=False):
 def curses_picker(stdscr, options, title):
     if not options:
         return None
-    per_page = max(6, curses.LINES - 10)
+    per_page = max(6, curses.LINES - 12)
     page_start = 0
     sel = 0
     while True:
         stdscr.erase()
-        try:
-            stdscr.attron(curses.color_pair(1))
-            stdscr.addstr(1, 2, " Arch Linux Installer ")
-            stdscr.attroff(curses.color_pair(1))
-            stdscr.addstr(2, 2, "─" * (curses.COLS - 4))
-            stdscr.addstr(3, 4, title, curses.A_BOLD)
-        except curses.error:
-            pass
+        stdscr.bkgd(' ', _C.get("n", 0))
+        h, w = curses.LINES, curses.COLS
+        draw_box(stdscr, 0, 0, h, w)
+        draw_hline(stdscr, 2, w)
+        draw_hline(stdscr, h-3, w)
+        safe_addstr(stdscr, 1, 2, " ❱ Arch Linux Installer ", _C.get("a", 0) | curses.A_BOLD)
+        safe_addstr(stdscr, 3, 3, title, _C.get("n", 0) | curses.A_BOLD)
         page = options[page_start:page_start + per_page]
+        opt_w = max(20, min(w - 10, 60))
         for i, opt in enumerate(page):
             if i == sel:
-                attr = curses.color_pair(5) | curses.A_BOLD
+                safe_addstr(stdscr, 5+i, 4, f"  {opt:<{opt_w}}  ", _C.get("l", 0))
             else:
-                attr = curses.A_NORMAL
-            try:
-                stdscr.addstr(5 + i, 4, f"  {opt}  ", attr)
-            except curses.error:
-                pass
+                safe_addstr(stdscr, 5+i, 4, f"  {opt:<{opt_w}}  ", _C.get("n", 0))
         total_pages = max(1, (len(options) - 1) // per_page + 1)
         cur_page = page_start // per_page + 1
-        try:
-            stdscr.addstr(curses.LINES - 3, 4, f"Page {cur_page}/{total_pages}")
-            stdscr.addstr(curses.LINES - 2, 2, "─" * (curses.COLS - 4))
-            stdscr.addstr(curses.LINES - 1, 2, L("↑↓ move · PgUp/PgDn page · Enter=select · Esc/q=back", "↑↓ mover · PgUp/PgDn página · Enter=seleccionar · Esc/q=volver"))
-        except curses.error:
-            pass
+        safe_addstr(stdscr, h-4, 4, f"Page {cur_page}/{total_pages}", _C.get("w", 0))
+        safe_addstr(stdscr, h-2, 3,
+            L("↑↓ move · PgUp/PgDn page · Enter=select · Esc/q=back",
+              "↑↓ mover · PgUp/PgDn página · Enter=seleccionar · Esc/q=volver"),
+            _C.get("a", 0))
         stdscr.refresh()
         k = stdscr.getch()
         if k == curses.KEY_UP:
@@ -350,19 +370,53 @@ def traverse_tree_picker(stdscr, tree):
             path.append(chosen)
             return "/".join(path)
 
+def screen_welcome_c(stdscr):
+    curses.curs_set(0)
+    stdscr.erase()
+    stdscr.bkgd(' ', _C.get("n", 0))
+    h, w = curses.LINES, curses.COLS
+    draw_box(stdscr, 0, 0, h, w)
+    draw_hline(stdscr, 2, w)
+    draw_hline(stdscr, h-3, w)
+    safe_addstr(stdscr, 1, 2, " ❱ Arch Linux Installer ", _C.get("a", 0) | curses.A_BOLD)
+    logo_x = max(2, (w - 26) // 2)
+    logo_y = 4
+    for i, line in enumerate(ARCH_LOGO):
+        safe_addstr(stdscr, logo_y + i, logo_x, line, _C.get("a", 0) | curses.A_BOLD)
+    content_y = logo_y + len(ARCH_LOGO) + 1
+    title = "Arch Linux Installer"
+    safe_addstr(stdscr, content_y, (w - len(title)) // 2, title,
+                _C.get("s", 0) | curses.A_BOLD)
+    ver_line = f"Version {VERSION}  ·  {datetime.now().strftime('%Y-%m-%d')}"
+    safe_addstr(stdscr, content_y + 1, (w - len(ver_line)) // 2, ver_line, _C.get("w", 0))
+    warn = "⚠  This installer will ERASE the selected disk"
+    safe_addstr(stdscr, content_y + 3, (w - len(warn)) // 2, warn,
+                _C.get("e", 0) | curses.A_BOLD)
+    prompt = L("Press any key to start…", "Presiona cualquier tecla para empezar…")
+    safe_addstr(stdscr, h-2, (w - len(prompt)) // 2, prompt, _C.get("a", 0))
+    stdscr.refresh()
+    frame = 0
+    stdscr.timeout(200)
+    while True:
+        k = stdscr.getch()
+        if k != -1:
+            break
+        safe_addstr(stdscr, h-2, 2, SPINNER[frame % len(SPINNER)], _C.get("s", 0))
+        stdscr.refresh()
+        frame += 1
+    stdscr.timeout(-1)
+
 def screen_language_c(stdscr):
     curses.curs_set(0)
-    init_colors()
     opts = ["English", "Español"]
     sel = 0 if state["lang"] == "en" else 1
     while True:
-        draw_header(stdscr, "Language / Idioma", 1, len(screens) - 1)
+        draw_header(stdscr, "Language / Idioma", 1, 9)
         for i, opt in enumerate(opts):
-            attr = curses.color_pair(5) | curses.A_BOLD if i == sel else curses.A_NORMAL
-            try:
-                stdscr.addstr(5 + i, 6, f"  {opt}  ", attr)
-            except curses.error:
-                pass
+            if i == sel:
+                safe_addstr(stdscr, 6+i, 6, f"  {opt:<24}  ", _C.get("l", 0))
+            else:
+                safe_addstr(stdscr, 6+i, 6, f"  {opt:<24}  ", _C.get("n", 0))
         draw_footer(stdscr, "↑↓ move · Enter=select · q=quit")
         stdscr.refresh()
         k = stdscr.getch()
@@ -379,30 +433,30 @@ def screen_language_c(stdscr):
 def screen_identity_c(stdscr):
     error = ""
     while True:
-        draw_header(stdscr, L("System Identity", "Identidad del sistema"), 2, len(screens) - 1)
-        try:
-            if error:
-                stdscr.addstr(4, 4, error, curses.color_pair(7) | curses.A_BOLD)
-            stdscr.addstr(5, 4, L("Esc=back  (letters, digits, - _ · max 32 chars)", "Esc=volver  (letras, dígitos, - _ · máx 32 chars)"))
-        except curses.error:
-            pass
+        draw_header(stdscr, L("System Identity", "Identidad del sistema"), 2, 9)
+        if error:
+            safe_addstr(stdscr, 5, 4, error, _C.get("e", 0) | curses.A_BOLD)
+        safe_addstr(stdscr, 6, 4,
+            L("Esc=back  (letters, digits, - _ · max 32 chars)",
+              "Esc=volver  (letras, dígitos, - _ · máx 32 chars)"),
+            _C.get("w", 0))
         stdscr.refresh()
-
-        hostname = input_curses(stdscr, 7, 4, L("Hostname   :", "Nombre equipo:"), state.get("hostname", ""))
+        hostname = input_curses(stdscr, 8, 4,
+            L("Hostname   :", "Nombre equipo:"),
+            state.get("hostname", ""))
         if hostname is None:
             return BACK
-
-        username = input_curses(stdscr, 9, 4, L("Username   :", "Usuario      :"), state.get("username", ""))
+        username = input_curses(stdscr, 10, 4,
+            L("Username   :", "Usuario      :"),
+            state.get("username", ""))
         if username is None:
             return BACK
-
         if not validate_name(hostname):
             error = L("✗  Invalid hostname.", "✗  Hostname inválido.")
             continue
         if not validate_name(username):
             error = L("✗  Invalid username.", "✗  Usuario inválido.")
             continue
-
         state["hostname"] = hostname
         state["username"] = username
         return
@@ -410,15 +464,11 @@ def screen_identity_c(stdscr):
 def screen_passwords_c(stdscr):
     error = ""
     while True:
-        draw_header(stdscr, L("Passwords", "Contraseñas"), 3, len(screens) - 1)
-        try:
-            if error:
-                stdscr.addstr(4, 4, error, curses.color_pair(7) | curses.A_BOLD)
-            stdscr.addstr(5, 4, L("Esc=back", "Esc=volver"))
-        except curses.error:
-            pass
+        draw_header(stdscr, L("Passwords", "Contraseñas"), 3, 9)
+        if error:
+            safe_addstr(stdscr, 5, 4, error, _C.get("e", 0) | curses.A_BOLD)
+        safe_addstr(stdscr, 6, 4, L("Esc=back", "Esc=volver"), _C.get("w", 0))
         stdscr.refresh()
-
         prompts = [
             L("Root password       :", "Contraseña root     :"),
             L("Confirm root        :", "Confirmar root      :"),
@@ -428,14 +478,13 @@ def screen_passwords_c(stdscr):
         vals = []
         cancelled = False
         for i, prompt in enumerate(prompts):
-            v = input_curses(stdscr, 7 + i * 2, 4, prompt, secret=True)
+            v = input_curses(stdscr, 8 + i*2, 4, prompt, secret=True)
             if v is None:
                 cancelled = True
                 break
             vals.append(v)
         if cancelled:
             return BACK
-
         rp1, rp2, up1, up2 = vals
         if not rp1:
             error = L("✗  Root password is empty.", "✗  Contraseña root vacía.")
@@ -449,7 +498,6 @@ def screen_passwords_c(stdscr):
         if up1 != up2:
             error = L("✗  User passwords do not match.", "✗  Contraseñas usuario no coinciden.")
             continue
-
         state["root_pass"] = rp1
         state["user_pass"] = up1
         return
@@ -459,15 +507,13 @@ def screen_disk_c(stdscr):
     disks = list_disks()
     if not disks:
         draw_header(stdscr, L("Disk Selection", "Selección de disco"))
-        try:
-            stdscr.addstr(5, 4, L("✗  No disks found. Aborting.", "✗  No se encontraron discos. Abortando."), curses.color_pair(7) | curses.A_BOLD)
-        except curses.error:
-            pass
+        safe_addstr(stdscr, 6, 4,
+            L("✗  No disks found. Aborting.", "✗  No se encontraron discos. Abortando."),
+            _C.get("e", 0) | curses.A_BOLD)
         stdscr.refresh()
         stdscr.getch()
         sys.exit(1)
 
-    opts = [f"/dev/{d}  {s:>4} GB  {m}" for d, s, m in disks]
     sel = 0
     for i, (d, _, _) in enumerate(disks):
         if d == state.get("disk"):
@@ -475,22 +521,55 @@ def screen_disk_c(stdscr):
             break
 
     while True:
-        draw_header(stdscr, L("Disk & Swap", "Disco y Swap"), 4, len(screens) - 1)
-        try:
-            stdscr.addstr(4, 4, L("⚠  ALL DATA ON THE SELECTED DISK WILL BE ERASED", "⚠  SE BORRARÁN TODOS LOS DATOS DEL DISCO SELECCIONADO"), curses.color_pair(8) | curses.A_BOLD)
-            h = curses.LINES - 12
-            w = curses.COLS - 40
-            draw_box(stdscr, 6, 4, h, w, "Disks")
-            for i, (n, gb, model) in enumerate(disks):
-                r = 7 + i
-                line = f" {i+1}. /dev/{n:<8} {gb:>4}GB  {model}"
-                attr = curses.color_pair(6) if i == sel else curses.A_NORMAL
-                stdscr.addstr(r, 6, line[:w - 4], attr)
-            stdscr.addstr(7 + len(disks) + 1, 4, L(f"Swap: {state['swap']} GB  ·  press s to change", f"Swap: {state['swap']} GB  ·  presiona s para cambiar"))
-        except curses.error:
-            pass
-        draw_footer(stdscr, L("↑↓ disk · s=swap · Enter=confirm · Esc=back · q=quit", "↑↓ disco · s=swap · Enter=confirmar · Esc=volver · q=salir"))
+        draw_header(stdscr, L("Disk & Swap", "Disco y Swap"), 4, 9)
+        h, w = curses.LINES, curses.COLS
+        safe_addstr(stdscr, 5, 4,
+            L("⚠  ALL DATA ON THE SELECTED DISK WILL BE ERASED",
+              "⚠  SE BORRARÁN TODOS LOS DATOS DEL DISCO SELECCIONADO"),
+            _C.get("e", 0) | curses.A_BOLD)
+
+        col_w = min(w - 8, 68)
+        n_col = 14
+        s_col = 10
+        m_col = col_w - n_col - s_col - 4
+
+        safe_addstr(stdscr, 7, 4,
+            "╔" + "═"*n_col + "╦" + "═"*s_col + "╦" + "═"*m_col + "╗",
+            _C.get("n", 0))
+        hdr = f"║ {'NAME':<{n_col-1}}║ {'SIZE':>{s_col-1}}║ {'MODEL':<{m_col-1}}║"
+        safe_addstr(stdscr, 8, 4, hdr, _C.get("a", 0) | curses.A_BOLD)
+        safe_addstr(stdscr, 9, 4,
+            "╠" + "═"*n_col + "╬" + "═"*s_col + "╬" + "═"*m_col + "╣",
+            _C.get("n", 0))
+
+        for i, (name, size_gb, model) in enumerate(disks):
+            name_str = f"/dev/{name}"
+            size_str = f"{size_gb} GB"
+            model_str = model[:m_col-1] if model else ""
+            row = (f"║ {name_str:<{n_col-1}}"
+                   f"║ {size_str:>{s_col-1}}"
+                   f"║ {model_str:<{m_col-1}}║")
+            if i == sel:
+                safe_addstr(stdscr, 10+i, 4, row, _C.get("l", 0))
+            else:
+                safe_addstr(stdscr, 10+i, 4, row, _C.get("n", 0))
+
+        bot_y = 10 + len(disks)
+        safe_addstr(stdscr, bot_y, 4,
+            "╚" + "═"*n_col + "╩" + "═"*s_col + "╩" + "═"*m_col + "╝",
+            _C.get("n", 0))
+
+        swap_is_default = state["swap"] == "8"
+        swap_attr = _C.get("w", 0) if swap_is_default else _C.get("s", 0)
+        swap_line = L(f"Swap: {state['swap']} GB  ·  press s to change",
+                      f"Swap: {state['swap']} GB  ·  presiona s para cambiar")
+        safe_addstr(stdscr, bot_y+2, 4, swap_line, swap_attr)
+
+        draw_footer(stdscr,
+            L("↑↓ disk · s=swap · Enter=confirm · Esc=back · q=quit",
+              "↑↓ disco · s=swap · Enter=confirmar · Esc=volver · q=salir"))
         stdscr.refresh()
+
         k = stdscr.getch()
         if k == curses.KEY_UP:
             sel = (sel - 1) % len(disks)
@@ -502,11 +581,12 @@ def screen_disk_c(stdscr):
         elif k == ord("s"):
             curses.curs_set(1)
             curses.echo()
-            row = 7 + len(disks) + 1
+            row_y = bot_y + 2
             try:
-                stdscr.addstr(row, 4, L("Swap GB (1–128): ", "Swap GB (1–128): "))
+                safe_addstr(stdscr, row_y, 4, L("Swap GB (1–128): ", "Swap GB (1–128): "),
+                             _C.get("w", 0))
                 stdscr.refresh()
-                val = stdscr.getstr(row, 22, 4).decode().strip()
+                val = stdscr.getstr(row_y, 22, 4).decode().strip()
             except Exception:
                 val = ""
             curses.noecho()
@@ -559,14 +639,15 @@ def _choice_screen(stdscr, title, opts, key, step):
     except (ValueError, KeyError):
         sel = len(opts) - 1
     while True:
-        draw_header(stdscr, title, step, len(screens) - 1)
+        draw_header(stdscr, title, step, 9)
         for i, opt in enumerate(opts):
-            attr = curses.color_pair(5) | curses.A_BOLD if i == sel else curses.A_NORMAL
-            try:
-                stdscr.addstr(5 + i, 6, f"  {opt}  ", attr)
-            except curses.error:
-                pass
-        draw_footer(stdscr, L("↑↓ move · Enter=select · Esc=back · q=quit", "↑↓ mover · Enter=seleccionar · Esc=volver · q=salir"))
+            if i == sel:
+                safe_addstr(stdscr, 6+i, 6, f"  {opt:<26}  ", _C.get("l", 0))
+            else:
+                safe_addstr(stdscr, 6+i, 6, f"  {opt:<26}  ", _C.get("n", 0))
+        draw_footer(stdscr,
+            L("↑↓ move · Enter=select · Esc=back · q=quit",
+              "↑↓ mover · Enter=seleccionar · Esc=volver · q=salir"))
         stdscr.refresh()
         k = stdscr.getch()
         if k == curses.KEY_UP:
@@ -599,34 +680,67 @@ def screen_gpu_c(stdscr):
         "gpu", 8
     )
 
+_DEFAULTS = {
+    "swap": "8", "desktop": "None", "gpu": "None",
+    "keymap": "us", "timezone": "UTC",
+}
+
 def screen_review_c(stdscr):
     curses.curs_set(0)
+    lc = 20
+    vc = 24
     while True:
-        draw_header(stdscr, L("Review & Confirm", "Revisar y confirmar"), 9, len(screens) - 1)
+        draw_header(stdscr, L("Review & Confirm", "Revisar y confirmar"), 9, 9)
+        h, w = curses.LINES, curses.COLS
+
         disk_label = f"/dev/{state['disk']}" if state["disk"] else L("NOT SET", "SIN ASIGNAR")
         rows = [
-            (L("Language",  "Idioma"),   state["lang"]),
-            ("Hostname",                 state["hostname"] or "—"),
-            (L("Username",  "Usuario"),  state["username"] or "—"),
-            ("Disk",                     disk_label),
-            ("Swap",                     f"{state['swap']} GB"),
-            ("Keymap",                   state["keymap"]),
-            ("Timezone",                 state["timezone"]),
-            ("Desktop",                  state["desktop"]),
-            ("GPU",                      state["gpu"]),
+            (L("Language",  "Idioma"),  state["lang"],           "lang"),
+            ("Hostname",               state["hostname"] or "—", "hostname"),
+            (L("Username", "Usuario"), state["username"] or "—", "username"),
+            ("Disk",                   disk_label,               "disk"),
+            ("Swap",                   f"{state['swap']} GB",    "swap"),
+            ("Keymap",                 state["keymap"],          "keymap"),
+            ("Timezone",               state["timezone"],        "timezone"),
+            ("Desktop",                state["desktop"],         "desktop"),
+            ("GPU",                    state["gpu"],             "gpu"),
         ]
-        y = 4
-        w = curses.COLS - 8
-        try:
-            stdscr.addstr(y, 4, "┌" + "─" * (w - 2) + "┐")
+
+        y = 5
+        safe_addstr(stdscr, y, 4,
+            "╔" + "═"*lc + "╦" + "═"*vc + "╗", _C.get("n", 0))
+        y += 1
+        safe_addstr(stdscr, y, 4,
+            "║" + f" {'Setting':<{lc-1}}" + "║", _C.get("a", 0) | curses.A_BOLD)
+        safe_addstr(stdscr, y, 4 + lc + 2,
+            f" {'Value':<{vc-1}}" + "║", _C.get("a", 0) | curses.A_BOLD)
+        y += 1
+        safe_addstr(stdscr, y, 4,
+            "╠" + "═"*lc + "╬" + "═"*vc + "╣", _C.get("n", 0))
+        y += 1
+
+        for idx_r, (label, val, key) in enumerate(rows):
+            is_default = _DEFAULTS.get(key) == state.get(key)
+            val_attr = _C.get("w", 0) if is_default else _C.get("s", 0)
+            if not state.get(key) or state.get(key) in ("", None):
+                val_attr = _C.get("e", 0)
+            safe_addstr(stdscr, y, 4,
+                "║" + f" {label:<{lc-1}}" + "║", _C.get("n", 0))
+            safe_addstr(stdscr, y, 4 + lc + 2,
+                f" {val[:vc-1]:<{vc-1}}" + "║", val_attr)
             y += 1
-            for label, val in rows:
-                default_style = curses.color_pair(8) if (label == 'Swap' and state['swap'] == '8') else curses.A_NORMAL
-                stdscr.addstr(y, 4, f"│ {label:<18} {val:<{w - 24}} │", default_style)
-                y += 1
-            stdscr.addstr(y, 4, "└" + "─" * (w - 2) + "┘")
-        except curses.error:
-            pass
+            if idx_r < len(rows) - 1:
+                safe_addstr(stdscr, y, 4,
+                    "╠" + "═"*lc + "╬" + "═"*vc + "╣", _C.get("n", 0))
+            else:
+                safe_addstr(stdscr, y, 4,
+                    "╚" + "═"*lc + "╩" + "═"*vc + "╝", _C.get("n", 0))
+            y += 1
+
+        hint = L("Yellow = default  ·  Green = custom  ·  Red = missing",
+                 "Amarillo = default  ·  Verde = personalizado  ·  Rojo = falta")
+        safe_addstr(stdscr, y, 4, hint, _C.get("w", 0))
+        y += 1
 
         missing = []
         if not state["hostname"]:
@@ -639,13 +753,21 @@ def screen_review_c(stdscr):
             missing.append(L("root password", "contraseña root"))
 
         if missing:
-            try:
-                stdscr.addstr(y + 1, 4, L(f"✗  Missing: {', '.join(missing)}", f"✗  Faltan: {', '.join(missing)}"), curses.color_pair(7) | curses.A_BOLD)
-            except curses.error:
-                pass
+            safe_addstr(stdscr, y+1, 4,
+                L(f"✗  Missing: {', '.join(missing)}",
+                  f"✗  Faltan: {', '.join(missing)}"),
+                _C.get("e", 0) | curses.A_BOLD)
+        else:
+            safe_addstr(stdscr, y+1, 4,
+                L("✔  All good — ready to install!",
+                  "✔  Todo listo — ¡listo para instalar!"),
+                _C.get("s", 0) | curses.A_BOLD)
 
-        draw_footer(stdscr, L("Enter=start install · Esc=back · q=quit", "Enter=iniciar · Esc=volver · q=salir"))
+        draw_footer(stdscr,
+            L("Enter=start install · Esc=back · q=quit",
+              "Enter=iniciar · Esc=volver · q=salir"))
         stdscr.refresh()
+
         k = stdscr.getch()
         if k in (10, 13):
             if missing:
@@ -658,20 +780,19 @@ def screen_review_c(stdscr):
 
 class InstallerUI:
     def __init__(self, stdscr):
-        self.stdscr   = stdscr
-        self.logs     = []
-        self.progress = 0.0
-        self.stage    = ""
-        self.failed   = False
-        self.done     = False
-        self.lock     = threading.Lock()
-        self.start_time = None
-        self.spinner_idx = 0
-        self.stages_status = {}
+        self.stdscr     = stdscr
+        self.logs       = []
+        self.progress   = 0.0
+        self.stage      = ""
+        self.failed     = False
+        self.done       = False
+        self.lock       = threading.Lock()
+        self.completed  = []
+        self.spin_idx   = 0
+        self.start_time = time.time()
         if stdscr:
             try:
                 curses.curs_set(0)
-                init_colors()
             except Exception:
                 pass
 
@@ -685,19 +806,15 @@ class InstallerUI:
 
     def set_stage(self, msg):
         prev = self.stage
-        if prev:
-            self.stages_status[prev] = 'done'
+        if prev and prev not in self.completed:
+            with self.lock:
+                self.completed.append(prev)
         self.stage = msg
-        self.stages_status[msg] = 'running'
         self.add_log(f">>> {msg}")
 
     def set_progress(self, pct):
         with self.lock:
             self.progress = max(0.0, min(100.0, pct))
-        if self.start_time is None:
-            self.start_time = time.time()
-        if self.progress >= 100.0:
-            self.stages_status[self.stage] = 'done'
         self.redraw()
 
     def redraw(self):
@@ -706,78 +823,84 @@ class InstallerUI:
         s = self.stdscr
         try:
             s.erase()
-            s.addstr(0, 2, " Arch Linux Installer ", curses.color_pair(1) | curses.A_BOLD)
-            s.addstr(1, 2, "─" * (curses.COLS - 4))
-            s.addstr(2, 4, L("Installing Arch Linux…", "Instalando Arch Linux…"), curses.A_BOLD)
+            s.bkgd(' ', _C.get("n", 0))
+            h, w = curses.LINES, curses.COLS
+            mid = w // 2
 
-            left_w = max(40, curses.COLS // 3)
-            right_w = curses.COLS - left_w - 6
-            h = curses.LINES - 6
-            draw_box(s, 4, 2, h, left_w, L("Progress", "Progreso"))
-            draw_box(s, 4, left_w + 4, h, right_w, L("Live Log", "Log en vivo"))
+            draw_box(s, 0, 0, h, w)
+            draw_hline_split(s, 2, w, mid, cross_top=True)
+            draw_hline_split(s, h-3, w, mid, cross_top=False)
+            for row in range(3, h-3):
+                safe_addstr(s, row, mid, "║", _C.get("n", 0))
 
-            pct    = int(self.progress)
-            bar_w  = left_w - 12
+            safe_addstr(s, 1, 2, " ❱ Arch Linux Installer ", _C.get("a", 0) | curses.A_BOLD)
+            elapsed = int(time.time() - self.start_time)
+            elapsed_str = f"{elapsed//60:02d}:{elapsed%60:02d}"
+            safe_addstr(s, 1, w - len(elapsed_str) - 3, elapsed_str, _C.get("w", 0))
+
+            safe_addstr(s, 3, 2,
+                L("Installing Arch Linux…", "Instalando Arch Linux…"),
+                _C.get("n", 0) | curses.A_BOLD)
+
+            pct = int(self.progress)
+            left_w = mid - 2
+            bar_w = max(4, left_w - 10)
             filled = int((self.progress / 100.0) * bar_w)
-            bar    = "█" * filled + "░" * (bar_w - filled)
-            label  = self.stage[:left_w - bar_w - 14]
-            if self.failed:
-                color = curses.color_pair(3)
-            else:
-                color = curses.color_pair(2)
-            try:
-                s.addstr(6, 4, f"{bar}  {label}  {pct}%", color | curses.A_BOLD)
-            except curses.error:
-                pass
+            prog_attr = _C.get("e", 0) if self.failed else _C.get("s", 0)
+            bar = "█" * filled + "░" * (bar_w - filled)
+            safe_addstr(s, 5, 2, f"{pct:>3}%  ", _C.get("n", 0) | curses.A_BOLD)
+            safe_addstr(s, 5, 8, bar, prog_attr)
 
-            elapsed = "--:--"
-            eta = "--:--"
-            if self.start_time:
-                e = int(time.time() - self.start_time)
-                elapsed = f"{e//60:02d}:{e%60:02d}"
-                if self.progress > 0 and self.progress < 100:
-                    rem = int(e * (100 - self.progress) / max(1, self.progress))
-                    eta = f"{rem//60:02d}:{rem%60:02d}"
-            try:
-                s.addstr(8, 4, f"Elapsed: {elapsed}  ETA: {eta}")
-            except curses.error:
-                pass
+            spin = SPINNER[self.spin_idx % len(SPINNER)]
+            stage_attr = _C.get("e", 0) if self.failed else _C.get("a", 0)
+            stage_label = (spin + " " + self.stage)[:left_w - 2]
+            safe_addstr(s, 7, 2, stage_label, stage_attr | curses.A_BOLD)
 
-            spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-            sp = spinner[self.spinner_idx % len(spinner)]
-            self.spinner_idx += 1
-            try:
-                s.addstr(10, 4, f"{sp} {self.stage}")
-            except curses.error:
-                pass
+            safe_addstr(s, 9, 2, L("Steps:", "Pasos:"), _C.get("n", 0) | curses.A_BOLD)
 
-            s.addstr(12, 4, L("Steps", "Pasos"))
-            y = 13
-            for st, stst in list(self.stages_status.items())[-(h - 20):]:
-                mark = "✔" if stst == 'done' else ("→" if stst == 'running' else " ")
-                attr = curses.color_pair(6) if stst == 'done' else (curses.color_pair(9) if stst == 'running' else curses.A_NORMAL)
-                try:
-                    s.addstr(y, 6, f"{mark} {st[:left_w - 10]}", attr)
-                except curses.error:
-                    pass
-                y += 1
-
-            s.addstr(6, left_w + 6, L("Log:", "Registro:"))
-            y = 7
             with self.lock:
-                visible = self.logs[-(h - 4):]
-            for line in visible:
-                try:
-                    s.addstr(y, left_w + 6, line[: right_w - 4])
-                except curses.error:
-                    pass
+                comp = list(self.completed)
+                cur_stage = self.stage
+
+            y = 10
+            max_steps_y = h - 5
+            for st in comp:
+                if y >= max_steps_y:
+                    break
+                label = ("✔ " + st)[:left_w - 2]
+                safe_addstr(s, y, 2, label, _C.get("s", 0))
                 y += 1
+
+            if cur_stage and y < max_steps_y and not self.failed:
+                cur_label = (SPINNER[self.spin_idx % len(SPINNER)] + " " + cur_stage)[:left_w - 2]
+                safe_addstr(s, y, 2, cur_label, _C.get("w", 0))
+
+            log_x = mid + 2
+            log_w = w - mid - 4
+            safe_addstr(s, 3, log_x, L("Live log:", "Log en vivo:"),
+                        _C.get("a", 0) | curses.A_BOLD)
+
+            log_rows = h - 3 - 5
+            with self.lock:
+                visible = self.logs[-log_rows:]
+
+            for i, line in enumerate(visible):
+                ll = line.lower()
+                attr = _C.get("n", 0)
+                if "error" in ll or "fail" in ll or "✗" in line:
+                    attr = _C.get("e", 0)
+                elif "warning" in ll or "warn" in ll:
+                    attr = _C.get("w", 0)
+                elif "✔" in line or "complete" in ll or "success" in ll:
+                    attr = _C.get("s", 0)
+                safe_addstr(s, 5+i, log_x, line[:log_w], attr)
+
             s.refresh()
         except curses.error:
             pass
 
     def _gradual_progress(self, target, duration=0.8):
-        base  = self.progress
+        base = self.progress
         steps = max(4, int(duration / 0.05))
         for i in range(1, steps + 1):
             self.set_progress(base + (target - base) * (i / steps))
@@ -793,9 +916,9 @@ class InstallerUI:
             if m:
                 download_done[0] = True
                 cur, total = int(m.group(1)), int(m.group(2))
-                mid = start_pct + (end_pct - start_pct) * 0.5
+                mid_pct = start_pct + (end_pct - start_pct) * 0.5
                 if total > 0:
-                    pct = mid + (cur / total) * (end_pct - mid)
+                    pct = mid_pct + (cur / total) * (end_pct - mid_pct)
                     self.set_progress(min(pct, end_pct - 0.5))
                 return
             if not download_done[0] and _PAT_DOWNLOAD.search(line):
@@ -826,12 +949,14 @@ class InstallerUI:
         try:
             self.set_stage(L("Checking network…", "Verificando red…"))
             if not ensure_network():
-                self.add_log(L("✗  No network detected. Connect and retry.", "✗  Sin red. Conéctese e intente de nuevo."))
+                self.add_log(L("✗  No network detected. Connect and retry.",
+                               "✗  Sin red. Conéctese e intente de nuevo."))
                 self.failed = True
                 self.set_progress(100.0)
                 return
 
-            run_stream("pacman -Sy --noconfirm archlinux-keyring", on_line=self.add_log, ignore_error=True)
+            run_stream("pacman -Sy --noconfirm archlinux-keyring",
+                       on_line=self.add_log, ignore_error=True)
 
             self.set_stage(L("Wiping disk…", "Borrando disco…"))
             self._gradual_progress(3)
@@ -839,9 +964,9 @@ class InstallerUI:
             self.set_progress(5)
 
             self.set_stage(L("Creating partitions…", "Creando particiones…"))
-            run_stream(f"sgdisk -n1:0:+1G            -t1:ef00 {disk_path}", on_line=self.add_log)
+            run_stream(f"sgdisk -n1:0:+1G             -t1:ef00 {disk_path}", on_line=self.add_log)
             run_stream(f"sgdisk -n2:0:+{state['swap']}G -t2:8200 {disk_path}", on_line=self.add_log)
-            run_stream(f"sgdisk -n3:0:0             -t3:8300 {disk_path}", on_line=self.add_log)
+            run_stream(f"sgdisk -n3:0:0              -t3:8300 {disk_path}", on_line=self.add_log)
             self.set_progress(10)
 
             self.set_stage(L("Formatting…", "Formateando…"))
@@ -852,23 +977,24 @@ class InstallerUI:
             self.set_progress(15)
 
             self.set_stage(L("Mounting filesystems…", "Montando sistemas de archivos…"))
-            run_stream(f"mount {p3} /mnt",           on_line=self.add_log)
-            run_stream("mkdir -p /mnt/boot/efi",     on_line=self.add_log)
-            run_stream(f"mount {p1} /mnt/boot/efi",  on_line=self.add_log)
+            run_stream(f"mount {p3} /mnt",          on_line=self.add_log)
+            run_stream("mkdir -p /mnt/boot/efi",    on_line=self.add_log)
+            run_stream(f"mount {p1} /mnt/boot/efi", on_line=self.add_log)
             self.set_progress(18)
 
-            self.set_stage(L("Installing base system — this will take a while…", "Instalando sistema base — esto tardará un rato…"))
+            self.set_stage(L("Installing base system…", "Instalando sistema base…"))
             pkgs = ("base linux linux-firmware linux-headers sof-firmware "
                     "base-devel grub efibootmgr vim nano networkmanager "
                     "sudo bash-completion")
             rc = self._run_pacman_progress(f"pacstrap -K /mnt {pkgs}", 18, 52)
             if rc != 0:
-                self.add_log(L("✗  pacstrap failed. Check /mnt/install_log.txt", "✗  pacstrap falló. Revisa /mnt/install_log.txt"))
+                self.add_log(L("✗  pacstrap failed. Check /mnt/install_log.txt",
+                               "✗  pacstrap falló. Revisa /mnt/install_log.txt"))
                 self.failed = True
                 self.set_progress(100.0)
                 return
 
-            self.set_stage("Generating fstab…")
+            self.set_stage(L("Generating fstab…", "Generando fstab…"))
             run_stream("genfstab -U /mnt >> /mnt/etc/fstab", on_line=self.add_log)
             self.set_progress(53)
 
@@ -882,18 +1008,19 @@ class InstallerUI:
                         f"127.0.1.1\t{hn}.localdomain\t{hn}\n")
             self.set_progress(55)
 
-            self.set_stage(L("Configuring locale & timezone…", "Configurando locale y zona horaria…"))
+            self.set_stage(L("Configuring locale & timezone…",
+                             "Configurando locale y zona horaria…"))
             locale_map = {"en": "en_US.UTF-8", "es": "es_ES.UTF-8",
-                          "fr": "fr_FR.UTF-8", "de": "de_DE.UTF-8", "ru": "ru_RU.UTF-8", "ar": "ar_EG.UTF-8"}
+                          "fr": "fr_FR.UTF-8", "de": "de_DE.UTF-8",
+                          "ru": "ru_RU.UTF-8", "ar": "ar_EG.UTF-8"}
             locale = locale_map.get(state["lang"], "en_US.UTF-8")
-            locale_base = locale.replace("UTF-8", "").strip()
             chroot(f"sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen")
             chroot(f"sed -i 's/^#{locale}/{locale}/' /etc/locale.gen")
             chroot("locale-gen")
             chroot(f"echo 'LANG={locale}' > /etc/locale.conf")
             chroot(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
             chroot("hwclock --systohc")
-            km = state['keymap']
+            km = state["keymap"]
             chroot(f"echo 'KEYMAP={km}' > /etc/vconsole.conf")
             self.set_progress(59)
 
@@ -914,18 +1041,20 @@ class InstallerUI:
                    "/etc/sudoers")
             self.set_progress(68)
 
-            self.set_stage("Enabling NetworkManager…")
+            self.set_stage(L("Enabling NetworkManager…", "Habilitando NetworkManager…"))
             chroot("systemctl enable NetworkManager")
             self.set_progress(71)
 
             if state["gpu"] == "NVIDIA":
-                self.set_stage(L("Installing NVIDIA drivers…", "Instalando drivers NVIDIA…"))
+                self.set_stage(L("Installing NVIDIA drivers…",
+                                 "Instalando drivers NVIDIA…"))
                 self._run_pacman_progress(
                     "arch-chroot /mnt pacman -S --noconfirm "
                     "nvidia nvidia-utils nvidia-settings",
                     71, 77, ignore_error=True)
             elif state["gpu"] == "AMD/Intel":
-                self.set_stage(L("Installing AMD/Intel drivers…", "Instalando drivers AMD/Intel…"))
+                self.set_stage(L("Installing AMD/Intel drivers…",
+                                 "Instalando drivers AMD/Intel…"))
                 self._run_pacman_progress(
                     "arch-chroot /mnt pacman -S --noconfirm "
                     "mesa vulkan-radeon libva-mesa-driver",
@@ -972,16 +1101,31 @@ class InstallerUI:
 
     def _reboot_prompt(self):
         self.done = True
-        self.stdscr.erase()
-        self.stdscr.refresh()
+        s = self.stdscr
+        s.erase()
+        s.refresh()
+
         if self.failed:
             while True:
                 try:
-                    self.stdscr.erase()
-                    self.stdscr.addstr(2, 2, L("✗  Installation failed. See /mnt/install_log.txt", "✗  Instalación fallida. Revisa /mnt/install_log.txt"), curses.color_pair(7) | curses.A_BOLD)
-                    self.stdscr.addstr(4, 2, L("Press any key to exit.", "Presiona cualquier tecla para salir."))
-                    self.stdscr.refresh()
-                    self.stdscr.getch()
+                    s.erase()
+                    s.bkgd(' ', _C.get("n", 0))
+                    h, w = curses.LINES, curses.COLS
+                    draw_box(s, 0, 0, h, w)
+                    draw_hline(s, 2, w)
+                    safe_addstr(s, 1, 2, " ❱ Arch Linux Installer ", _C.get("a", 0) | curses.A_BOLD)
+                    safe_addstr(s, 4, 4,
+                        L("✗  Installation failed.", "✗  Instalación fallida."),
+                        _C.get("e", 0) | curses.A_BOLD)
+                    safe_addstr(s, 6, 4,
+                        L("See /mnt/install_log.txt for details.",
+                          "Revisa /mnt/install_log.txt para detalles."),
+                        _C.get("w", 0))
+                    safe_addstr(s, 8, 4,
+                        L("Press any key to exit.", "Presiona cualquier tecla para salir."),
+                        _C.get("n", 0))
+                    s.refresh()
+                    s.getch()
                 except curses.error:
                     pass
                 sys.exit(1)
@@ -991,45 +1135,69 @@ class InstallerUI:
             L("No — stay in shell", "No — quedarme en shell"),
         ]
         sel = 0
+        countdown = 5
+        last_tick = time.time()
+        s.timeout(200)
+
         while True:
+            now = time.time()
+            if now - last_tick >= 1.0 and countdown > 0:
+                countdown -= 1
+                last_tick = now
+
             try:
-                self.stdscr.erase()
-                self.stdscr.addstr(1, 2, " Arch Linux Installer ", curses.color_pair(1) | curses.A_BOLD)
-                self.stdscr.addstr(3, 2, L("✔  Installation complete! Reboot now?", "✔  ¡Instalación completa! ¿Reiniciar ahora?"), curses.A_BOLD)
+                s.erase()
+                s.bkgd(' ', _C.get("n", 0))
+                h, w = curses.LINES, curses.COLS
+                draw_box(s, 0, 0, h, w)
+                draw_hline(s, 2, w)
+                safe_addstr(s, 1, 2, " ❱ Arch Linux Installer ", _C.get("a", 0) | curses.A_BOLD)
+                safe_addstr(s, 4, 4,
+                    L("✔  Installation complete!", "✔  ¡Instalación completa!"),
+                    _C.get("s", 0) | curses.A_BOLD)
+                safe_addstr(s, 5, 4,
+                    L("Reboot now?", "¿Reiniciar ahora?"),
+                    _C.get("n", 0) | curses.A_BOLD)
+
+                if countdown > 0 and sel == 0:
+                    cd_msg = L(f"  Auto-rebooting in {countdown}s…  press ↑↓ to cancel",
+                               f"  Reiniciando en {countdown}s…  ↑↓ para cancelar")
+                    safe_addstr(s, 7, 4, cd_msg, _C.get("w", 0) | curses.A_BOLD)
+                elif sel == 0 and countdown <= 0:
+                    safe_addstr(s, 7, 4,
+                        L("  Rebooting…", "  Reiniciando…"),
+                        _C.get("s", 0) | curses.A_BOLD)
+
                 for i, opt in enumerate(opts):
-                    attr = curses.color_pair(5) | curses.A_BOLD if i == sel else curses.A_NORMAL
-                    self.stdscr.addstr(5 + i, 4, f"  {opt}  ", attr)
-                self.stdscr.addstr(9, 4, "↑↓  Enter=confirm")
-                self.stdscr.refresh()
+                    if i == sel:
+                        safe_addstr(s, 9+i, 6, f"  {opt:<32}  ", _C.get("l", 0))
+                    else:
+                        safe_addstr(s, 9+i, 6, f"  {opt:<32}  ", _C.get("n", 0))
+
+                safe_addstr(s, 13, 6, "↑↓  Enter=confirm", _C.get("a", 0))
+                s.refresh()
             except curses.error:
                 pass
-            k = self.stdscr.getch()
+
+            if countdown <= 0 and sel == 0:
+                append_buffer_add("Rebooting…")
+                subprocess.run("umount -R /mnt", shell=True)
+                subprocess.run("reboot", shell=True)
+                sys.exit(0)
+
+            k = s.getch()
             if k == curses.KEY_UP:
                 sel = (sel - 1) % len(opts)
+                countdown = -1
             elif k == curses.KEY_DOWN:
                 sel = (sel + 1) % len(opts)
+                countdown = -1
             elif k in (10, 13):
                 if sel == 0:
                     append_buffer_add("Rebooting…")
-                    for i in range(5, 0, -1):
-                        try:
-                            self.stdscr.addstr(11, 4, L(f"Rebooting in {i} seconds... Press any key to cancel", f"Reiniciando en {i} segundos... Presiona cualquier tecla para cancelar"))
-                            self.stdscr.refresh()
-                            self.stdscr.timeout(1000)
-                            k2 = self.stdscr.getch()
-                            if k2 != -1:
-                                self.stdscr.timeout(-1)
-                                self.stdscr.addstr(13, 4, L("Cancelled reboot.", "Reinicio cancelado."))
-                                self.stdscr.refresh()
-                                time.sleep(1)
-                                return
-                        except curses.error:
-                            pass
-                    self.stdscr.timeout(-1)
                     subprocess.run("umount -R /mnt", shell=True)
                     subprocess.run("reboot", shell=True)
-                else:
-                    sys.exit(0)
+                sys.exit(0)
 
     def start(self):
         t = threading.Thread(target=self.run_steps, daemon=True)
@@ -1038,8 +1206,9 @@ class InstallerUI:
             t.join()
             return
         while t.is_alive() or self.progress < 100.0:
+            self.spin_idx += 1
             self.redraw()
-            self.stdscr.timeout(250)
+            self.stdscr.timeout(150)
             self.stdscr.getch()
         self.stdscr.timeout(-1)
         self._reboot_prompt()
@@ -1048,13 +1217,11 @@ def screen_install_c(stdscr):
     InstallerUI(stdscr).start()
 
 def main_curses(stdscr):
-    try:
-        init_colors()
-        splash_screen(stdscr)
-    except Exception:
-        pass
+    init_colors()
+    stdscr.bkgd(' ', _C.get("n", 0))
     curses.curs_set(0)
     funcs = {
+        "welcome":   screen_welcome_c,
         "language":  screen_language_c,
         "identity":  screen_identity_c,
         "passwords": screen_passwords_c,
@@ -1164,7 +1331,8 @@ def fallback_cli():
     for k in ("lang", "hostname", "username", "disk", "swap", "desktop", "gpu"):
         print(f"  {k:<12} {state.get(k)}")
     print("───────────────────────────────────")
-    ok = input(L("\n⚠  THIS WILL ERASE THE DISK. Proceed? (y/N): ", "\n⚠  ESTO BORRARÁ EL DISCO. ¿Continuar? (y/N): ")).strip().lower()
+    ok = input(L("\n⚠  THIS WILL ERASE THE DISK. Proceed? (y/N): ",
+                 "\n⚠  ESTO BORRARÁ EL DISCO. ¿Continuar? (y/N): ")).strip().lower()
     if ok == "y":
         InstallerUI(None).run_steps()
     else:
