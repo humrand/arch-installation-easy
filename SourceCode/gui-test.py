@@ -1,9 +1,3 @@
-"""
-Arch Linux Installer — dialog Edition
-MIT LICENSE — credits to humrand https://github.com/humrand/arch-anstallation-easy
-DO NOT REMOVE THIS FROM YOUR CODE IF YOU USE IT TO MODIFY IT.
-"""
-
 import subprocess
 import sys
 import os
@@ -851,21 +845,7 @@ def screen_finish():
     sys.exit(0)
 
 
-def check_dialog():
-    if not shutil.which("dialog"):
-        print("ERROR: 'dialog' is not installed.")
-        print("Install it with:  pacman -S dialog")
-        sys.exit(1)
-
-
 def main():
-    if os.geteuid() != 0:
-        print("This installer must be run as root.")
-        print("Example: sudo python arch_installer_gui.py")
-        sys.exit(1)
-
-    check_dialog()
-
     steps = [
         ("Welcome",                        screen_welcome,   False),
         ("Language",                        screen_language,  False),
@@ -892,5 +872,25 @@ def main():
             idx += 1
 
 
-if __name__ == "__main__":
+def bootstrap():
+    if os.geteuid() != 0:
+        print("This installer must be run as root.")
+        print("Example: sudo python arch_installer_gui.py")
+        sys.exit(1)
+
+    if not shutil.which("dialog"):
+        print("[*] dialog not found — installing via pacman...")
+        rc = subprocess.call(
+            "pacman -Sy --noconfirm dialog",
+            shell=True, executable="/bin/bash"
+        )
+        if rc != 0:
+            print("[!] Failed to install dialog. Check your network and try again.")
+            sys.exit(1)
+        print("[+] dialog installed successfully.\n")
+
     main()
+
+
+if __name__ == "__main__":
+    bootstrap()
