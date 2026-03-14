@@ -617,6 +617,7 @@ class InstallerUI:
         self.progress = 0.0
         self.stage    = ""
         self.failed   = False
+        self.done     = False
         self.lock     = threading.Lock()
         if stdscr:
             try:
@@ -642,7 +643,7 @@ class InstallerUI:
         self.redraw()
 
     def redraw(self):
-        if not self.stdscr:
+        if not self.stdscr or self.done:
             return
         s = self.stdscr
         try:
@@ -785,9 +786,15 @@ class InstallerUI:
 
             self.set_stage(L("Configuring locale & timezone…",
                              "Configurando locale y zona horaria…"))
-            chroot("sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen")
+            locale_map = {"en": "en_US.UTF-8", "es": "es_ES.UTF-8",
+                          "fr": "fr_FR.UTF-8", "de": "de_DE.UTF-8",
+                          "ru": "ru_RU.UTF-8", "ar": "ar_EG.UTF-8"}
+            locale = locale_map.get(state["lang"], "en_US.UTF-8")
+            locale_base = locale.replace("UTF-8", "").strip()
+            chroot(f"sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen")
+            chroot(f"sed -i 's/^#{locale}/{locale}/' /etc/locale.gen")
             chroot("locale-gen")
-            chroot("echo 'LANG=en_US.UTF-8' > /etc/locale.conf")
+            chroot(f"echo 'LANG={locale}' > /etc/locale.conf")
             chroot(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
             chroot("hwclock --systohc")
             km = state['keymap']
@@ -870,6 +877,9 @@ class InstallerUI:
             self.set_progress(100.0)
 
     def _reboot_prompt(self):
+        self.done = True
+        self.stdscr.erase()
+        self.stdscr.refresh()
         if self.failed:
             while True:
                 try:
