@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.2-experimental"
+VERSION  = "V1.2.0"
 LOG_FILE = "/mnt/install_log.txt"
 TITLE    = "Arch Linux Installer"
 
@@ -31,6 +31,9 @@ state = {
     "yay":        False,
     "snapper":    False,
     "bootloader": "grub",
+    "luks":       False,
+    "luks_pass":  "",
+    "flatpak":    False,
 }
 
 DESKTOP_PKGS = {
@@ -65,8 +68,10 @@ DESKTOP_DM = {
     "LXQt":       "sddm",
 }
 
+
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
+
 
 def nowtag():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -77,6 +82,7 @@ def write_log(line):
             f.write(f"[{nowtag()}] {line}\n")
     except Exception:
         pass
+
 
 def dlg_titled(title, *args):
     cmd = [
@@ -149,11 +155,13 @@ def gauge_update(proc, pct, message):
     except Exception:
         pass
 
+
 def validate_name(n):
     return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", n or ""))
 
 def validate_swap(s):
     return bool(re.match(r"^\d+$", s or "")) and 1 <= int(s) <= 128
+
 
 def list_disks():
     try:
@@ -182,61 +190,31 @@ def partition_paths_for(disk_path):
         return f"{disk_path}p1", f"{disk_path}p2", f"{disk_path}p3"
     return f"{disk_path}1", f"{disk_path}2", f"{disk_path}3"
 
-def run_stream(cmd, on_line=None, ignore_error=False):
-    write_log(f"$ {cmd}")
-    p = subprocess.Popen(
-        cmd, shell=True, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, executable="/bin/bash"
-    )
-    buf = b""
-    while True:
-        chunk = p.stdout.read(512)
-        if chunk:
-            buf += chunk
-        else:
-            if p.poll() is not None:
-                break
-            time.sleep(0.02)
-            continue
-        parts = re.split(b"[\r\n]+", buf)
-        buf = parts[-1]
-        for part in parts[:-1]:
-            line = part.decode("utf-8", errors="replace").strip()
-            if line:
-                write_log(line)
-                if on_line:
-                    on_line(line)
-    if buf.strip():
-        line = buf.decode("utf-8", errors="replace").strip()
-        write_log(line)
-        if on_line:
-            on_line(line)
-    rc = p.wait()
-    if rc != 0 and not ignore_error:
-        write_log(f"ERROR (rc={rc}): {cmd}")
-    return rc
-
-def run_simple(cmd, ignore_error=False):
-    write_log(f"$ {cmd}")
-    r = subprocess.call(cmd, shell=True, executable="/bin/bash")
-    if r != 0 and not ignore_error:
-        write_log(f"ERROR (rc={r}): {cmd}")
-    return r
-
 def detect_gpu():
+    """Detect GPU(s). Returns 'NVIDIA', 'AMD', 'Intel', 'Intel+NVIDIA',
+    'Intel+AMD', or 'None'. Handles hybrid laptops."""
     try:
         out = subprocess.check_output(
             "lspci 2>/dev/null | grep -iE 'vga|3d|display'",
             shell=True, text=True, stderr=subprocess.DEVNULL
         ).lower()
-        if "nvidia" in out:
-            return "NVIDIA"
-        if "amd" in out or "radeon" in out:
-            return "AMD"
-        if "intel" in out:
-            return "Intel"
     except Exception:
-        pass
+        return "None"
+
+    has_nvidia = "nvidia" in out
+    has_amd    = "amd" in out or "radeon" in out
+    has_intel  = "intel" in out
+
+    if has_intel and has_nvidia:
+        return "Intel+NVIDIA"
+    if has_intel and has_amd:
+        return "Intel+AMD"
+    if has_nvidia:
+        return "NVIDIA"
+    if has_amd:
+        return "AMD"
+    if has_intel:
+        return "Intel"
     return "None"
 
 def detect_cpu():
@@ -252,6 +230,34 @@ def detect_cpu():
 
 def is_uefi():
     return os.path.exists("/sys/firmware/efi")
+
+def is_ssd(disk_path):
+    """Return True if the given disk is a solid-state drive."""
+    disk_name = disk_path.replace("/dev/", "")
+    disk_name = re.sub(r"p?\d+$", "", disk_name)
+    rotational = f"/sys/block/{disk_name}/queue/rotational"
+    try:
+        with open(rotational) as f:
+            return f.read().strip() == "0"
+    except Exception:
+        return False
+
+def suggest_swap_gb():
+    """Suggest a swap size based on total RAM (GiB)."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    kb  = int(line.split()[1])
+                    ram = kb // (1024 * 1024)
+                    if ram <= 2:  return 4
+                    if ram <= 8:  return ram
+                    if ram <= 16: return 8
+                    return 8
+    except Exception:
+        pass
+    return 8
+
 
 def _wifi_interfaces():
     try:
@@ -328,8 +334,6 @@ def screen_wifi_connect():
             )
         )
 
-    if ssid is None:
-        return None
     if not ssid:
         return None
 
@@ -361,10 +365,7 @@ def screen_wifi_connect():
     subprocess.call(cmd, shell=True)
     time.sleep(5)
 
-    ok = subprocess.call(
-        "ping -c1 -W2 8.8.8.8 >/dev/null 2>&1",
-        shell=True, executable="/bin/bash"
-    ) == 0
+    ok = _check_connectivity()
 
     if not ok:
         msgbox(
@@ -388,6 +389,19 @@ def screen_wifi_connect():
 
     return True
 
+
+def _check_connectivity():
+    """Check internet connectivity by trying archlinux.org first,
+    then falling back to 8.8.8.8.  Returns True if reachable."""
+    for cmd in (
+        "curl -sI --max-time 5 https://archlinux.org >/dev/null 2>&1",
+        "ping -c1 -W3 archlinux.org >/dev/null 2>&1",
+        "ping -c1 -W3 8.8.8.8 >/dev/null 2>&1",
+    ):
+        rc = subprocess.call(cmd, shell=True, executable="/bin/bash")
+        if rc == 0:
+            return True
+    return False
 
 def screen_network():
     while True:
@@ -423,11 +437,7 @@ def screen_network():
                 L("Testing wired connection…", "Probando conexión por cable…"),
                 "5", "50"
             )
-            ok = subprocess.call(
-                "ping -c1 -W3 8.8.8.8 >/dev/null 2>&1",
-                shell=True, executable="/bin/bash"
-            ) == 0
-            if ok:
+            if _check_connectivity():
                 msgbox(
                     L("Connected!", "¡Conectado!"),
                     L("Wired connection detected. Ready to continue.",
@@ -437,12 +447,12 @@ def screen_network():
             msgbox(
                 L("No connection detected", "Sin conexión detectada"),
                 L(
-                    "Could not reach the internet over the wired connection.\n\n"
+                    "Could not reach archlinux.org over the wired connection.\n\n"
                     "Check that:\n"
                     "  - The cable is securely plugged in\n"
                     "  - Your router/switch is on\n\n"
                     "Press OK to go back and choose again.",
-                    "No se pudo alcanzar internet por cable.\n\n"
+                    "No se pudo alcanzar archlinux.org por cable.\n\n"
                     "Verifica que:\n"
                     "  - El cable esté bien conectado\n"
                     "  - Tu router/switch esté encendido\n\n"
@@ -462,20 +472,14 @@ def screen_network():
                 return
 
 def ensure_network():
-    def ping():
-        return subprocess.call(
-            "ping -c1 -W2 8.8.8.8 >/dev/null 2>&1",
-            shell=True, executable="/bin/bash"
-        ) == 0
-
-    if ping():
+    if _check_connectivity():
         return True
 
     for tool in ("dhcpcd", "dhclient"):
         if shutil.which(tool):
             run_simple(f"{tool} >/dev/null 2>&1", ignore_error=True)
             time.sleep(3)
-            if ping():
+            if _check_connectivity():
                 return True
 
     if shutil.which("iwctl") and _wifi_interfaces():
@@ -488,10 +492,53 @@ def ensure_network():
 
     return False
 
+
 _PAT_INSTALL  = re.compile(r"\((\d+)/(\d+)\)")
 _PAT_DOWNLOAD = re.compile(
     r"\S+\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)/s"
 )
+
+def run_stream(cmd, on_line=None, ignore_error=False):
+    write_log(f"$ {cmd}")
+    p = subprocess.Popen(
+        cmd, shell=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, executable="/bin/bash"
+    )
+    buf = b""
+    while True:
+        chunk = p.stdout.read(512)
+        if chunk:
+            buf += chunk
+        else:
+            if p.poll() is not None:
+                break
+            time.sleep(0.02)
+            continue
+        parts = re.split(b"[\r\n]+", buf)
+        buf = parts[-1]
+        for part in parts[:-1]:
+            line = part.decode("utf-8", errors="replace").strip()
+            if line:
+                write_log(line)
+                if on_line:
+                    on_line(line)
+    if buf.strip():
+        line = buf.decode("utf-8", errors="replace").strip()
+        write_log(line)
+        if on_line:
+            on_line(line)
+    rc = p.wait()
+    if rc != 0 and not ignore_error:
+        write_log(f"ERROR (rc={rc}): {cmd}")
+    return rc
+
+def run_simple(cmd, ignore_error=False):
+    write_log(f"$ {cmd}")
+    r = subprocess.call(cmd, shell=True, executable="/bin/bash")
+    if r != 0 and not ignore_error:
+        write_log(f"ERROR (rc={r}): {cmd}")
+    return r
+
 
 class InstallBackend:
     def __init__(self, on_progress, on_stage, on_done):
@@ -500,6 +547,7 @@ class InstallBackend:
         self.on_done     = on_done
         self._progress   = 0.0
         self._lock       = threading.Lock()
+
 
     def _log(self, msg):
         write_log(msg)
@@ -520,6 +568,16 @@ class InstallBackend:
         for i in range(1, steps + 1):
             self._pct(base + (target - base) * (i / steps))
             time.sleep(delay)
+
+    def _run_critical(self, cmd, label="command"):
+        """Run a shell command; raise RuntimeError on failure."""
+        rc = run_stream(cmd, on_line=self._log)
+        if rc != 0:
+            raise RuntimeError(
+                L(f"{label} failed (rc={rc}). Check {LOG_FILE}.",
+                  f"{label} falló (rc={rc}). Revisa {LOG_FILE}.")
+            )
+        return rc
 
     def _pacman(self, cmd, start, end, ignore_error=False):
         half = start + (end - start) * 0.5
@@ -545,11 +603,28 @@ class InstallBackend:
         self._pct(end)
         return rc
 
+    def _pacman_critical(self, cmd, start, end, label="pacman"):
+        rc = self._pacman(cmd, start, end)
+        if rc != 0:
+            raise RuntimeError(
+                L(f"{label} failed (rc={rc}). Check {LOG_FILE}.",
+                  f"{label} falló (rc={rc}). Revisa {LOG_FILE}.")
+            )
+        return rc
+
     def _chroot(self, cmd, ignore_error=False):
         return run_stream(
             f"arch-chroot /mnt /bin/bash -c {shlex.quote(cmd)}",
             on_line=self._log, ignore_error=ignore_error
         )
+
+    def _chroot_critical(self, cmd, label="chroot"):
+        rc = self._chroot(cmd)
+        if rc != 0:
+            raise RuntimeError(
+                L(f"{label} failed (rc={rc}). Check {LOG_FILE}.",
+                  f"{label} falló (rc={rc}). Revisa {LOG_FILE}.")
+            )
 
     def _chroot_passwd(self, user, pwd):
         return run_stream(
@@ -558,50 +633,86 @@ class InstallBackend:
             on_line=self._log, ignore_error=True
         )
 
-    def _setup_btrfs(self, p3):
+
+    def _btrfs_opts(self, disk_path):
         opts = "noatime,compress=zstd,space_cache=v2"
-        run_stream(f"mkfs.btrfs -f {p3}",                on_line=self._log)
-        run_stream(f"mount {p3} /mnt",                   on_line=self._log)
-        run_stream("btrfs subvolume create /mnt/@",      on_line=self._log)
-        run_stream("btrfs subvolume create /mnt/@home",  on_line=self._log)
-        run_stream("btrfs subvolume create /mnt/@var",   on_line=self._log)
-        run_stream("btrfs subvolume create /mnt/@snapshots", on_line=self._log)
-        run_stream("umount /mnt",                        on_line=self._log)
-        run_stream(f"mount -o {opts},subvol=@ {p3} /mnt",              on_line=self._log)
-        run_stream("mkdir -p /mnt/{home,var,.snapshots}",               on_line=self._log)
-        run_stream(f"mount -o {opts},subvol=@home {p3} /mnt/home",     on_line=self._log)
-        run_stream(f"mount -o {opts},subvol=@var  {p3} /mnt/var",      on_line=self._log)
-        run_stream(f"mount -o {opts},subvol=@snapshots {p3} /mnt/.snapshots", on_line=self._log)
+        if is_ssd(disk_path):
+            opts += ",ssd,discard=async"
+            self._log(f"SSD detected on {disk_path} — adding ssd,discard=async to BTRFS opts")
+        return opts
+
+    def _setup_btrfs(self, p3, disk_path):
+        opts = self._btrfs_opts(disk_path)
+        self._run_critical(f"mkfs.btrfs -f {p3}",           "mkfs.btrfs")
+        self._run_critical(f"mount {p3} /mnt",               "mount btrfs")
+        self._run_critical("btrfs subvolume create /mnt/@",  "btrfs subvol @")
+        self._run_critical("btrfs subvolume create /mnt/@home",     "btrfs subvol @home")
+        self._run_critical("btrfs subvolume create /mnt/@var",      "btrfs subvol @var")
+        self._run_critical("btrfs subvolume create /mnt/@snapshots","btrfs subvol @snapshots")
+        self._run_critical("umount /mnt",                    "umount btrfs")
+        self._run_critical(f"mount -o {opts},subvol=@ {p3} /mnt",          "mount @")
+        self._run_critical("mkdir -p /mnt/{home,var,.snapshots}",           "mkdir")
+        self._run_critical(f"mount -o {opts},subvol=@home {p3} /mnt/home", "mount @home")
+        self._run_critical(f"mount -o {opts},subvol=@var  {p3} /mnt/var",  "mount @var")
+        self._run_critical(
+            f"mount -o {opts},subvol=@snapshots {p3} /mnt/.snapshots",     "mount @snapshots"
+        )
+
+
+    def _setup_luks(self, p3):
+        """Encrypt p3 with LUKS and open it as /dev/mapper/cryptroot."""
+        passphrase = state["luks_pass"]
+        self._stage(L("Encrypting partition with LUKS…", "Cifrando partición con LUKS…"))
+
+        tmp_key = "/tmp/luks_key"
+        with open(tmp_key, "w") as f:
+            f.write(passphrase)
+
+        self._run_critical(
+            f"cryptsetup luksFormat --batch-mode --key-file {tmp_key} {p3}",
+            "cryptsetup luksFormat"
+        )
+        self._run_critical(
+            f"cryptsetup open --key-file {tmp_key} {p3} cryptroot",
+            "cryptsetup open"
+        )
+        os.remove(tmp_key)
+        return "/dev/mapper/cryptroot"
+
 
     def _install_grub(self, disk_path):
         if is_uefi():
-            self._chroot(
+            self._chroot_critical(
                 "grub-install --target=x86_64-efi "
-                "--efi-directory=/boot/efi --bootloader-id=GRUB"
+                "--efi-directory=/boot/efi --bootloader-id=GRUB",
+                "grub-install UEFI"
             )
         else:
-            self._chroot(
-                f"grub-install --target=i386-pc {disk_path}"
+            self._chroot_critical(
+                f"grub-install --target=i386-pc {disk_path}",
+                "grub-install BIOS"
             )
-        self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
+        self._chroot_critical("grub-mkconfig -o /boot/grub/grub.cfg", "grub-mkconfig")
 
-    def _install_systemd_boot(self, p3):
+    def _install_systemd_boot(self, root_dev):
         """Install systemd-boot. ESP must be mounted at /mnt/boot."""
         run_stream(
             "bootctl --esp-path=/mnt/boot install",
             on_line=self._log, ignore_error=True
         )
 
+        fs        = state["filesystem"]
+        kernel    = state["kernel"]
+        microcode = detect_cpu()
+        luks      = state.get("luks", False)
+
         try:
             partuuid = subprocess.check_output(
-                f"blkid -s PARTUUID -o value {p3}",
+                f"blkid -s PARTUUID -o value {root_dev}",
                 shell=True, text=True
             ).strip()
         except Exception:
             partuuid = ""
-
-        kernel    = state["kernel"]
-        microcode = detect_cpu()
 
         loader_conf = (
             "default arch.conf\n"
@@ -615,20 +726,151 @@ class InstallBackend:
 
         ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
 
-        root_opt = f"PARTUUID={partuuid}" if partuuid else p3
+        if luks:
+            raw_p3 = state.get("_luks_raw_p3", root_dev)
+            try:
+                luks_uuid = subprocess.check_output(
+                    f"blkid -s UUID -o value {raw_p3}",
+                    shell=True, text=True
+                ).strip()
+            except Exception:
+                luks_uuid = ""
+            cryptdevice = f"cryptdevice=UUID={luks_uuid}:cryptroot" if luks_uuid else \
+                          f"cryptdevice={raw_p3}:cryptroot"
+            root_opt = f"root=/dev/mapper/cryptroot {cryptdevice}"
+        else:
+            root_opt = f"root=PARTUUID={partuuid}" if partuuid else f"root={root_dev}"
+
+        extra_opts = "rootflags=subvol=@ " if fs == "btrfs" else ""
 
         arch_conf = (
             f"title   Arch Linux\n"
             f"linux   /vmlinuz-{kernel}\n"
             f"{ucode_line}"
             f"initrd  /initramfs-{kernel}.img\n"
-            f"options root={root_opt} rw quiet\n"
+            f"options {root_opt} rw quiet {extra_opts}\n"
         )
         os.makedirs("/mnt/boot/loader/entries", exist_ok=True)
         with open("/mnt/boot/loader/entries/arch.conf", "w") as f:
             f.write(arch_conf)
 
         write_log("systemd-boot installed and configured.")
+
+
+    def _install_gpu_drivers(self, start_pct, end_pct):
+        gpu    = state["gpu"]
+        kernel = state["kernel"]
+
+        nvidia_pkg = "nvidia" if kernel == "linux" else "nvidia-dkms"
+
+        def _do(pkgs, label):
+            self._stage(L(f"Installing {label} drivers…", f"Instalando drivers {label}…"))
+            self._pacman(
+                f"arch-chroot /mnt pacman -S --noconfirm {pkgs}",
+                start_pct, end_pct, ignore_error=True
+            )
+
+        if gpu == "NVIDIA":
+            _do(f"{nvidia_pkg} nvidia-utils nvidia-settings", "NVIDIA")
+            self._configure_nvidia_modeset()
+
+        elif gpu == "AMD":
+            _do("mesa vulkan-radeon libva-mesa-driver", "AMD")
+
+        elif gpu == "Intel":
+            _do("mesa vulkan-intel intel-media-driver", "Intel")
+
+        elif gpu == "Intel+NVIDIA":
+            self._stage(L("Installing Intel+NVIDIA (hybrid) drivers…",
+                          "Instalando drivers Intel+NVIDIA (hybrid)…"))
+            self._pacman(
+                "arch-chroot /mnt pacman -S --noconfirm "
+                "mesa vulkan-intel intel-media-driver",
+                start_pct, start_pct + (end_pct - start_pct) * 0.4,
+                ignore_error=True
+            )
+            self._pacman(
+                f"arch-chroot /mnt pacman -S --noconfirm "
+                f"{nvidia_pkg} nvidia-utils nvidia-settings",
+                start_pct + (end_pct - start_pct) * 0.4, end_pct,
+                ignore_error=True
+            )
+            self._configure_nvidia_modeset()
+
+        elif gpu == "Intel+AMD":
+            _do("mesa vulkan-intel intel-media-driver vulkan-radeon libva-mesa-driver",
+                "Intel+AMD")
+
+        else:
+            self._pct(end_pct)
+
+    def _configure_nvidia_modeset(self):
+        """Enable nvidia_drm.modeset=1 via modprobe config."""
+        modprobe_conf = "options nvidia_drm modeset=1\n"
+        self._chroot(
+            f"mkdir -p /etc/modprobe.d && "
+            f"echo {shlex.quote(modprobe_conf)} > /etc/modprobe.d/nvidia.conf",
+            ignore_error=True
+        )
+        write_log("nvidia_drm modeset=1 configured in /etc/modprobe.d/nvidia.conf")
+
+
+    def _configure_mkinitcpio(self):
+        if state.get("luks"):
+            self._chroot(
+                "sed -i 's/\\bblock\\b filesystems/block encrypt filesystems/' "
+                "/etc/mkinitcpio.conf",
+                ignore_error=True
+            )
+            write_log("Added 'encrypt' hook to mkinitcpio.conf for LUKS.")
+        self._chroot_critical("mkinitcpio -P", "mkinitcpio")
+
+
+    def _configure_grub_cmdline(self, root_dev, raw_p3=None):
+        """Patch GRUB_CMDLINE_LINUX_DEFAULT and (for BTRFS) add rootflags."""
+        fs   = state["filesystem"]
+        luks = state.get("luks", False)
+
+        extra_parts = []
+
+        if luks and raw_p3:
+            try:
+                luks_uuid = subprocess.check_output(
+                    f"blkid -s UUID -o value {raw_p3}",
+                    shell=True, text=True
+                ).strip()
+                extra_parts.append(f"cryptdevice=UUID={luks_uuid}:cryptroot")
+                extra_parts.append("root=/dev/mapper/cryptroot")
+            except Exception:
+                pass
+
+        if fs == "btrfs":
+            extra_parts.append("rootflags=subvol=@")
+
+        if extra_parts:
+            extra = " ".join(extra_parts)
+            self._chroot(
+                f"sed -i 's|GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"|"
+                f"GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 {extra}\"|' /etc/default/grub",
+                ignore_error=True
+            )
+            write_log(f"GRUB cmdline extra: {extra}")
+
+
+    def _install_flatpak(self, uname):
+        self._stage(L("Installing Flatpak + Flathub…", "Instalando Flatpak + Flathub…"))
+        self._pacman(
+            "arch-chroot /mnt pacman -S --noconfirm flatpak",
+            98, 99, ignore_error=True
+        )
+        self._chroot(
+            f"su - {shlex.quote(uname)} -c "
+            "'flatpak remote-add --if-not-exists flathub "
+            "https://dl.flathub.org/repo/flathub.flatpakrepo'",
+            ignore_error=True
+        )
+        write_log("Flatpak + Flathub configured.")
+
 
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
@@ -638,15 +880,21 @@ class InstallBackend:
         microcode  = detect_cpu()
         uefi       = is_uefi()
         bootloader = state.get("bootloader", "grub")
+        luks       = state.get("luks", False)
+        uname      = state["username"]
 
         if bootloader == "systemd-boot" and not uefi:
             bootloader = "grub"
 
+        root_dev = p3
+
         try:
             self._stage(L("Checking network…", "Verificando red…"))
             if not ensure_network():
-                self.on_done(False, L("No network connection. Connect and retry.",
-                                      "Sin conexión de red. Conéctese e intente de nuevo."))
+                self.on_done(False, L(
+                    "No network connection. Connect and retry.",
+                    "Sin conexión de red. Conéctese e intente de nuevo."
+                ))
                 return
 
             run_stream("pacman -Sy --noconfirm archlinux-keyring",
@@ -665,44 +913,51 @@ class InstallBackend:
 
             self._stage(L("Wiping disk…", "Borrando disco…"))
             self._gradual(7)
-            run_stream(f"sgdisk -Z {disk_path}", on_line=self._log)
+            self._run_critical(f"sgdisk -Z {disk_path}", "sgdisk -Z")
             self._pct(8)
 
             self._stage(L("Creating partitions…", "Creando particiones…"))
             if uefi:
-                run_stream(f"sgdisk -n1:0:+1G -t1:ef00 {disk_path}", on_line=self._log)
+                self._run_critical(f"sgdisk -n1:0:+1G -t1:ef00 {disk_path}", "sgdisk EFI")
             else:
-                run_stream(f"sgdisk -n1:0:+1M -t1:ef02 {disk_path}", on_line=self._log)
-            run_stream(f"sgdisk -n2:0:+{state['swap']}G -t2:8200 {disk_path}", on_line=self._log)
-            run_stream(f"sgdisk -n3:0:0 -t3:8300 {disk_path}",              on_line=self._log)
+                self._run_critical(f"sgdisk -n1:0:+1M -t1:ef02 {disk_path}", "sgdisk BIOS boot")
+            self._run_critical(
+                f"sgdisk -n2:0:+{state['swap']}G -t2:8200 {disk_path}", "sgdisk swap"
+            )
+            self._run_critical(f"sgdisk -n3:0:0 -t3:8300 {disk_path}", "sgdisk root")
             self._pct(12)
 
             self._stage(L("Formatting partitions…", "Formateando particiones…"))
             if uefi:
-                run_stream(f"mkfs.fat -F32 {p1}", on_line=self._log)
-            run_stream(f"mkswap {p2}",        on_line=self._log)
-            run_stream(f"swapon {p2}",        on_line=self._log)
+                self._run_critical(f"mkfs.fat -F32 {p1}", "mkfs.fat")
+            self._run_critical(f"mkswap {p2}", "mkswap")
+            run_stream(f"swapon {p2}", on_line=self._log, ignore_error=True)
+
+            if luks:
+                state["_luks_raw_p3"] = p3
+                root_dev = self._setup_luks(p3)
 
             if fs == "btrfs":
-                self._setup_btrfs(p3)
+                self._setup_btrfs(root_dev, disk_path)
             else:
-                run_stream(f"mkfs.ext4 -F {p3}", on_line=self._log)
-                run_stream(f"mount {p3} /mnt",   on_line=self._log)
+                self._run_critical(f"mkfs.ext4 -F {root_dev}", "mkfs.ext4")
+                self._run_critical(f"mount {root_dev} /mnt", "mount root")
             self._pct(16)
 
             if uefi:
                 self._stage(L("Mounting EFI…", "Montando EFI…"))
                 if bootloader == "systemd-boot":
-                    run_stream("mkdir -p /mnt/boot",    on_line=self._log)
-                    run_stream(f"mount {p1} /mnt/boot", on_line=self._log)
+                    self._run_critical("mkdir -p /mnt/boot",    "mkdir /mnt/boot")
+                    self._run_critical(f"mount {p1} /mnt/boot", "mount ESP /mnt/boot")
                 else:
-                    run_stream("mkdir -p /mnt/boot/efi",    on_line=self._log)
-                    run_stream(f"mount {p1} /mnt/boot/efi", on_line=self._log)
+                    self._run_critical("mkdir -p /mnt/boot/efi",    "mkdir /mnt/boot/efi")
+                    self._run_critical(f"mount {p1} /mnt/boot/efi", "mount ESP /mnt/boot/efi")
             self._pct(18)
 
             ucode_pkg   = f" {microcode}" if microcode else ""
             extra_pkgs  = " btrfs-progs" if fs == "btrfs" else ""
             kernel_hdrs = f"{kernel}-headers"
+            luks_pkgs   = " cryptsetup" if luks else ""
 
             if bootloader == "systemd-boot":
                 boot_pkgs = " efibootmgr"
@@ -713,19 +968,15 @@ class InstallBackend:
             pkgs = (
                 f"base {kernel} linux-firmware {kernel_hdrs} sof-firmware "
                 f"base-devel{boot_pkgs} vim nano networkmanager git "
-                f"sudo bash-completion{extra_pkgs}{ucode_pkg}"
+                f"sudo bash-completion{extra_pkgs}{ucode_pkg}{luks_pkgs}"
             )
 
             self._stage(L("Installing base system — this may take a while…",
                           "Instalando sistema base — esto puede tardar…"))
-            rc = self._pacman(f"pacstrap -K /mnt {pkgs}", 18, 52)
-            if rc != 0:
-                self.on_done(False, L("pacstrap failed. Check " + LOG_FILE,
-                                      "pacstrap falló. Revisa " + LOG_FILE))
-                return
+            self._pacman_critical(f"pacstrap -K /mnt {pkgs}", 18, 52, "pacstrap")
 
             self._stage(L("Generating fstab…", "Generando fstab…"))
-            run_stream("genfstab -U /mnt >> /mnt/etc/fstab", on_line=self._log)
+            self._run_critical("genfstab -U /mnt >> /mnt/etc/fstab", "genfstab")
             self._pct(53)
 
             self._stage(L("Configuring hostname…", "Configurando hostname…"))
@@ -733,9 +984,11 @@ class InstallBackend:
             with open("/mnt/etc/hostname", "w") as f:
                 f.write(hn + "\n")
             with open("/mnt/etc/hosts", "w") as f:
-                f.write(f"127.0.0.1\tlocalhost\n"
-                        f"::1\t\tlocalhost\n"
-                        f"127.0.1.1\t{hn}.localdomain\t{hn}\n")
+                f.write(
+                    f"127.0.0.1\tlocalhost\n"
+                    f"::1\t\tlocalhost\n"
+                    f"127.0.1.1\t{hn}.localdomain\t{hn}\n"
+                )
             self._pct(55)
 
             self._stage(L("Configuring locale & timezone…",
@@ -744,57 +997,43 @@ class InstallBackend:
             locale_line = f"{locale} UTF-8"
             self._chroot("sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen")
             if locale != "en_US.UTF-8":
-                self._chroot(f"sed -i 's/^#{locale_line}/{locale_line}/' /etc/locale.gen",
-                             ignore_error=True)
-            self._chroot("locale-gen")
+                self._chroot(
+                    f"sed -i 's/^#{locale_line}/{locale_line}/' /etc/locale.gen",
+                    ignore_error=True
+                )
+            self._chroot_critical("locale-gen", "locale-gen")
             self._chroot(f"echo 'LANG={locale}' > /etc/locale.conf")
             self._chroot(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
             self._chroot("hwclock --systohc")
-            keymap_val = state['keymap']
-            self._chroot(f"echo 'KEYMAP={keymap_val}' > /etc/vconsole.conf")
+            self._chroot(f"echo 'KEYMAP={state[\"keymap\"]}' > /etc/vconsole.conf")
             self._pct(59)
 
             self._stage(L("Generating initramfs…", "Generando initramfs…"))
-            self._chroot("mkinitcpio -P")
+            self._configure_mkinitcpio()
             self._pct(63)
 
             self._stage(L("Setting passwords…", "Estableciendo contraseñas…"))
             self._chroot_passwd("root", state["root_pass"])
             self._pct(65)
 
-            uname = state["username"]
             self._stage(L(f"Creating user '{uname}'…", f"Creando usuario '{uname}'…"))
-            self._chroot(f"useradd -m -G wheel -s /bin/bash {shlex.quote(uname)}")
+            self._chroot_critical(
+                f"useradd -m -G wheel -s /bin/bash {shlex.quote(uname)}",
+                "useradd"
+            )
             self._chroot_passwd(uname, state["user_pass"])
-            self._chroot("sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/"
-                         "%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers")
+            self._chroot(
+                "sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/"
+                "%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers"
+            )
             self._pct(68)
 
             self._stage(L("Enabling NetworkManager…", "Habilitando NetworkManager…"))
             self._chroot("systemctl enable NetworkManager")
             self._pct(71)
 
-            gpu = state["gpu"]
-            if gpu == "NVIDIA":
-                self._stage(L("Installing NVIDIA drivers…", "Instalando drivers NVIDIA…"))
-                self._pacman(
-                    "arch-chroot /mnt pacman -S --noconfirm "
-                    "nvidia nvidia-utils nvidia-settings",
-                    71, 77, ignore_error=True)
-            elif gpu == "AMD":
-                self._stage(L("Installing AMD drivers…", "Instalando drivers AMD…"))
-                self._pacman(
-                    "arch-chroot /mnt pacman -S --noconfirm "
-                    "mesa vulkan-radeon libva-mesa-driver",
-                    71, 77, ignore_error=True)
-            elif gpu == "Intel":
-                self._stage(L("Installing Intel drivers…", "Instalando drivers Intel…"))
-                self._pacman(
-                    "arch-chroot /mnt pacman -S --noconfirm "
-                    "mesa vulkan-intel intel-media-driver",
-                    71, 77, ignore_error=True)
-            else:
-                self._pct(77)
+            self._install_gpu_drivers(71, 77)
+            self._pct(77)
 
             desktop = state["desktop"]
             if desktop != "None":
@@ -824,9 +1063,10 @@ class InstallBackend:
 
             if bootloader == "systemd-boot":
                 self._stage(L("Installing systemd-boot…", "Instalando systemd-boot…"))
-                self._install_systemd_boot(p3)
+                self._install_systemd_boot(root_dev)
             else:
                 self._stage(L("Installing GRUB bootloader…", "Instalando GRUB…"))
+                self._configure_grub_cmdline(root_dev, raw_p3=state.get("_luks_raw_p3"))
                 self._install_grub(disk_path)
             self._pct(97)
 
@@ -838,14 +1078,10 @@ class InstallBackend:
                     "snapper snap-pac grub-btrfs inotify-tools",
                     97, 98, ignore_error=True
                 )
-                self._chroot(
-                    "umount /.snapshots && rm -rf /.snapshots",
-                    ignore_error=True
-                )
+                self._chroot("umount /.snapshots && rm -rf /.snapshots", ignore_error=True)
                 self._chroot("snapper -c root create-config /")
                 self._chroot(
-                    "btrfs subvolume delete /.snapshots && "
-                    "mkdir /.snapshots",
+                    "btrfs subvolume delete /.snapshots && mkdir /.snapshots",
                     ignore_error=True
                 )
                 self._chroot("mount -a", ignore_error=True)
@@ -870,13 +1106,20 @@ class InstallBackend:
                 )
                 self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp")
 
+            if state.get("flatpak") and desktop != "None":
+                self._install_flatpak(uname)
+
             self._pct(100)
             self._stage(L("Installation complete!", "¡Instalación completa!"))
             self.on_done(True, "")
 
+        except RuntimeError as e:
+            self._log(f"CRITICAL ERROR: {e}")
+            self.on_done(False, str(e))
         except Exception as e:
             self._log(f"FATAL: {e}")
             self.on_done(False, str(e))
+
 
 def screen_welcome():
     boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS (Legacy)", "BIOS (Legacy)")
@@ -925,6 +1168,7 @@ def screen_mode():
         state["yay"]        = True
         state["snapper"]    = True
         state["bootloader"] = "grub"
+        state["swap"]       = str(suggest_swap_gb())
     return result == "quick"
 
 def screen_identity():
@@ -1071,11 +1315,17 @@ def screen_disk():
 
     state["disk"] = result.replace("/dev/", "")
 
+    suggested = str(suggest_swap_gb())
     while True:
         swap = inputbox(
             L("Swap Size", "Tamaño de Swap"),
-            L("Enter swap size in GB (1-128):", "Ingresa el tamaño del swap en GB (1-128):"),
-            state["swap"]
+            L(
+                f"Suggested swap size based on your RAM: {suggested} GB\n\n"
+                "Enter swap size in GB (1-128):",
+                f"Tamaño de swap sugerido según tu RAM: {suggested} GB\n\n"
+                "Ingresa el tamaño del swap en GB (1-128):"
+            ),
+            state.get("swap", suggested)
         )
         if swap is None:
             return False
@@ -1124,7 +1374,6 @@ def screen_kernel():
 
 def screen_bootloader():
     uefi = is_uefi()
-
     if not uefi:
         state["bootloader"] = "grub"
         return True
@@ -1149,10 +1398,10 @@ def screen_bootloader():
         L("Bootloader", "Gestor de arranque"),
         L(
             "Choose a bootloader:\n\n"
-            "  GRUB         works on uefi and bios legacy, feature-rich.\n"
+            "  GRUB         works on UEFI and BIOS legacy, feature-rich.\n"
             "  systemd-boot is faster, UEFI only.",
             "Elige un gestor de arranque:\n\n"
-            "  GRUB         uefi y bios legacy; completo.\n"
+            "  GRUB         UEFI y BIOS legacy; completo.\n"
             "  systemd-boot es más rápido, solo UEFI.",
         ),
         options,
@@ -1161,6 +1410,66 @@ def screen_bootloader():
     if result:
         state["bootloader"] = result
     return True
+
+def screen_luks():
+    result = radiolist(
+        L("Disk Encryption", "Cifrado de disco"),
+        L(
+            "Encrypt the root partition with LUKS2?\n\n"
+            "  YES — full disk encryption (you will enter a passphrase at every boot)\n"
+            "  NO  — no encryption",
+            "¿Cifrar la partición raíz con LUKS2?\n\n"
+            "  SÍ  — cifrado total (pedirá contraseña en cada arranque)\n"
+            "  NO  — sin cifrado"
+        ),
+        [
+            ("yes", L("Yes — encrypt with LUKS2 (recommended for laptops)",
+                      "Sí — cifrar con LUKS2 (recomendado para portátiles)")),
+            ("no",  L("No  — no encryption",
+                      "No  — sin cifrado")),
+        ],
+        default="yes" if state.get("luks") else "no"
+    )
+
+    if result != "yes":
+        state["luks"]      = False
+        state["luks_pass"] = ""
+        return True
+
+    while True:
+        lp1 = passwordbox(
+            L("LUKS Passphrase", "Contraseña LUKS"),
+            L(
+                "Enter LUKS encryption passphrase:\n"
+                "(This will be required at every boot — do NOT forget it!)",
+                "Ingresa la contraseña de cifrado LUKS:\n"
+                "(Se pedirá en cada arranque — ¡NO la olvides!)"
+            )
+        )
+        if lp1 is None:
+            state["luks"] = False
+            return True
+
+        lp2 = passwordbox(
+            L("LUKS Passphrase", "Contraseña LUKS"),
+            L("Confirm LUKS passphrase:", "Confirma la contraseña LUKS:")
+        )
+        if lp2 is None:
+            state["luks"] = False
+            return True
+
+        if not lp1:
+            msgbox(L("Error", "Error"),
+                   L("Passphrase cannot be empty.", "La contraseña no puede estar vacía."))
+            continue
+        if lp1 != lp2:
+            msgbox(L("Error", "Error"),
+                   L("Passphrases do not match.", "Las contraseñas no coinciden."))
+            continue
+
+        state["luks"]      = True
+        state["luks_pass"] = lp1
+        return True
 
 def screen_mirrors():
     result = radiolist(
@@ -1282,18 +1591,28 @@ def screen_gpu():
     if detected != "None" and state["gpu"] == "None":
         state["gpu"] = detected
 
-    color_map = {"NVIDIA": "\\Z3NVIDIA\\Zn", "AMD": "\\Z2AMD\\Zn", "Intel": "\\Z6Intel\\Zn"}
+    color_map = {
+        "NVIDIA":       "\\Z3NVIDIA\\Zn",
+        "AMD":          "\\Z2AMD\\Zn",
+        "Intel":        "\\Z6Intel\\Zn",
+        "Intel+NVIDIA": "\\Z6Intel\\Zn + \\Z3NVIDIA\\Zn (hybrid)",
+        "Intel+AMD":    "\\Z6Intel\\Zn + \\Z2AMD\\Zn (hybrid)",
+    }
     tag  = color_map.get(detected, "none")
     hint = L(f"Detected GPU: {tag}", f"GPU detectada: {tag}")
 
     options = [
-        ("NVIDIA", L("NVIDIA proprietary (nvidia + nvidia-utils)",
-                     "NVIDIA propietario (nvidia + nvidia-utils)")),
-        ("AMD",    L("AMD open-source (mesa + vulkan-radeon)",
-                     "AMD open-source (mesa + vulkan-radeon)")),
-        ("Intel",  L("Intel open-source (mesa + vulkan-intel + intel-media-driver)",
-                     "Intel open-source (mesa + vulkan-intel + intel-media-driver)")),
-        ("None",   L("No additional GPU drivers", "Sin drivers adicionales de GPU")),
+        ("NVIDIA",       L("NVIDIA proprietary (nvidia/nvidia-dkms + utils)",
+                           "NVIDIA propietario (nvidia/nvidia-dkms + utils)")),
+        ("AMD",          L("AMD open-source (mesa + vulkan-radeon)",
+                           "AMD open-source (mesa + vulkan-radeon)")),
+        ("Intel",        L("Intel open-source (mesa + vulkan-intel + intel-media-driver)",
+                           "Intel open-source (mesa + vulkan-intel + intel-media-driver)")),
+        ("Intel+NVIDIA", L("Intel + NVIDIA hybrid (Mesa + proprietary NVIDIA)",
+                           "Intel + NVIDIA híbrido (Mesa + NVIDIA propietario)")),
+        ("Intel+AMD",    L("Intel + AMD hybrid (Mesa + vulkan-radeon)",
+                           "Intel + AMD híbrido (Mesa + vulkan-radeon)")),
+        ("None",         L("No additional GPU drivers", "Sin drivers adicionales de GPU")),
     ]
     result = radiolist(
         L("GPU Drivers", "Drivers GPU"),
@@ -1346,6 +1665,32 @@ def screen_snapper():
         state["snapper"] = (result == "yes")
     return True
 
+def screen_flatpak():
+    if state["desktop"] == "None":
+        state["flatpak"] = False
+        return True
+    result = radiolist(
+        L("Flatpak", "Flatpak"),
+        L(
+            "Install Flatpak and add the Flathub repository?\n\n"
+            "Flatpak lets you install thousands of apps from Flathub\n"
+            "independently of Arch packages.",
+            "¿Instalar Flatpak y añadir el repositorio Flathub?\n\n"
+            "Flatpak permite instalar miles de aplicaciones de Flathub\n"
+            "de forma independiente a los paquetes de Arch."
+        ),
+        [
+            ("yes", L("Yes — install Flatpak + add Flathub",
+                      "Sí — instalar Flatpak + añadir Flathub")),
+            ("no",  L("No  — skip",
+                      "No  — omitir")),
+        ],
+        default="yes" if state.get("flatpak") else "no"
+    )
+    if result:
+        state["flatpak"] = (result == "yes")
+    return True
+
 def screen_review():
     microcode = detect_cpu() or L("none detected", "no detectado")
     quick_tag = L("  [Quick Install]", "  [Instalación rápida]") if state["quick"] else ""
@@ -1363,12 +1708,14 @@ def screen_review():
         ("Microcode",               microcode),
         ("Disk",                    f"/dev/{state['disk']}" if state["disk"] else "NOT SET"),
         ("Swap",                    f"{state['swap']} GB"),
+        ("LUKS",                    L("yes (encrypted)", "sí (cifrado)") if state.get("luks") else "no"),
         ("Mirrors",                 L("reflector (auto)", "reflector (auto)") if state["mirrors"] else L("default", "por defecto")),
         ("Keymap",                  state["keymap"]),
         ("Timezone",                state["timezone"]),
         ("Desktop",                 state["desktop"]),
         ("GPU",                     state["gpu"]),
         ("Audio",                   "pipewire" if state["desktop"] != "None" else L("none", "ninguno")),
+        ("Flatpak",                 L("yes", "sí") if state.get("flatpak") else "no"),
         ("yay",                     L("yes", "sí") if state["yay"] else "no"),
         ("snapper",                 L("yes", "sí") if state.get("snapper") else "no"),
     ]
@@ -1467,6 +1814,7 @@ def screen_finish():
         subprocess.run("reboot",         shell=True)
     sys.exit(0)
 
+
 def main():
     screen_welcome()
     screen_language()
@@ -1476,6 +1824,7 @@ def main():
     if quick:
         steps = [
             (L("Disk",      "Disco"),       screen_disk,      True),
+            (L("Encryption","Cifrado"),     screen_luks,      True),
             (L("Identity",  "Identidad"),   screen_identity,  True),
             (L("Passwords", "Contraseñas"), screen_passwords, True),
             (L("Review",    "Revisión"),    screen_review,    True),
@@ -1488,6 +1837,7 @@ def main():
             (L("Filesystem",  "Sistema archivos"), screen_filesystem,  True),
             (L("Kernel",      "Kernel"),           screen_kernel,      True),
             (L("Bootloader",  "Bootloader"),       screen_bootloader,  True),
+            (L("Encryption",  "Cifrado"),          screen_luks,        True),
             (L("Mirrors",     "Mirrors"),          screen_mirrors,     True),
             (L("Identity",    "Identidad"),        screen_identity,    True),
             (L("Passwords",   "Contraseñas"),      screen_passwords,   True),
@@ -1496,6 +1846,7 @@ def main():
             (L("Desktop",     "Escritorio"),       screen_desktop,     True),
             ("GPU",                                screen_gpu,         True),
             (L("yay",         "yay"),              screen_yay,         True),
+            (L("Flatpak",     "Flatpak"),          screen_flatpak,     True),
             (L("Snapshots",   "Snapshots"),        screen_snapper,     True),
             (L("Review",      "Revisión"),         screen_review,      True),
             (L("Install",     "Instalar"),         screen_install,     False),
