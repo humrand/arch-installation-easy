@@ -1005,7 +1005,8 @@ class InstallBackend:
             self._chroot(f"echo 'LANG={locale}' > /etc/locale.conf")
             self._chroot(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
             self._chroot("hwclock --systohc")
-            self._chroot(f"echo 'KEYMAP={state[\"keymap\"]}' > /etc/vconsole.conf")
+            keymap_val = state['keymap']
+            self._chroot(f"echo 'KEYMAP={keymap_val}' > /etc/vconsole.conf")
             self._pct(59)
 
             self._stage(L("Generating initramfs…", "Generando initramfs…"))
