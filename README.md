@@ -53,11 +53,4 @@ The ISO image is available in the releases.
 ## Requirements
 
 - Internet connection  
-- UEFI system 
 
-## Usage
-
-### Boot into Arch ISO
-
-1. Boot from the Arch ISO  
-2. Run the installer:
