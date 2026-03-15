@@ -8,22 +8,23 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.1-stable"
+VERSION  = "V1.2.0-stable"
 LOG_FILE = "/mnt/install_log.txt"
 TITLE    = "Arch Linux Installer"
 
 state = {
-    "lang":      "en",
-    "hostname":  "",
-    "username":  "",
-    "root_pass": "",
-    "user_pass": "",
-    "swap":      "8",
-    "disk":      None,
-    "desktop":   "None",
-    "gpu":       "None",
-    "keymap":    "us",
-    "timezone":  "UTC",
+    "lang":       "en",
+    "hostname":   "",
+    "username":   "",
+    "root_pass":  "",
+    "user_pass":  "",
+    "swap":       "8",
+    "disk":       None,
+    "desktop":    "None",
+    "gpu":        "None",
+    "keymap":     "us",
+    "timezone":   "UTC",
+    "filesystem": "ext4",
 }
 
 def L(en, es):
@@ -39,7 +40,6 @@ def write_log(line):
     except Exception:
         pass
 
-
 def dlg(*args):
     cmd = [
         "dialog",
@@ -50,7 +50,6 @@ def dlg(*args):
     cmd.extend(args)
     result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
     return result.returncode, result.stderr.strip()
-
 
 def dlg_titled(title, *args):
     cmd = [
@@ -63,15 +62,12 @@ def dlg_titled(title, *args):
     result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
     return result.returncode, result.stderr.strip()
 
-
 def msgbox(title, text):
     dlg_titled(title, "--msgbox", text, "0", "0")
-
 
 def yesno(title, text):
     rc, _ = dlg_titled(title, "--yesno", text, "0", "0")
     return rc == 0
-
 
 def inputbox(title, text, init=""):
     rc, val = dlg_titled(title, "--inputbox", text, "0", "60", init)
@@ -79,13 +75,11 @@ def inputbox(title, text, init=""):
         return None
     return val
 
-
 def passwordbox(title, text):
     rc, val = dlg_titled(title, "--insecure", "--passwordbox", text, "0", "60")
     if rc != 0:
         return None
     return val
-
 
 def menu(title, text, items):
     flat = []
@@ -97,7 +91,6 @@ def menu(title, text, items):
         return None
     return val
 
-
 def radiolist(title, text, items, default=None):
     flat = []
     for tag, desc in items:
@@ -108,7 +101,6 @@ def radiolist(title, text, items, default=None):
     if rc != 0:
         return None
     return val
-
 
 def gauge_open(title, text, pct=0):
     proc = subprocess.Popen(
@@ -124,7 +116,6 @@ def gauge_open(title, text, pct=0):
     )
     return proc
 
-
 def gauge_update(proc, pct, message):
     try:
         proc.stdin.write(f"XXX\n{int(pct)}\n{message}\nXXX\n")
@@ -132,14 +123,11 @@ def gauge_update(proc, pct, message):
     except Exception:
         pass
 
-
 def validate_name(n):
     return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", n or ""))
 
-
 def validate_swap(s):
     return bool(re.match(r"^\d+$", s or "")) and 1 <= int(s) <= 128
-
 
 def list_disks():
     try:
@@ -163,12 +151,10 @@ def list_disks():
         disks.append((name, size_gb, model))
     return disks
 
-
 def partition_paths_for(disk_path):
     if "nvme" in disk_path or "mmcblk" in disk_path:
         return f"{disk_path}p1", f"{disk_path}p2", f"{disk_path}p3"
     return f"{disk_path}1", f"{disk_path}2", f"{disk_path}3"
-
 
 def run_stream(cmd, on_line=None, ignore_error=False):
     write_log(f"$ {cmd}")
@@ -204,7 +190,6 @@ def run_stream(cmd, on_line=None, ignore_error=False):
         write_log(f"ERROR (rc={rc}): {cmd}")
     return rc
 
-
 def run_simple(cmd, ignore_error=False):
     write_log(f"$ {cmd}")
     r = subprocess.call(cmd, shell=True, executable="/bin/bash")
@@ -212,6 +197,110 @@ def run_simple(cmd, ignore_error=False):
         write_log(f"ERROR (rc={r}): {cmd}")
     return r
 
+def detect_gpu():
+    try:
+        out = subprocess.check_output(
+            "lspci 2>/dev/null | grep -iE 'vga|3d|display'",
+            shell=True, text=True, stderr=subprocess.DEVNULL
+        ).lower()
+        if "nvidia" in out:
+            return "NVIDIA"
+        if "amd" in out or "radeon" in out or "intel" in out:
+            return "AMD/Intel"
+    except Exception:
+        pass
+    return "None"
+
+def _wifi_interfaces():
+    try:
+        out = subprocess.check_output(
+            "ls /sys/class/net/", shell=True, text=True
+        )
+        return [i for i in out.split() if i.startswith(("wlan", "wlp", "wlo"))]
+    except Exception:
+        return []
+
+def screen_wifi_connect():
+    ifaces = _wifi_interfaces()
+    if not ifaces:
+        msgbox(
+            L("WiFi", "WiFi"),
+            L("No wireless interfaces found.", "No se encontraron interfaces inalámbricas.")
+        )
+        return False
+
+    iface = ifaces[0]
+
+    subprocess.call(
+        f"iwctl station {shlex.quote(iface)} scan",
+        shell=True, stderr=subprocess.DEVNULL
+    )
+    time.sleep(3)
+
+    try:
+        raw = subprocess.check_output(
+            f"iwctl station {shlex.quote(iface)} get-networks 2>/dev/null",
+            shell=True, text=True
+        )
+        ssids = []
+        for line in raw.splitlines()[4:]:
+            line = line.strip().lstrip("> ").strip()
+            parts = line.split()
+            if parts and not parts[0].startswith("-") and parts[0] != "Network":
+                ssids.append(parts[0])
+        ssids = list(dict.fromkeys(ssids))[:15]
+    except Exception:
+        ssids = []
+
+    if ssids:
+        items = [(s, s) for s in ssids]
+        ssid = radiolist(
+            L("WiFi Networks", "Redes WiFi"),
+            L(f"Interface: {iface}\nSelect a network:",
+              f"Interfaz: {iface}\nSelecciona una red:"),
+            items
+        )
+    else:
+        ssid = inputbox(
+            L("WiFi — SSID", "WiFi — SSID"),
+            L(f"Interface: {iface}\nEnter network name (SSID):",
+              f"Interfaz: {iface}\nIngresa el nombre de la red (SSID):")
+        )
+
+    if not ssid:
+        return False
+
+    passphrase = passwordbox(
+        L("WiFi Password", "Contraseña WiFi"),
+        L(f"Password for '{ssid}' (leave blank if open):",
+          f"Contraseña de '{ssid}' (vacío si es abierta):")
+    )
+    if passphrase is None:
+        return False
+
+    if passphrase:
+        cmd = (
+            f"iwctl --passphrase {shlex.quote(passphrase)} "
+            f"station {shlex.quote(iface)} connect {shlex.quote(ssid)}"
+        )
+    else:
+        cmd = f"iwctl station {shlex.quote(iface)} connect {shlex.quote(ssid)}"
+
+    subprocess.call(cmd, shell=True)
+    time.sleep(5)
+
+    ok = subprocess.call(
+        "ping -c1 -W2 8.8.8.8 >/dev/null 2>&1",
+        shell=True, executable="/bin/bash"
+    ) == 0
+
+    if not ok:
+        msgbox(
+            L("WiFi Failed", "WiFi fallido"),
+            L(f"Could not connect to '{ssid}'.\nCheck the password and try again.",
+              f"No se pudo conectar a '{ssid}'.\nVerifica la contraseña e intenta de nuevo.")
+        )
+    return ok
 
 def ensure_network():
     def ping():
@@ -219,22 +308,31 @@ def ensure_network():
             "ping -c1 -W2 8.8.8.8 >/dev/null 2>&1",
             shell=True, executable="/bin/bash"
         ) == 0
+
     if ping():
         return True
+
     for tool in ("dhcpcd", "dhclient"):
         if shutil.which(tool):
             run_simple(f"{tool} >/dev/null 2>&1", ignore_error=True)
             time.sleep(3)
             if ping():
                 return True
-    return False
 
+    if shutil.which("iwctl") and _wifi_interfaces():
+        if yesno(
+            L("No network detected", "Sin red detectada"),
+            L("No wired connection found.\nConnect via WiFi?",
+              "No se detectó conexión cableada.\n¿Conectar por WiFi?")
+        ):
+            return screen_wifi_connect()
+
+    return False
 
 _PAT_INSTALL  = re.compile(r"\((\d+)/(\d+)\)")
 _PAT_DOWNLOAD = re.compile(
     r"\S+\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)/s"
 )
-
 
 class InstallBackend:
     def __init__(self, on_progress, on_stage, on_done):
@@ -301,9 +399,25 @@ class InstallBackend:
             on_line=self._log, ignore_error=True
         )
 
+    def _setup_btrfs(self, p3):
+        opts = "noatime,compress=zstd,space_cache=v2"
+        run_stream(f"mkfs.btrfs -f {p3}",          on_line=self._log)
+        run_stream(f"mount {p3} /mnt",              on_line=self._log)
+        run_stream("btrfs subvolume create /mnt/@", on_line=self._log)
+        run_stream("btrfs subvolume create /mnt/@home", on_line=self._log)
+        run_stream("btrfs subvolume create /mnt/@var",  on_line=self._log)
+        run_stream("btrfs subvolume create /mnt/@snapshots", on_line=self._log)
+        run_stream("umount /mnt", on_line=self._log)
+        run_stream(f"mount -o {opts},subvol=@ {p3} /mnt",          on_line=self._log)
+        run_stream("mkdir -p /mnt/{home,var,.snapshots}",           on_line=self._log)
+        run_stream(f"mount -o {opts},subvol=@home {p3} /mnt/home", on_line=self._log)
+        run_stream(f"mount -o {opts},subvol=@var  {p3} /mnt/var",  on_line=self._log)
+        run_stream(f"mount -o {opts},subvol=@snapshots {p3} /mnt/.snapshots", on_line=self._log)
+
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
         p1, p2, p3 = partition_paths_for(disk_path)
+        fs         = state["filesystem"]
 
         try:
             self._stage(L("Checking network…", "Verificando red…"))
@@ -330,20 +444,28 @@ class InstallBackend:
             run_stream(f"mkfs.fat -F32 {p1}", on_line=self._log)
             run_stream(f"mkswap {p2}",        on_line=self._log)
             run_stream(f"swapon {p2}",        on_line=self._log)
-            run_stream(f"mkfs.ext4 -F {p3}", on_line=self._log)
+
+            if fs == "btrfs":
+                self._setup_btrfs(p3)
+            else:
+                run_stream(f"mkfs.ext4 -F {p3}", on_line=self._log)
+                run_stream(f"mount {p3} /mnt",   on_line=self._log)
+
             self._pct(15)
 
-            self._stage(L("Mounting filesystems…", "Montando sistemas de archivos…"))
-            run_stream(f"mount {p3} /mnt",          on_line=self._log)
+            self._stage(L("Mounting EFI…", "Montando EFI…"))
             run_stream("mkdir -p /mnt/boot/efi",    on_line=self._log)
             run_stream(f"mount {p1} /mnt/boot/efi", on_line=self._log)
             self._pct(18)
 
+            extra_pkgs = " btrfs-progs" if fs == "btrfs" else ""
             self._stage(L("Installing base system — this may take a while…",
                           "Instalando sistema base — esto puede tardar…"))
-            pkgs = ("base linux linux-firmware linux-headers sof-firmware "
-                    "base-devel grub efibootmgr vim nano networkmanager "
-                    "sudo bash-completion")
+            pkgs = (
+                "base linux linux-firmware linux-headers sof-firmware "
+                "base-devel grub efibootmgr vim nano networkmanager "
+                f"sudo bash-completion{extra_pkgs}"
+            )
             rc = self._pacman(f"pacstrap -K /mnt {pkgs}", 18, 52)
             if rc != 0:
                 self.on_done(False, L("pacstrap failed. Check " + LOG_FILE,
@@ -444,13 +566,12 @@ class InstallBackend:
                          "--efi-directory=/boot/efi --bootloader-id=GRUB")
             self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
             self._pct(100)
-            self._stage(L("Installation complete!", "Instalacion completa!"))
+            self._stage(L("Installation complete!", "¡Instalación completa!"))
             self.on_done(True, "")
 
         except Exception as e:
             self._log(f"FATAL: {e}")
             self.on_done(False, str(e))
-
 
 def screen_welcome():
     text = (
@@ -462,7 +583,6 @@ def screen_welcome():
     )
     dlg_titled("Welcome", "--msgbox", text, "16", "60")
 
-
 def screen_language():
     result = menu(
         "Language / Idioma",
@@ -472,38 +592,37 @@ def screen_language():
     if result:
         state["lang"] = result
 
-
 def screen_identity():
     while True:
         hn = inputbox(
             L("System Identity", "Identidad del sistema"),
             L("Enter hostname (letters, digits, -, _ — max 32 chars):",
-              "Ingresa el nombre del equipo (letras, digitos, -, _ — max 32):"),
+              "Ingresa el nombre del equipo (letras, dígitos, -, _ — max 32):"),
             state.get("hostname", "")
         )
         if hn is None:
             return False
         if not validate_name(hn):
             msgbox(
-                L("Invalid hostname", "Hostname invalido"),
+                L("Invalid hostname", "Hostname inválido"),
                 L("Only letters, digits, hyphens and underscores. Max 32 chars.",
-                  "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres.")
+                  "Solo letras, dígitos, guiones y guiones bajos. Max 32 caracteres.")
             )
             continue
 
         un = inputbox(
             L("System Identity", "Identidad del sistema"),
             L("Enter username (letters, digits, -, _ — max 32 chars):",
-              "Ingresa el nombre de usuario (letras, digitos, -, _ — max 32):"),
+              "Ingresa el nombre de usuario (letras, dígitos, -, _ — max 32):"),
             state.get("username", "")
         )
         if un is None:
             return False
         if not validate_name(un):
             msgbox(
-                L("Invalid username", "Usuario invalido"),
+                L("Invalid username", "Usuario inválido"),
                 L("Only letters, digits, hyphens and underscores. Max 32 chars.",
-                  "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres.")
+                  "Solo letras, dígitos, guiones y guiones bajos. Max 32 caracteres.")
             )
             continue
 
@@ -511,59 +630,57 @@ def screen_identity():
         state["username"] = un
         return True
 
-
 def screen_passwords():
     while True:
         rp1 = passwordbox(
-            L("Passwords", "Contrasenas"),
-            L("Enter ROOT password:", "Ingresa la contrasena de ROOT:")
+            L("Passwords", "Contraseñas"),
+            L("Enter ROOT password:", "Ingresa la contraseña de ROOT:")
         )
         if rp1 is None:
             return False
 
         rp2 = passwordbox(
-            L("Passwords", "Contrasenas"),
-            L("Confirm ROOT password:", "Confirma la contrasena de ROOT:")
+            L("Passwords", "Contraseñas"),
+            L("Confirm ROOT password:", "Confirma la contraseña de ROOT:")
         )
         if rp2 is None:
             return False
 
         if not rp1:
             msgbox(L("Error", "Error"), L("Root password cannot be empty.",
-                                          "La contrasena root no puede estar vacia."))
+                                          "La contraseña root no puede estar vacía."))
             continue
         if rp1 != rp2:
             msgbox(L("Error", "Error"), L("Root passwords do not match.",
-                                          "Las contrasenas root no coinciden."))
+                                          "Las contraseñas root no coinciden."))
             continue
 
         up1 = passwordbox(
-            L("Passwords", "Contrasenas"),
-            L("Enter USER password:", "Ingresa la contrasena de USUARIO:")
+            L("Passwords", "Contraseñas"),
+            L("Enter USER password:", "Ingresa la contraseña de USUARIO:")
         )
         if up1 is None:
             return False
 
         up2 = passwordbox(
-            L("Passwords", "Contrasenas"),
-            L("Confirm USER password:", "Confirma la contrasena de USUARIO:")
+            L("Passwords", "Contraseñas"),
+            L("Confirm USER password:", "Confirma la contraseña de USUARIO:")
         )
         if up2 is None:
             return False
 
         if not up1:
             msgbox(L("Error", "Error"), L("User password cannot be empty.",
-                                          "La contrasena de usuario no puede estar vacia."))
+                                          "La contraseña de usuario no puede estar vacía."))
             continue
         if up1 != up2:
             msgbox(L("Error", "Error"), L("User passwords do not match.",
-                                          "Las contrasenas de usuario no coinciden."))
+                                          "Las contraseñas de usuario no coinciden."))
             continue
 
         state["root_pass"] = rp1
         state["user_pass"] = up1
         return True
-
 
 def screen_disk():
     disks = list_disks()
@@ -579,9 +696,9 @@ def screen_disk():
     default = f"/dev/{state['disk']}" if state["disk"] else items[0][0]
 
     result = radiolist(
-        L("Disk Selection", "Seleccion de disco"),
+        L("Disk Selection", "Selección de disco"),
         L("WARNING: ALL DATA on the selected disk will be ERASED!\n\nSelect the installation disk:",
-          "ADVERTENCIA: Se borraran todos los datos del disco seleccionado!\n\nSelecciona el disco:"),
+          "ADVERTENCIA: ¡Se borrarán todos los datos del disco seleccionado!\n\nSelecciona el disco:"),
         items,
         default=default
     )
@@ -591,8 +708,8 @@ def screen_disk():
 
     while True:
         swap = inputbox(
-            L("Swap Size", "Tamano de Swap"),
-            L("Enter swap size in GB (1-128):", "Ingresa el tamano del swap en GB (1-128):"),
+            L("Swap Size", "Tamaño de Swap"),
+            L("Enter swap size in GB (1-128):", "Ingresa el tamaño del swap en GB (1-128):"),
             state["swap"]
         )
         if swap is None:
@@ -600,10 +717,26 @@ def screen_disk():
         if validate_swap(swap.strip()):
             state["swap"] = swap.strip()
             return True
-        msgbox(L("Invalid swap", "Swap invalido"),
+        msgbox(L("Invalid swap", "Swap inválido"),
                L("Swap must be a number between 1 and 128.",
-                 "El swap debe ser un numero entre 1 y 128."))
+                 "El swap debe ser un número entre 1 y 128."))
 
+def screen_filesystem():
+    options = [
+        ("ext4",  L("ext4  — stable, widely supported",
+                    "ext4  — estable, amplio soporte")),
+        ("btrfs", L("btrfs — subvolumes (@, @home, @var, @snapshots) + zstd compression",
+                    "btrfs — subvolúmenes (@, @home, @var, @snapshots) + compresión zstd")),
+    ]
+    result = radiolist(
+        L("Filesystem", "Sistema de archivos"),
+        L("Choose the root filesystem:", "Elige el sistema de archivos raíz:"),
+        options,
+        default=state["filesystem"]
+    )
+    if result:
+        state["filesystem"] = result
+    return True
 
 def screen_keymap():
     try:
@@ -620,8 +753,8 @@ def screen_keymap():
     items   = [(m, f"Keyboard layout: {m}") for m in options]
 
     result = radiolist(
-        L("Keyboard Layout", "Distribucion de teclado"),
-        L("Select your keyboard layout:", "Selecciona la distribucion de tu teclado:"),
+        L("Keyboard Layout", "Distribución de teclado"),
+        L("Select your keyboard layout:", "Selecciona la distribución de tu teclado:"),
         items,
         default=state["keymap"]
     )
@@ -629,7 +762,6 @@ def screen_keymap():
         state["keymap"] = result
         run_simple(f"loadkeys {shlex.quote(result)}", ignore_error=True)
     return True
-
 
 def screen_timezone():
     try:
@@ -650,8 +782,8 @@ def screen_timezone():
 
     cur_region = state["timezone"].split("/")[0] if "/" in state["timezone"] else "UTC"
     region = radiolist(
-        L("Timezone — Region", "Zona horaria — Region"),
-        L("Select your region:", "Selecciona tu region:"),
+        L("Timezone — Region", "Zona horaria — Región"),
+        L("Select your region:", "Selecciona tu región:"),
         region_items,
         default=cur_region
     )
@@ -677,7 +809,7 @@ def screen_timezone():
     city = radiolist(
         L("Timezone — City", "Zona horaria — Ciudad"),
         L(f"Region: {region}\nSelect your city:",
-          f"Region: {region}\nSelecciona tu ciudad:"),
+          f"Región: {region}\nSelecciona tu ciudad:"),
         city_items,
         default=cur_city
     )
@@ -685,20 +817,15 @@ def screen_timezone():
         state["timezone"] = f"{region}/{city}"
     return True
 
-
 def screen_desktop():
     options = [
-        ("KDE Plasma", L("Full KDE desktop",
-                         "KDE completo")),
-        ("Cinnamon",   L("Classic Cinnamon desktop",
-                         "Escritorio Cinnamon clasico")),
-        ("None",       L("No desktop — command line only",
-                         "Sin escritorio — solo linea de comandos")),
+        ("KDE Plasma", L("Full KDE desktop",        "KDE completo")),
+        ("Cinnamon",   L("Classic Cinnamon desktop", "Escritorio Cinnamon clásico")),
+        ("None",       L("No desktop — CLI only",    "Sin escritorio — solo terminal")),
     ]
     result = radiolist(
         L("Desktop Environment", "Entorno de escritorio"),
-        L("Choose a desktop environment to install:",
-          "Elige un entorno de escritorio a instalar:"),
+        L("Choose a desktop environment:", "Elige un entorno de escritorio:"),
         options,
         default=state["desktop"]
     )
@@ -706,19 +833,25 @@ def screen_desktop():
         state["desktop"] = result
     return True
 
-
 def screen_gpu():
+    detected = detect_gpu()
+
+    if detected != "None" and state["gpu"] == "None":
+        state["gpu"] = detected
+
+    tag = {"NVIDIA": "\\Z3NVIDIA\\Zn", "AMD/Intel": "\\Z2AMD/Intel\\Zn"}.get(detected, "none")
+    hint = L(f"Detected GPU: {tag}", f"GPU detectada: {tag}")
+
     options = [
-        ("NVIDIA",    L("NVIDIA proprietary drivers (nvidia + nvidia-utils)",
-                        "Drivers propietarios NVIDIA (nvidia + nvidia-utils)")),
-        ("AMD/Intel", L("Open-source Mesa drivers (mesa + vulkan-radeon)",
-                        "Drivers open-source Mesa (mesa + vulkan-radeon)")),
-        ("None",      L("No additional GPU drivers",
-                        "Sin drivers adicionales de GPU")),
+        ("NVIDIA",    L("NVIDIA proprietary (nvidia + nvidia-utils)",
+                        "NVIDIA propietario (nvidia + nvidia-utils)")),
+        ("AMD/Intel", L("Open-source Mesa (mesa + vulkan-radeon)",
+                        "Mesa open-source (mesa + vulkan-radeon)")),
+        ("None",      L("No additional GPU drivers", "Sin drivers adicionales de GPU")),
     ]
     result = radiolist(
         L("GPU Drivers", "Drivers GPU"),
-        L("Select your GPU driver:", "Selecciona el driver de tu GPU:"),
+        L(f"{hint}\n\nSelect GPU driver:", f"{hint}\n\nSelecciona el driver de GPU:"),
         options,
         default=state["gpu"]
     )
@@ -726,15 +859,12 @@ def screen_gpu():
         state["gpu"] = result
     return True
 
-
 def screen_review():
-    DEFAULTS = {"swap": "8", "desktop": "None", "gpu": "None",
-                "keymap": "us", "timezone": "UTC"}
-
     lines = [
         ("Language",                state["lang"]),
         ("Hostname",                state["hostname"] or "NOT SET"),
         (L("Username", "Usuario"),  state["username"] or "NOT SET"),
+        ("Filesystem",              state["filesystem"]),
         ("Disk",                    f"/dev/{state['disk']}" if state["disk"] else "NOT SET"),
         ("Swap",                    f"{state['swap']} GB"),
         ("Keymap",                  state["keymap"]),
@@ -744,7 +874,7 @@ def screen_review():
     ]
 
     text = L("Review your settings before installing:\n\n",
-             "Revisa tu configuracion antes de instalar:\n\n")
+             "Revisa tu configuración antes de instalar:\n\n")
 
     missing = []
     for label, val in lines:
@@ -754,12 +884,12 @@ def screen_review():
     if not state["hostname"]:  missing.append("hostname")
     if not state["username"]:  missing.append("username")
     if not state["disk"]:      missing.append("disk")
-    if not state["root_pass"]: missing.append(L("root password", "contrasena root"))
+    if not state["root_pass"]: missing.append(L("root password", "contraseña root"))
 
     if missing:
         text += L(f"MISSING: {', '.join(missing)}\n\nGo back to fix before continuing.",
-                  f"FALTA: {', '.join(missing)}\n\nVuelve atras para corregirlo.")
-        msgbox(L("Review — Incomplete", "Revision — Incompleto"), text)
+                  f"FALTA: {', '.join(missing)}\n\nVuelve atrás para corregirlo.")
+        msgbox(L("Review — Incomplete", "Revisión — Incompleto"), text)
         return False
 
     text += L("All settings look good.", "Todo listo.")
@@ -768,11 +898,10 @@ def screen_review():
         L("Review & Confirm", "Revisar y confirmar"),
         text + L(
             f"\n\nWARNING: THIS WILL ERASE /dev/{state['disk']}.\n\nProceed with installation?",
-            f"\n\nADVERTENCIA: SE BORRARA /dev/{state['disk']}.\n\nProceder con la instalacion?"
+            f"\n\nADVERTENCIA: SE BORRARÁ /dev/{state['disk']}.\n\n¿Proceder con la instalación?"
         )
     )
     return ok
-
 
 def screen_install():
     gauge = gauge_open(
@@ -814,22 +943,21 @@ def screen_install():
 
     if failed[0]:
         msgbox(
-            L("Installation Failed", "Instalacion fallida"),
+            L("Installation Failed", "Instalación fallida"),
             L(f"Installation failed.\n\n{fail_reason[0]}\n\nCheck {LOG_FILE} for full details.",
-              f"La instalacion fallo.\n\n{fail_reason[0]}\n\nRevisa {LOG_FILE} para mas detalles.")
+              f"La instalación falló.\n\n{fail_reason[0]}\n\nRevisa {LOG_FILE} para más detalles.")
         )
         return False
 
     return True
 
-
 def screen_finish():
     ok = yesno(
-        L("Installation Complete!", "Instalacion completa!"),
+        L("Installation Complete!", "¡Instalación completa!"),
         L("Arch Linux has been installed successfully.\n\n"
-          "Remove the installation media. reboot now?",
+          "Remove the installation media. Reboot now?",
           "Arch Linux se ha instalado correctamente.\n\n"
-          "Extrae el medio de instalacion. Reiniciar ahora?")
+          "Extrae el medio de instalación. ¿Reiniciar ahora?")
     )
     if ok:
         dlg_titled(
@@ -843,21 +971,21 @@ def screen_finish():
         subprocess.run("reboot",         shell=True)
     sys.exit(0)
 
-
 def main():
     steps = [
-        ("Welcome",                        screen_welcome,   False),
-        ("Language",                        screen_language,  False),
-        (L("Identity", "Identidad"),        screen_identity,  True),
-        (L("Passwords", "Contrasenas"),     screen_passwords, True),
-        (L("Disk", "Disco"),                screen_disk,      True),
-        (L("Keymap", "Teclado"),            screen_keymap,    True),
-        (L("Timezone", "Zona horaria"),     screen_timezone,  True),
-        (L("Desktop", "Escritorio"),        screen_desktop,   True),
-        ("GPU",                             screen_gpu,       True),
-        (L("Review", "Revision"),           screen_review,    True),
-        (L("Install", "Instalar"),          screen_install,   False),
-        (L("Finish", "Finalizar"),          screen_finish,    False),
+        ("Welcome",                          screen_welcome,    False),
+        ("Language",                          screen_language,   False),
+        (L("Identity",   "Identidad"),        screen_identity,   True),
+        (L("Passwords",  "Contraseñas"),      screen_passwords,  True),
+        (L("Disk",       "Disco"),            screen_disk,       True),
+        (L("Filesystem", "Sistema archivos"), screen_filesystem, True),
+        (L("Keymap",     "Teclado"),          screen_keymap,     True),
+        (L("Timezone",   "Zona horaria"),     screen_timezone,   True),
+        (L("Desktop",    "Escritorio"),       screen_desktop,    True),
+        ("GPU",                               screen_gpu,        True),
+        (L("Review",     "Revisión"),         screen_review,     True),
+        (L("Install",    "Instalar"),         screen_install,    False),
+        (L("Finish",     "Finalizar"),        screen_finish,     False),
     ]
 
     idx = 0
@@ -869,7 +997,6 @@ def main():
             idx = max(0, idx - 1)
         else:
             idx += 1
-
 
 def bootstrap():
     if os.geteuid() != 0:
@@ -889,7 +1016,6 @@ def bootstrap():
         print("[+] dialog installed successfully.\n")
 
     main()
-
 
 if __name__ == "__main__":
     bootstrap()
