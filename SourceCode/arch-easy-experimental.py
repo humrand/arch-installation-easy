@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.1-stable"
+VERSION  = "V1.1.2-experimental"
 LOG_FILE = "/mnt/install_log.txt"
 TITLE    = "Arch Linux Installer"
 
@@ -29,6 +29,7 @@ state = {
     "mirrors":    True,
     "quick":      False,
     "yay":        False,
+    "snapper":    False,
 }
 
 DESKTOP_PKGS = {
@@ -62,7 +63,6 @@ DESKTOP_DM = {
     "MATE":       "lightdm",
     "LXQt":       "sddm",
 }
-
 
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
@@ -177,7 +177,7 @@ def list_disks():
     return disks
 
 def partition_paths_for(disk_path):
-    if "nvme" in disk_path or "mmcblk" in disk_path:
+    if re.search(r"(nvme\d+n\d+|mmcblk\d+)", disk_path):
         return f"{disk_path}p1", f"{disk_path}p2", f"{disk_path}p3"
     return f"{disk_path}1", f"{disk_path}2", f"{disk_path}3"
 
@@ -230,8 +230,10 @@ def detect_gpu():
         ).lower()
         if "nvidia" in out:
             return "NVIDIA"
-        if "amd" in out or "radeon" in out or "intel" in out:
-            return "AMD/Intel"
+        if "amd" in out or "radeon" in out:
+            return "AMD"
+        if "intel" in out:
+            return "Intel"
     except Exception:
         pass
     return "None"
@@ -246,6 +248,9 @@ def detect_cpu():
     except Exception:
         pass
     return None
+
+def is_uefi():
+    return os.path.exists("/sys/firmware/efi")
 
 def _wifi_interfaces():
     try:
@@ -270,16 +275,19 @@ def screen_wifi_connect():
     )
     time.sleep(3)
 
+    ssids = []
     try:
         raw = subprocess.check_output(
             f"iwctl station {shlex.quote(iface)} get-networks 2>/dev/null",
             shell=True, text=True
         )
-        ssids = []
-        for line in raw.splitlines()[4:]:
-            line = line.strip().lstrip("> ").strip()
-            parts = line.split()
-            if parts and not parts[0].startswith("-") and parts[0] != "Network":
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        for line in raw.splitlines():
+            clean = ansi_escape.sub("", line).strip().lstrip("> ").strip()
+            if not clean or re.match(r"^[-=*]+$", clean) or clean.lower().startswith("network"):
+                continue
+            parts = clean.split()
+            if parts and len(parts[0]) > 0:
                 ssids.append(parts[0])
         ssids = list(dict.fromkeys(ssids))[:15]
     except Exception:
@@ -361,12 +369,10 @@ def ensure_network():
 
     return False
 
-
 _PAT_INSTALL  = re.compile(r"\((\d+)/(\d+)\)")
 _PAT_DOWNLOAD = re.compile(
     r"\S+\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)/s"
 )
-
 
 class InstallBackend:
     def __init__(self, on_progress, on_stage, on_done):
@@ -448,12 +454,25 @@ class InstallBackend:
         run_stream(f"mount -o {opts},subvol=@var  {p3} /mnt/var",      on_line=self._log)
         run_stream(f"mount -o {opts},subvol=@snapshots {p3} /mnt/.snapshots", on_line=self._log)
 
+    def _install_grub(self, disk_path):
+        if is_uefi():
+            self._chroot(
+                "grub-install --target=x86_64-efi "
+                "--efi-directory=/boot/efi --bootloader-id=GRUB"
+            )
+        else:
+            self._chroot(
+                f"grub-install --target=i386-pc {disk_path}"
+            )
+        self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
+
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
         p1, p2, p3 = partition_paths_for(disk_path)
         fs         = state["filesystem"]
         kernel     = state["kernel"]
         microcode  = detect_cpu()
+        uefi       = is_uefi()
 
         try:
             self._stage(L("Checking network…", "Verificando red…"))
@@ -482,13 +501,17 @@ class InstallBackend:
             self._pct(8)
 
             self._stage(L("Creating partitions…", "Creando particiones…"))
-            run_stream(f"sgdisk -n1:0:+1G -t1:ef00 {disk_path}",            on_line=self._log)
+            if uefi:
+                run_stream(f"sgdisk -n1:0:+1G -t1:ef00 {disk_path}", on_line=self._log)
+            else:
+                run_stream(f"sgdisk -n1:0:+1M -t1:ef02 {disk_path}", on_line=self._log)
             run_stream(f"sgdisk -n2:0:+{state['swap']}G -t2:8200 {disk_path}", on_line=self._log)
             run_stream(f"sgdisk -n3:0:0 -t3:8300 {disk_path}",              on_line=self._log)
             self._pct(12)
 
             self._stage(L("Formatting partitions…", "Formateando particiones…"))
-            run_stream(f"mkfs.fat -F32 {p1}", on_line=self._log)
+            if uefi:
+                run_stream(f"mkfs.fat -F32 {p1}", on_line=self._log)
             run_stream(f"mkswap {p2}",        on_line=self._log)
             run_stream(f"swapon {p2}",        on_line=self._log)
 
@@ -499,17 +522,19 @@ class InstallBackend:
                 run_stream(f"mount {p3} /mnt",   on_line=self._log)
             self._pct(16)
 
-            self._stage(L("Mounting EFI…", "Montando EFI…"))
-            run_stream("mkdir -p /mnt/boot/efi",    on_line=self._log)
-            run_stream(f"mount {p1} /mnt/boot/efi", on_line=self._log)
+            if uefi:
+                self._stage(L("Mounting EFI…", "Montando EFI…"))
+                run_stream("mkdir -p /mnt/boot/efi",    on_line=self._log)
+                run_stream(f"mount {p1} /mnt/boot/efi", on_line=self._log)
             self._pct(18)
 
             ucode_pkg   = f" {microcode}" if microcode else ""
             extra_pkgs  = " btrfs-progs" if fs == "btrfs" else ""
             kernel_hdrs = f"{kernel}-headers"
+            efi_pkg     = " efibootmgr" if uefi else ""
             pkgs = (
                 f"base {kernel} linux-firmware {kernel_hdrs} sof-firmware "
-                f"base-devel grub efibootmgr vim nano networkmanager git "
+                f"base-devel grub{efi_pkg} vim nano networkmanager git "
                 f"sudo bash-completion{extra_pkgs}{ucode_pkg}"
             )
 
@@ -547,7 +572,8 @@ class InstallBackend:
             self._chroot(f"echo 'LANG={locale}' > /etc/locale.conf")
             self._chroot(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
             self._chroot("hwclock --systohc")
-            self._chroot(f"echo 'KEYMAP={state['keymap']}' > /etc/vconsole.conf")
+            keymap_val = state['keymap']
+            self._chroot(f"echo 'KEYMAP={keymap_val}' > /etc/vconsole.conf")
             self._pct(59)
 
             self._stage(L("Generating initramfs…", "Generando initramfs…"))
@@ -570,17 +596,24 @@ class InstallBackend:
             self._chroot("systemctl enable NetworkManager")
             self._pct(71)
 
-            if state["gpu"] == "NVIDIA":
+            gpu = state["gpu"]
+            if gpu == "NVIDIA":
                 self._stage(L("Installing NVIDIA drivers…", "Instalando drivers NVIDIA…"))
                 self._pacman(
                     "arch-chroot /mnt pacman -S --noconfirm "
                     "nvidia nvidia-utils nvidia-settings",
                     71, 77, ignore_error=True)
-            elif state["gpu"] == "AMD/Intel":
-                self._stage(L("Installing AMD/Intel drivers…", "Instalando drivers AMD/Intel…"))
+            elif gpu == "AMD":
+                self._stage(L("Installing AMD drivers…", "Instalando drivers AMD…"))
                 self._pacman(
                     "arch-chroot /mnt pacman -S --noconfirm "
                     "mesa vulkan-radeon libva-mesa-driver",
+                    71, 77, ignore_error=True)
+            elif gpu == "Intel":
+                self._stage(L("Installing Intel drivers…", "Instalando drivers Intel…"))
+                self._pacman(
+                    "arch-chroot /mnt pacman -S --noconfirm "
+                    "mesa vulkan-intel intel-media-driver",
                     71, 77, ignore_error=True)
             else:
                 self._pct(77)
@@ -612,10 +645,36 @@ class InstallBackend:
             self._pct(94)
 
             self._stage(L("Installing GRUB bootloader…", "Instalando GRUB…"))
-            self._chroot("grub-install --target=x86_64-efi "
-                         "--efi-directory=/boot/efi --bootloader-id=GRUB")
-            self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
+            self._install_grub(disk_path)
             self._pct(97)
+
+            if state.get("snapper") and fs == "btrfs":
+                self._stage(L("Setting up snapper (BTRFS snapshots)…",
+                              "Configurando snapper (snapshots BTRFS)…"))
+                self._pacman(
+                    "arch-chroot /mnt pacman -S --noconfirm "
+                    "snapper snap-pac grub-btrfs inotify-tools",
+                    97, 98, ignore_error=True
+                )
+                self._chroot(
+                    "umount /.snapshots && rm -rf /.snapshots",
+                    ignore_error=True
+                )
+                self._chroot("snapper -c root create-config /")
+                self._chroot(
+                    "btrfs subvolume delete /.snapshots && "
+                    "mkdir /.snapshots",
+                    ignore_error=True
+                )
+                self._chroot(
+                    "mount -a",
+                    ignore_error=True
+                )
+                self._chroot("chmod 750 /.snapshots")
+                self._chroot("systemctl enable snapper-timeline.timer")
+                self._chroot("systemctl enable snapper-cleanup.timer")
+                self._chroot("systemctl enable grub-btrfs.path")
+                self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
 
             if state.get("yay"):
                 self._stage(L("Installing yay (AUR helper)…", "Instalando yay (AUR helper)…"))
@@ -639,11 +698,11 @@ class InstallBackend:
             self._log(f"FATAL: {e}")
             self.on_done(False, str(e))
 
-
 def screen_welcome():
+    boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS (Legacy)", "BIOS (Legacy)")
     text = (
         "\\Zb\\Z4Welcome to the Arch Linux Installer\\Zn\n\n"
-        f"Version: {VERSION}\n\n"
+        f"Version: {VERSION}    Boot mode: \\Zb{boot_mode}\\Zn\n\n"
         "\\Zb\\Z1WARNING:\\Zn  This installer will ERASE and install Arch Linux "
         "to the selected disk.\n\n"
         "Use \\ZbTab\\Zn and \\ZbArrow keys\\Zn to navigate.\n"
@@ -664,14 +723,14 @@ def screen_mode():
     result = menu(
         L("Install Mode", "Modo de instalación"),
         L(
-            "Quick Install  —  BTRFS + KDE Plasma + linux + pipewire + yay\n"
+            "Quick Install  —  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
             "Custom Install —  configure everything step by step",
-            "Instalación rápida  —  BTRFS + KDE Plasma + linux + pipewire + yay\n"
+            "Instalación rápida  —  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
             "Instalación personalizada — configura todo paso a paso"
         ),
         [
-            ("quick",  L("Quick Install   (sane defaults, installs yay)",
-                         "Instalación rápida   (valores por defecto, instala yay)")),
+            ("quick",  L("Quick Install   (sane defaults, installs yay + snapper)",
+                         "Instalación rápida   (valores por defecto, instala yay + snapper)")),
             ("custom", L("Custom Install  (full control)",
                          "Instalación personalizada  (control total)")),
         ]
@@ -684,6 +743,7 @@ def screen_mode():
         state["mirrors"]    = True
         state["gpu"]        = detect_gpu()
         state["yay"]        = True
+        state["snapper"]    = True
     return result == "quick"
 
 def screen_identity():
@@ -782,6 +842,24 @@ def screen_disk():
         )
         sys.exit(1)
 
+    try:
+        lsblk_info = subprocess.check_output(
+            "lsblk -f 2>/dev/null | head -40", shell=True, text=True
+        )
+    except Exception:
+        lsblk_info = ""
+
+    if lsblk_info:
+        msgbox(
+            L("Disk Overview — Read before selecting!", "Vista de discos — ¡Lee antes de elegir!"),
+            L(
+                "Current disk layout (lsblk -f):\n\n" + lsblk_info +
+                "\nWARNING: The disk you select will be COMPLETELY ERASED.",
+                "Layout actual de discos (lsblk -f):\n\n" + lsblk_info +
+                "\nADVERTENCIA: El disco seleccionado se BORRARÁ COMPLETAMENTE."
+            )
+        )
+
     items   = [(f"/dev/{n}", f"{gb} GB  —  {model}") for n, gb, model in disks]
     default = f"/dev/{state['disk']}" if state["disk"] else items[0][0]
 
@@ -796,6 +874,20 @@ def screen_disk():
     )
     if result is None:
         return False
+
+    if not yesno(
+        L("Confirm Disk Erase", "Confirmar borrado de disco"),
+        L(
+            f"You selected: {result}\n\n"
+            "ALL data on this disk will be permanently destroyed.\n\n"
+            "Are you absolutely sure?",
+            f"Seleccionaste: {result}\n\n"
+            "TODOS los datos en este disco se destruirán permanentemente.\n\n"
+            "¿Estás completamente seguro?"
+        )
+    ):
+        return False
+
     state["disk"] = result.replace("/dev/", "")
 
     while True:
@@ -969,15 +1061,18 @@ def screen_gpu():
     if detected != "None" and state["gpu"] == "None":
         state["gpu"] = detected
 
-    tag  = {"NVIDIA": "\\Z3NVIDIA\\Zn", "AMD/Intel": "\\Z2AMD/Intel\\Zn"}.get(detected, "none")
+    color_map = {"NVIDIA": "\\Z3NVIDIA\\Zn", "AMD": "\\Z2AMD\\Zn", "Intel": "\\Z6Intel\\Zn"}
+    tag  = color_map.get(detected, "none")
     hint = L(f"Detected GPU: {tag}", f"GPU detectada: {tag}")
 
     options = [
-        ("NVIDIA",    L("NVIDIA proprietary (nvidia + nvidia-utils)",
-                        "NVIDIA propietario (nvidia + nvidia-utils)")),
-        ("AMD/Intel", L("Open-source Mesa (mesa + vulkan-radeon)",
-                        "Mesa open-source (mesa + vulkan-radeon)")),
-        ("None",      L("No additional GPU drivers", "Sin drivers adicionales de GPU")),
+        ("NVIDIA", L("NVIDIA proprietary (nvidia + nvidia-utils)",
+                     "NVIDIA propietario (nvidia + nvidia-utils)")),
+        ("AMD",    L("AMD open-source (mesa + vulkan-radeon)",
+                     "AMD open-source (mesa + vulkan-radeon)")),
+        ("Intel",  L("Intel open-source (mesa + vulkan-intel + intel-media-driver)",
+                     "Intel open-source (mesa + vulkan-intel + intel-media-driver)")),
+        ("None",   L("No additional GPU drivers", "Sin drivers adicionales de GPU")),
     ]
     result = radiolist(
         L("GPU Drivers", "Drivers GPU"),
@@ -1006,12 +1101,38 @@ def screen_yay():
         state["yay"] = (result == "yes")
     return True
 
+def screen_snapper():
+    if state["filesystem"] != "btrfs":
+        state["snapper"] = False
+        return True
+    result = radiolist(
+        L("BTRFS Snapshots", "Snapshots BTRFS"),
+        L(
+            "Install snapper + grub-btrfs for automatic rollback snapshots?\n"
+            "(Requires BTRFS filesystem — already selected)",
+            "¿Instalar snapper + grub-btrfs para snapshots y rollback automático?\n"
+            "(Requiere BTRFS — ya seleccionado)"
+        ),
+        [
+            ("yes", L("Yes — automatic snapshots on every pacman transaction",
+                      "Sí — snapshots automáticos en cada transacción pacman")),
+            ("no",  L("No  — skip",
+                      "No  — omitir")),
+        ],
+        default="yes" if state["snapper"] else "no"
+    )
+    if result:
+        state["snapper"] = (result == "yes")
+    return True
+
 def screen_review():
     microcode = detect_cpu() or L("none detected", "no detectado")
     quick_tag = L("  [Quick Install]", "  [Instalación rápida]") if state["quick"] else ""
+    boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS", "BIOS")
 
     lines = [
         ("Mode",                    L("Quick", "Rápida") if state["quick"] else L("Custom", "Personalizada")),
+        ("Boot",                    boot_mode),
         ("Language",                state["lang"]),
         ("Hostname",                state["hostname"] or "NOT SET"),
         (L("Username", "Usuario"),  state["username"] or "NOT SET"),
@@ -1027,6 +1148,7 @@ def screen_review():
         ("GPU",                     state["gpu"]),
         ("Audio",                   "pipewire" if state["desktop"] != "None" else L("none", "ninguno")),
         ("yay",                     L("yes", "sí") if state["yay"] else "no"),
+        ("snapper",                 L("yes", "sí") if state.get("snapper") else "no"),
     ]
 
     text    = L(f"Review your settings:{quick_tag}\n\n",
@@ -1123,7 +1245,6 @@ def screen_finish():
         subprocess.run("reboot",         shell=True)
     sys.exit(0)
 
-
 def main():
     screen_welcome()
     screen_language()
@@ -1151,6 +1272,7 @@ def main():
             (L("Desktop",    "Escritorio"),       screen_desktop,    True),
             ("GPU",                               screen_gpu,        True),
             (L("yay",        "yay"),              screen_yay,        True),
+            (L("Snapshots",  "Snapshots"),        screen_snapper,    True),
             (L("Review",     "Revisión"),         screen_review,     True),
             (L("Install",    "Instalar"),         screen_install,    False),
             (L("Finish",     "Finalizar"),        screen_finish,     False),
@@ -1170,7 +1292,6 @@ def main():
         else:
             idx += 1
 
-
 def bootstrap():
     if os.geteuid() != 0:
         print("This installer must be run as root.")
@@ -1189,7 +1310,6 @@ def bootstrap():
         print("[+] dialog installed successfully.\n")
 
     main()
-
 
 if __name__ == "__main__":
     bootstrap()
