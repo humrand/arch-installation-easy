@@ -1,3 +1,9 @@
+"""
+Arch Linux Installer — dialog Edition
+MIT LICENSE — credits to humrand https://github.com/humrand/arch-anstallation-easy
+DO NOT REMOVE THIS FROM YOUR CODE IF YOU USE IT TO MODIFY IT.
+"""
+
 import subprocess
 import sys
 import os
@@ -11,6 +17,34 @@ from datetime import datetime
 VERSION  = "V1.1.0-dialog"
 LOG_FILE = "/mnt/install_log.txt"
 TITLE    = "Arch Linux Installer"
+
+ARCH_LOGO = r"""
+              .
+             /|\
+            / | \
+           /  |  \
+          / . | . \
+         /  __|__  \
+        / _/     \_ \
+       /_/    A    \_\
+      /   ARCH LINUX  \
+     /___________________\
+"""
+
+WELCOME_ART = (
+    "\\Zb\\Z4"
+    "          .          \n"
+    "         /|\\         \n"
+    "        / | \\        \n"
+    "       /  |  \\       \n"
+    "      / . | . \\      \n"
+    "     /  __|__  \\     \n"
+    "    / _/     \\_ \\    \n"
+    "   /_/  \\Z6A\\Z4rch  \\_\\   \n"
+    "  /  \\Z6L\\Z4inux      \\  \n"
+    " /___________________\\ \n"
+    "\\Zn"
+)
 
 state = {
     "lang":      "en",
@@ -39,91 +73,67 @@ def write_log(line):
     except Exception:
         pass
 
+BACKTITLE = f"\\Zb\\Z4{TITLE}\\Zn  ─  \\Z6{VERSION}\\Zn"
 
 def dlg(*args):
-    cmd = [
-        "dialog",
-        "--colors",
-        "--backtitle", f"\\Zb\\Z4{TITLE}\\Zn  —  {VERSION}",
-        "--title", "",
-    ]
+    cmd = ["dialog", "--colors", "--backtitle", BACKTITLE, "--title", ""]
     cmd.extend(args)
     result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
     return result.returncode, result.stderr.strip()
-
 
 def dlg_titled(title, *args):
-    cmd = [
-        "dialog",
-        "--colors",
-        "--backtitle", f"\\Zb\\Z4{TITLE}\\Zn  —  {VERSION}",
-        "--title", f" {title} ",
-    ]
+    cmd = ["dialog", "--colors", "--backtitle", BACKTITLE, "--title", f"  {title}  "]
     cmd.extend(args)
     result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
     return result.returncode, result.stderr.strip()
-
 
 def msgbox(title, text):
     dlg_titled(title, "--msgbox", text, "0", "0")
-
 
 def yesno(title, text):
     rc, _ = dlg_titled(title, "--yesno", text, "0", "0")
     return rc == 0
 
-
 def inputbox(title, text, init=""):
-    rc, val = dlg_titled(title, "--inputbox", text, "0", "60", init)
+    rc, val = dlg_titled(title, "--inputbox", text, "0", "64", init)
     if rc != 0:
         return None
     return val
-
 
 def passwordbox(title, text):
-    rc, val = dlg_titled(title, "--insecure", "--passwordbox", text, "0", "60")
+    rc, val = dlg_titled(title, "--insecure", "--passwordbox", text, "0", "64")
     if rc != 0:
         return None
     return val
-
 
 def menu(title, text, items):
     flat = []
     for tag, desc in items:
         flat.extend([tag, desc])
-    height = min(len(items) + 8, 30)
+    height = min(len(items) + 10, 30)
     rc, val = dlg_titled(title, "--menu", text, str(height), "72", str(len(items)), *flat)
     if rc != 0:
         return None
     return val
-
 
 def radiolist(title, text, items, default=None):
     flat = []
     for tag, desc in items:
         status = "on" if tag == default else "off"
         flat.extend([tag, desc, status])
-    height = min(len(items) + 8, 30)
-    rc, val = dlg_titled(title, "--radiolist", text, str(height), "72", str(len(items)), *flat)
+    height = min(len(items) + 10, 30)
+    rc, val = dlg_titled(title, "--radiolist", text, str(height), "76", str(len(items)), *flat)
     if rc != 0:
         return None
     return val
 
-
 def gauge_open(title, text, pct=0):
     proc = subprocess.Popen(
-        [
-            "dialog",
-            "--colors",
-            "--backtitle", f"\\Zb\\Z4{TITLE}\\Zn  —  {VERSION}",
-            "--title", f" {title} ",
-            "--gauge", text, "8", "72", str(pct),
-        ],
-        stdin=subprocess.PIPE,
-        text=True,
+        ["dialog", "--colors", "--backtitle", BACKTITLE,
+         "--title", f"  {title}  ", "--gauge", text, "9", "76", str(pct)],
+        stdin=subprocess.PIPE, text=True,
     )
     return proc
-
 
 def gauge_update(proc, pct, message):
     try:
@@ -132,14 +142,11 @@ def gauge_update(proc, pct, message):
     except Exception:
         pass
 
-
 def validate_name(n):
     return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", n or ""))
 
-
 def validate_swap(s):
     return bool(re.match(r"^\d+$", s or "")) and 1 <= int(s) <= 128
-
 
 def list_disks():
     try:
@@ -163,12 +170,10 @@ def list_disks():
         disks.append((name, size_gb, model))
     return disks
 
-
 def partition_paths_for(disk_path):
     if "nvme" in disk_path or "mmcblk" in disk_path:
         return f"{disk_path}p1", f"{disk_path}p2", f"{disk_path}p3"
     return f"{disk_path}1", f"{disk_path}2", f"{disk_path}3"
-
 
 def run_stream(cmd, on_line=None, ignore_error=False):
     write_log(f"$ {cmd}")
@@ -204,14 +209,12 @@ def run_stream(cmd, on_line=None, ignore_error=False):
         write_log(f"ERROR (rc={rc}): {cmd}")
     return rc
 
-
 def run_simple(cmd, ignore_error=False):
     write_log(f"$ {cmd}")
     r = subprocess.call(cmd, shell=True, executable="/bin/bash")
     if r != 0 and not ignore_error:
         write_log(f"ERROR (rc={r}): {cmd}")
     return r
-
 
 def ensure_network():
     def ping():
@@ -229,12 +232,10 @@ def ensure_network():
                 return True
     return False
 
-
 _PAT_INSTALL  = re.compile(r"\((\d+)/(\d+)\)")
 _PAT_DOWNLOAD = re.compile(
     r"\S+\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)/s"
 )
-
 
 class InstallBackend:
     def __init__(self, on_progress, on_stage, on_done):
@@ -267,7 +268,6 @@ class InstallBackend:
     def _pacman(self, cmd, start, end, ignore_error=False):
         half = start + (end - start) * 0.5
         download_done = [False]
-
         def on_line(line):
             self._log(line)
             m = _PAT_INSTALL.search(line)
@@ -283,7 +283,6 @@ class InstallBackend:
                     cur_p = self._progress
                 if cur_p < cap:
                     self._pct(cur_p + 0.3)
-
         rc = run_stream(cmd, on_line=on_line, ignore_error=ignore_error)
         self._pct(end)
         return rc
@@ -304,12 +303,11 @@ class InstallBackend:
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
         p1, p2, p3 = partition_paths_for(disk_path)
-
         try:
             self._stage(L("Checking network…", "Verificando red…"))
             if not ensure_network():
                 self.on_done(False, L("No network connection. Connect and retry.",
-                                      "Sin conexión de red. Conéctese e intente de nuevo."))
+                                      "Sin conexion de red. Conectese e intente de nuevo."))
                 return
 
             run_stream("pacman -Sy --noconfirm archlinux-keyring",
@@ -347,7 +345,7 @@ class InstallBackend:
             rc = self._pacman(f"pacstrap -K /mnt {pkgs}", 18, 52)
             if rc != 0:
                 self.on_done(False, L("pacstrap failed. Check " + LOG_FILE,
-                                      "pacstrap falló. Revisa " + LOG_FILE))
+                                      "pacstrap fallo. Revisa " + LOG_FILE))
                 return
 
             self._stage(L("Generating fstab…", "Generando fstab…"))
@@ -383,7 +381,7 @@ class InstallBackend:
             self._chroot("mkinitcpio -P")
             self._pct(63)
 
-            self._stage(L("Setting passwords…", "Estableciendo contraseñas…"))
+            self._stage(L("Setting passwords…", "Estableciendo contrasenas…"))
             self._chroot_passwd("root", state["root_pass"])
             self._pct(65)
 
@@ -454,21 +452,46 @@ class InstallBackend:
 
 def screen_welcome():
     text = (
-        "\\Zb\\Z4Welcome to the Arch Linux Installer\\Zn\n\n"
-        f"Version: {VERSION}\n\n"
-        "\\Zb\\Z1WARNING:\\Zn  This installer will ERASE the selected disk.\n\n"
-        "Use \\ZbTab\\Zn and \\ZbArrow keys\\Zn to navigate.\n"
-        "\\ZbMouse clicks\\Zn work on buttons and menu items.\n\n"
-        "Press OK to begin."
+        "\\Zb\\Z4"
+        "                 -`                  \n"
+        "                .o+`                 \n"
+        "               `ooo/                 \n"
+        "              `+oooo:                \n"
+        "             `+oooooo:               \n"
+        "             -+oooooo+:              \n"
+        "           `/:-:++oooo+:             \n"
+        "          `/++++/+++++++:            \n"
+        "         `/++++++++++++++:           \n"
+        "        `/+++ooooooooooooo/`         \n"
+        "       ./ooosssso++osssssso+`        \n"
+        "      .oossssso-    /ossssss+`       \n"
+        "     -osssssso.      :ssssssso.      \n"
+        "    :osssssss/        osssso+++.     \n"
+        "   /ossssssss/        +ssssooo/-     \n"
+        " `/ossssso+/:-        -:/+osssso+-   \n"
+        "`+sso+:-`                 `.-/+oso:  \n"
+        "`++:.                           `-/+/\n"
+        ".`                                 `/\n"
+        "\\Zn\n"
+        "         \\Zb\\Z6Arch Linux Installer\\Zn  ·  \\Z6" + VERSION + "\\Zn\n\n"
+        "\\Z1  ⚠  This installer will ERASE the selected disk.\\Zn\n\n"
+        "  Mouse clicks work on all buttons and menu items.\n"
+        "  Use Tab / Arrow keys to navigate.\n\n"
+        "  Press \\ZbOK\\Zn to begin."
     )
-    dlg_titled("Welcome", "--msgbox", text, "16", "60")
+    dlg_titled("Welcome", "--msgbox", text, "0", "0")
 
 
 def screen_language():
+    text = (
+        "\\Zb\\Z4Language / Idioma\\Zn\n\n"
+        "Choose the installer language.\n"
+        "Seleccione el idioma del instalador."
+    )
     result = menu(
         "Language / Idioma",
-        "Choose the installer language:\nSeleccione el idioma del instalador:",
-        [("en", "English"), ("es", "Espanol")]
+        text,
+        [("en", "English  🇬🇧"), ("es", "Español  🇪🇸")]
     )
     if result:
         state["lang"] = result
@@ -477,34 +500,42 @@ def screen_language():
 def screen_identity():
     while True:
         hn = inputbox(
-            L("System Identity", "Identidad del sistema"),
-            L("Enter hostname (letters, digits, -, _ — max 32 chars):",
-              "Ingresa el nombre del equipo (letras, digitos, -, _ — max 32):"),
+            L("❱  Step 1/9 — System Identity", "❱  Paso 1/9 — Identidad del sistema"),
+            L("Enter a hostname for this machine.\n"
+              "Allowed: letters, digits, hyphens, underscores · max 32 chars\n\n"
+              "Hostname:",
+              "Ingresa un nombre para este equipo.\n"
+              "Permitido: letras, digitos, guiones, guiones bajos · max 32\n\n"
+              "Hostname:"),
             state.get("hostname", "")
         )
         if hn is None:
             return False
         if not validate_name(hn):
             msgbox(
-                L("Invalid hostname", "Hostname invalido"),
-                L("Only letters, digits, hyphens and underscores. Max 32 chars.",
-                  "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres.")
+                L("✗  Invalid Hostname", "✗  Hostname Invalido"),
+                L("Only letters, digits, - and _  ·  max 32 characters.",
+                  "Solo letras, digitos, - y _  ·  maximo 32 caracteres.")
             )
             continue
 
         un = inputbox(
-            L("System Identity", "Identidad del sistema"),
-            L("Enter username (letters, digits, -, _ — max 32 chars):",
-              "Ingresa el nombre de usuario (letras, digitos, -, _ — max 32):"),
+            L("❱  Step 1/9 — System Identity", "❱  Paso 1/9 — Identidad del sistema"),
+            L("Enter a username for the main account.\n"
+              "Allowed: letters, digits, hyphens, underscores · max 32 chars\n\n"
+              "Username:",
+              "Ingresa el nombre del usuario principal.\n"
+              "Permitido: letras, digitos, guiones, guiones bajos · max 32\n\n"
+              "Usuario:"),
             state.get("username", "")
         )
         if un is None:
             return False
         if not validate_name(un):
             msgbox(
-                L("Invalid username", "Usuario invalido"),
-                L("Only letters, digits, hyphens and underscores. Max 32 chars.",
-                  "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres.")
+                L("✗  Invalid Username", "✗  Usuario Invalido"),
+                L("Only letters, digits, - and _  ·  max 32 characters.",
+                  "Solo letras, digitos, - y _  ·  maximo 32 caracteres.")
             )
             continue
 
@@ -516,49 +547,51 @@ def screen_identity():
 def screen_passwords():
     while True:
         rp1 = passwordbox(
-            L("Passwords", "Contrasenas"),
-            L("Enter ROOT password:", "Ingresa la contrasena de ROOT:")
+            L("❱  Step 2/9 — Passwords", "❱  Paso 2/9 — Contrasenas"),
+            L("Set the ROOT password.\n(Characters are hidden for security)\n\nRoot password:",
+              "Establece la contrasena de ROOT.\n(Los caracteres se ocultan por seguridad)\n\nContrasena root:")
         )
         if rp1 is None:
             return False
 
         rp2 = passwordbox(
-            L("Passwords", "Contrasenas"),
+            L("❱  Step 2/9 — Passwords", "❱  Paso 2/9 — Contrasenas"),
             L("Confirm ROOT password:", "Confirma la contrasena de ROOT:")
         )
         if rp2 is None:
             return False
 
         if not rp1:
-            msgbox(L("Error", "Error"), L("Root password cannot be empty.",
-                                          "La contrasena root no puede estar vacia."))
+            msgbox(L("✗  Error", "✗  Error"),
+                   L("Root password cannot be empty.", "La contrasena root no puede estar vacia."))
             continue
         if rp1 != rp2:
-            msgbox(L("Error", "Error"), L("Root passwords do not match.",
-                                          "Las contrasenas root no coinciden."))
+            msgbox(L("✗  Error", "✗  Error"),
+                   L("Root passwords do not match.", "Las contrasenas root no coinciden."))
             continue
 
         up1 = passwordbox(
-            L("Passwords", "Contrasenas"),
-            L("Enter USER password:", "Ingresa la contrasena de USUARIO:")
+            L("❱  Step 2/9 — Passwords", "❱  Paso 2/9 — Contrasenas"),
+            L(f"Set the password for user '{state['username']}'.\n\nUser password:",
+              f"Establece la contrasena para '{state['username']}'.\n\nContrasena usuario:")
         )
         if up1 is None:
             return False
 
         up2 = passwordbox(
-            L("Passwords", "Contrasenas"),
-            L("Confirm USER password:", "Confirma la contrasena de USUARIO:")
+            L("❱  Step 2/9 — Passwords", "❱  Paso 2/9 — Contrasenas"),
+            L("Confirm user password:", "Confirma la contrasena de usuario:")
         )
         if up2 is None:
             return False
 
         if not up1:
-            msgbox(L("Error", "Error"), L("User password cannot be empty.",
-                                          "La contrasena de usuario no puede estar vacia."))
+            msgbox(L("✗  Error", "✗  Error"),
+                   L("User password cannot be empty.", "La contrasena de usuario no puede estar vacia."))
             continue
         if up1 != up2:
-            msgbox(L("Error", "Error"), L("User passwords do not match.",
-                                          "Las contrasenas de usuario no coinciden."))
+            msgbox(L("✗  Error", "✗  Error"),
+                   L("User passwords do not match.", "Las contrasenas de usuario no coinciden."))
             continue
 
         state["root_pass"] = rp1
@@ -570,19 +603,25 @@ def screen_disk():
     disks = list_disks()
     if not disks:
         msgbox(
-            L("No disks found", "Sin discos"),
-            L("No disks were detected. Cannot continue.",
-              "No se detectaron discos. No se puede continuar.")
+            L("✗  No Disks Found", "✗  Sin Discos"),
+            L("No disks were detected. Cannot continue.\n\nCheck that your drive is connected.",
+              "No se detectaron discos. No se puede continuar.\n\nVerifica que tu disco este conectado.")
         )
         sys.exit(1)
 
-    items = [(f"/dev/{n}", f"{gb} GB  —  {model}") for n, gb, model in disks]
+    disk_table = ""
+    for n, gb, model in disks:
+        disk_table += f"  /dev/{n:<10}  {gb:>5} GB   {model}\n"
+
+    items = [(f"/dev/{n}", f"{gb:>5} GB  ─  {model}") for n, gb, model in disks]
     default = f"/dev/{state['disk']}" if state["disk"] else items[0][0]
 
     result = radiolist(
-        L("Disk Selection", "Seleccion de disco"),
-        L("WARNING: ALL DATA on the selected disk will be ERASED!\n\nSelect the installation disk:",
-          "ADVERTENCIA: Se borraran todos los datos del disco seleccionado!\n\nSelecciona el disco:"),
+        L("❱  Step 3/9 — Disk Selection", "❱  Paso 3/9 — Seleccion de Disco"),
+        L("\\Z1⚠  ALL DATA on the selected disk will be permanently ERASED.\\Zn\n\n"
+          "Select the target installation disk:",
+          "\\Z1⚠  TODOS LOS DATOS del disco seleccionado seran BORRADOS permanentemente.\\Zn\n\n"
+          "Selecciona el disco de instalacion:"),
         items,
         default=default
     )
@@ -592,8 +631,13 @@ def screen_disk():
 
     while True:
         swap = inputbox(
-            L("Swap Size", "Tamano de Swap"),
-            L("Enter swap size in GB (1-128):", "Ingresa el tamano del swap en GB (1-128):"),
+            L("❱  Step 3/9 — Swap Size", "❱  Paso 3/9 — Tamano de Swap"),
+            L("How much swap space to create? (in GB)\n"
+              "Recommended: equal to your RAM for hibernation.\n\n"
+              "Swap size (1–128 GB):",
+              "Cuanto espacio de swap crear? (en GB)\n"
+              "Recomendado: igual a tu RAM para hibernacion.\n\n"
+              "Tamano swap (1–128 GB):"),
             state["swap"]
         )
         if swap is None:
@@ -601,28 +645,27 @@ def screen_disk():
         if validate_swap(swap.strip()):
             state["swap"] = swap.strip()
             return True
-        msgbox(L("Invalid swap", "Swap invalido"),
-               L("Swap must be a number between 1 and 128.",
-                 "El swap debe ser un numero entre 1 y 128."))
+        msgbox(L("✗  Invalid Value", "✗  Valor Invalido"),
+               L("Swap must be a whole number between 1 and 128.",
+                 "El swap debe ser un numero entero entre 1 y 128."))
 
 
 def screen_keymap():
     try:
         out  = subprocess.check_output(
-            "localectl list-keymaps 2>/dev/null || true",
-            shell=True, text=True
-        )
+            "localectl list-keymaps 2>/dev/null || true", shell=True, text=True)
         maps = [l for l in out.splitlines() if l]
     except Exception:
         maps = []
 
     wanted  = ["us", "es", "uk", "fr", "de", "it", "ru", "ara", "pt-latin9", "br-abnt2"]
     options = [m for m in wanted if m in maps] if maps else wanted
-    items   = [(m, f"Keyboard layout: {m}") for m in options]
+    items   = [(m, f"Layout: {m}") for m in options]
 
     result = radiolist(
-        L("Keyboard Layout", "Distribucion de teclado"),
-        L("Select your keyboard layout:", "Selecciona la distribucion de tu teclado:"),
+        L("❱  Step 4/9 — Keyboard Layout", "❱  Paso 4/9 — Distribucion de Teclado"),
+        L("Select your keyboard layout.\nThis affects your console keymap.",
+          "Selecciona la distribucion de tu teclado.\nEsto afecta el mapa de teclas en consola."),
         items,
         default=state["keymap"]
     )
@@ -635,9 +678,7 @@ def screen_keymap():
 def screen_timezone():
     try:
         out   = subprocess.check_output(
-            "timedatectl list-timezones 2>/dev/null || true",
-            shell=True, text=True
-        )
+            "timedatectl list-timezones 2>/dev/null || true", shell=True, text=True)
         zones = [l for l in out.splitlines() if l]
     except Exception:
         zones = []
@@ -651,7 +692,7 @@ def screen_timezone():
 
     cur_region = state["timezone"].split("/")[0] if "/" in state["timezone"] else "UTC"
     region = radiolist(
-        L("Timezone — Region", "Zona horaria — Region"),
+        L("❱  Step 5/9 — Timezone (Region)", "❱  Paso 5/9 — Zona Horaria (Region)"),
         L("Select your region:", "Selecciona tu region:"),
         region_items,
         default=cur_region
@@ -674,11 +715,11 @@ def screen_timezone():
         return True
 
     city_items = [(c, z) for c, z in cities]
-    cur_city   = state["timezone"].split("/", 1)[1] if "/" in state["timezone"] else ""
+    cur_city = state["timezone"].split("/", 1)[1] if "/" in state["timezone"] else ""
     city = radiolist(
-        L("Timezone — City", "Zona horaria — Ciudad"),
-        L(f"Region: {region}\nSelect your city:",
-          f"Region: {region}\nSelecciona tu ciudad:"),
+        L("❱  Step 5/9 — Timezone (City)", "❱  Paso 5/9 — Zona Horaria (Ciudad)"),
+        L(f"Region: {region}\n\nSelect your city:",
+          f"Region: {region}\n\nSelecciona tu ciudad:"),
         city_items,
         default=cur_city
     )
@@ -689,17 +730,22 @@ def screen_timezone():
 
 def screen_desktop():
     options = [
-        ("KDE Plasma", L("Full KDE desktop + Konsole + Dolphin + Firefox + SDDM",
-                         "KDE completo + Konsole + Dolphin + Firefox + SDDM")),
-        ("Cinnamon",   L("Classic Cinnamon desktop + Alacritty + Firefox + LightDM",
-                         "Escritorio Cinnamon clasico + Alacritty + Firefox + LightDM")),
-        ("None",       L("No desktop — command line only",
-                         "Sin escritorio — solo linea de comandos")),
+        ("KDE Plasma",
+         L("Full KDE  ─  Konsole · Dolphin · Firefox · SDDM",
+           "KDE completo  ─  Konsole · Dolphin · Firefox · SDDM")),
+        ("Cinnamon",
+         L("Classic  ─  Cinnamon · Alacritty · Firefox · LightDM",
+           "Clasico  ─  Cinnamon · Alacritty · Firefox · LightDM")),
+        ("None",
+         L("Headless  ─  No GUI, command line only",
+           "Sin GUI  ─  Solo linea de comandos")),
     ]
     result = radiolist(
-        L("Desktop Environment", "Entorno de escritorio"),
-        L("Choose a desktop environment to install:",
-          "Elige un entorno de escritorio a instalar:"),
+        L("❱  Step 6/9 — Desktop Environment", "❱  Paso 6/9 — Entorno de Escritorio"),
+        L("Choose a desktop environment, or go headless.\n"
+          "You can always install a desktop later.",
+          "Elige un entorno de escritorio, o instala sin GUI.\n"
+          "Siempre puedes instalar un escritorio despues."),
         options,
         default=state["desktop"]
     )
@@ -710,16 +756,22 @@ def screen_desktop():
 
 def screen_gpu():
     options = [
-        ("NVIDIA",    L("NVIDIA proprietary drivers (nvidia + nvidia-utils)",
-                        "Drivers propietarios NVIDIA (nvidia + nvidia-utils)")),
-        ("AMD/Intel", L("Open-source Mesa drivers (mesa + vulkan-radeon)",
-                        "Drivers open-source Mesa (mesa + vulkan-radeon)")),
-        ("None",      L("No additional GPU drivers",
-                        "Sin drivers adicionales de GPU")),
+        ("NVIDIA",
+         L("Proprietary  ─  nvidia · nvidia-utils · nvidia-settings",
+           "Propietario  ─  nvidia · nvidia-utils · nvidia-settings")),
+        ("AMD/Intel",
+         L("Open-source  ─  mesa · vulkan-radeon · libva-mesa-driver",
+           "Open-source  ─  mesa · vulkan-radeon · libva-mesa-driver")),
+        ("None",
+         L("Skip  ─  No extra GPU drivers installed",
+           "Omitir  ─  No se instalan drivers adicionales")),
     ]
     result = radiolist(
-        L("GPU Drivers", "Drivers GPU"),
-        L("Select your GPU driver:", "Selecciona el driver de tu GPU:"),
+        L("❱  Step 7/9 — GPU Drivers", "❱  Paso 7/9 — Drivers GPU"),
+        L("Select your graphics card driver.\n"
+          "For virtual machines choose None.",
+          "Selecciona el driver de tu tarjeta grafica.\n"
+          "Para maquinas virtuales elige None."),
         options,
         default=state["gpu"]
     )
@@ -733,43 +785,51 @@ def screen_review():
                 "keymap": "us", "timezone": "UTC"}
 
     lines = [
-        ("Language",                state["lang"]),
-        ("Hostname",                state["hostname"] or "NOT SET"),
-        (L("Username", "Usuario"),  state["username"] or "NOT SET"),
-        ("Disk",                    f"/dev/{state['disk']}" if state["disk"] else "NOT SET"),
-        ("Swap",                    f"{state['swap']} GB"),
-        ("Keymap",                  state["keymap"]),
-        ("Timezone",                state["timezone"]),
-        ("Desktop",                 state["desktop"]),
-        ("GPU",                     state["gpu"]),
+        ("Language",               state["lang"]),
+        ("Hostname",               state["hostname"] or "\\Z1NOT SET\\Zn"),
+        (L("Username", "Usuario"), state["username"] or "\\Z1NOT SET\\Zn"),
+        ("Disk",                   f"/dev/{state['disk']}" if state["disk"] else "\\Z1NOT SET\\Zn"),
+        ("Swap",                   f"{state['swap']} GB"),
+        ("Keymap",                 state["keymap"]),
+        ("Timezone",               state["timezone"]),
+        ("Desktop",                state["desktop"]),
+        ("GPU",                    state["gpu"]),
     ]
 
-    text = L("Review your settings before installing:\n\n",
-             "Revisa tu configuracion antes de instalar:\n\n")
+    text = L("❱  Step 8/9 — Review your configuration:\n\n",
+             "❱  Paso 8/9 — Revisa tu configuracion:\n\n")
+
+    text += "  ┌─────────────────────────────────────────┐\n"
+    for label, val in lines:
+        raw = val.replace("\\Z1", "").replace("\\Zn", "")
+        is_default = any(DEFAULTS.get(k) == state.get(k)
+                         for k in DEFAULTS if label.lower() in k)
+        marker = "·"
+        text += f"  │  {label:<14}  {marker}  {raw}\n"
+    text += "  └─────────────────────────────────────────┘\n\n"
 
     missing = []
-    for label, val in lines:
-        text += f"  {label:<14} {val}\n"
-    text += "\n"
-
     if not state["hostname"]:  missing.append("hostname")
     if not state["username"]:  missing.append("username")
     if not state["disk"]:      missing.append("disk")
     if not state["root_pass"]: missing.append(L("root password", "contrasena root"))
 
     if missing:
-        text += L(f"MISSING: {', '.join(missing)}\n\nGo back to fix before continuing.",
-                  f"FALTA: {', '.join(missing)}\n\nVuelve atras para corregirlo.")
-        msgbox(L("Review — Incomplete", "Revision — Incompleto"), text)
+        text += L(f"\\Z1✗  Missing: {', '.join(missing)}\\Zn\n\nGo back and complete all fields.",
+                  f"\\Z1✗  Falta: {', '.join(missing)}\\Zn\n\nVuelve y completa todos los campos.")
+        msgbox(L("❱  Review — Incomplete", "❱  Revision — Incompleto"), text)
         return False
 
-    text += L("All settings look good.", "Todo listo.")
+    text += L("\\Z2✔  All settings look good.\\Zn",
+              "\\Z2✔  Todo listo.\\Zn")
 
     ok = yesno(
-        L("Review & Confirm", "Revisar y confirmar"),
+        L("❱  Step 9/9 — Confirm Installation", "❱  Paso 9/9 — Confirmar Instalacion"),
         text + L(
-            f"\n\nWARNING: THIS WILL ERASE /dev/{state['disk']}.\n\nProceed with installation?",
-            f"\n\nADVERTENCIA: SE BORRARA /dev/{state['disk']}.\n\nProceder con la instalacion?"
+            f"\n\n\\Z1⚠  LAST WARNING:\\Zn  /dev/{state['disk']} will be COMPLETELY ERASED.\n\n"
+            "Are you sure you want to proceed?",
+            f"\n\n\\Z1⚠  ULTIMO AVISO:\\Zn  /dev/{state['disk']} sera BORRADO COMPLETAMENTE.\n\n"
+            "Esta seguro de que quiere continuar?"
         )
     )
     return ok
@@ -777,8 +837,8 @@ def screen_review():
 
 def screen_install():
     gauge = gauge_open(
-        L("Installing Arch Linux", "Instalando Arch Linux"),
-        L("Preparing…", "Preparando…"),
+        L("❱  Installing Arch Linux", "❱  Instalando Arch Linux"),
+        L("  Preparing installation…", "  Preparando instalacion…"),
         pct=0
     )
 
@@ -790,11 +850,19 @@ def screen_install():
 
     def on_progress(pct):
         current_pct[0] = pct
-        gauge_update(gauge, pct, current_stage[0])
+        bar_w    = 40
+        filled   = int(pct / 100 * bar_w)
+        bar      = "█" * filled + "░" * (bar_w - filled)
+        msg      = f"  {bar}  {int(pct)}%\n\n  {current_stage[0]}"
+        gauge_update(gauge, pct, msg)
 
     def on_stage(msg):
         current_stage[0] = msg
-        gauge_update(gauge, current_pct[0], msg)
+        bar_w    = 40
+        filled   = int(current_pct[0] / 100 * bar_w)
+        bar      = "█" * filled + "░" * (bar_w - filled)
+        full_msg = f"  {bar}  {int(current_pct[0])}%\n\n  {msg}"
+        gauge_update(gauge, current_pct[0], full_msg)
 
     def on_done(success, reason):
         failed[0]      = not success
@@ -815,9 +883,13 @@ def screen_install():
 
     if failed[0]:
         msgbox(
-            L("Installation Failed", "Instalacion fallida"),
-            L(f"Installation failed.\n\n{fail_reason[0]}\n\nCheck {LOG_FILE} for full details.",
-              f"La instalacion fallo.\n\n{fail_reason[0]}\n\nRevisa {LOG_FILE} para mas detalles.")
+            L("✗  Installation Failed", "✗  Instalacion Fallida"),
+            L(f"The installation did not complete.\n\n"
+              f"Reason: {fail_reason[0]}\n\n"
+              f"Full log: {LOG_FILE}",
+              f"La instalacion no se completo.\n\n"
+              f"Motivo: {fail_reason[0]}\n\n"
+              f"Log completo: {LOG_FILE}")
         )
         return False
 
@@ -825,20 +897,42 @@ def screen_install():
 
 
 def screen_finish():
-    ok = yesno(
-        L("Installation Complete!", "Instalacion completa!"),
-        L("Arch Linux has been installed successfully.\n\n"
-          "Remove the installation media and reboot now?",
-          "Arch Linux se ha instalado correctamente.\n\n"
-          "Extrae el medio de instalacion y reiniciar ahora?")
+    text = (
+        "\\Z2"
+        "   ✔  Installation Complete!\n"
+        "\\Zn\n"
+        "  Arch Linux has been installed successfully.\n\n"
+        "  ┌──────────────────────────────────────────┐\n"
+        f"  │  Hostname  :  {state['hostname']:<25}  │\n"
+        f"  │  Username  :  {state['username']:<25}  │\n"
+        f"  │  Disk      :  /dev/{state['disk']:<21}  │\n"
+        f"  │  Desktop   :  {state['desktop']:<25}  │\n"
+        "  └──────────────────────────────────────────┘\n\n"
+        "  Remove the installation media and reboot.\n\n"
+        "  Reboot now?"
+    ) if state["lang"] == "en" else (
+        "\\Z2"
+        "   ✔  Instalacion Completa!\n"
+        "\\Zn\n"
+        "  Arch Linux se ha instalado correctamente.\n\n"
+        "  ┌──────────────────────────────────────────┐\n"
+        f"  │  Hostname  :  {state['hostname']:<25}  │\n"
+        f"  │  Usuario   :  {state['username']:<25}  │\n"
+        f"  │  Disco     :  /dev/{state['disk']:<21}  │\n"
+        f"  │  Escritorio:  {state['desktop']:<25}  │\n"
+        "  └──────────────────────────────────────────┘\n\n"
+        "  Extrae el medio de instalacion y reinicia.\n\n"
+        "  Reiniciar ahora?"
     )
+
+    ok = yesno(L("✔  Done!", "✔  Listo!"), text)
     if ok:
         dlg_titled(
-            L("Rebooting", "Reiniciando"),
+            L("Rebooting…", "Reiniciando…"),
             "--infobox",
-            L("Unmounting filesystems and rebooting…",
-              "Desmontando sistemas de archivos y reiniciando…"),
-            "5", "50"
+            L("  Unmounting filesystems…\n  System will reboot shortly.",
+              "  Desmontando sistemas de archivos…\n  El sistema reiniciara en breve."),
+            "6", "52"
         )
         subprocess.run("umount -R /mnt", shell=True)
         subprocess.run("reboot",         shell=True)
@@ -847,25 +941,24 @@ def screen_finish():
 
 def main():
     steps = [
-        ("Welcome",                        screen_welcome,   False),
-        ("Language",                        screen_language,  False),
-        (L("Identity", "Identidad"),        screen_identity,  True),
-        (L("Passwords", "Contrasenas"),     screen_passwords, True),
-        (L("Disk", "Disco"),                screen_disk,      True),
-        (L("Keymap", "Teclado"),            screen_keymap,    True),
-        (L("Timezone", "Zona horaria"),     screen_timezone,  True),
-        (L("Desktop", "Escritorio"),        screen_desktop,   True),
-        ("GPU",                             screen_gpu,       True),
-        (L("Review", "Revision"),           screen_review,    True),
-        (L("Install", "Instalar"),          screen_install,   False),
-        (L("Finish", "Finalizar"),          screen_finish,    False),
+        ("Welcome",                       screen_welcome,   False),
+        ("Language",                      screen_language,  False),
+        (L("Identity",   "Identidad"),    screen_identity,  True),
+        (L("Passwords",  "Contrasenas"),  screen_passwords, True),
+        (L("Disk",       "Disco"),        screen_disk,      True),
+        (L("Keymap",     "Teclado"),      screen_keymap,    True),
+        (L("Timezone",   "Zona horaria"), screen_timezone,  True),
+        (L("Desktop",    "Escritorio"),   screen_desktop,   True),
+        ("GPU",                           screen_gpu,       True),
+        (L("Review",     "Revision"),     screen_review,    True),
+        (L("Install",    "Instalar"),     screen_install,   False),
+        (L("Finish",     "Finalizar"),    screen_finish,    False),
     ]
 
     idx = 0
     while idx < len(steps):
         name, fn, can_go_back = steps[idx]
         result = fn()
-
         if result is False and can_go_back:
             idx = max(0, idx - 1)
         else:
