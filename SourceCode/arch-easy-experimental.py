@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.2-experimental"
+VERSION  = "V1.2.0-experimental"
 LOG_FILE = "/mnt/install_log.txt"
 TITLE    = "Arch Linux Installer"
 
@@ -265,11 +265,21 @@ def screen_wifi_connect():
     if not ifaces:
         msgbox(
             L("WiFi", "WiFi"),
-            L("No wireless interfaces found.", "No se encontraron interfaces inalámbricas.")
+            L(
+                "No wireless interfaces found.\n\nMake sure your WiFi adapter is recognized.",
+                "No se encontraron interfaces inalámbricas.\n\nVerifica que tu adaptador WiFi sea reconocido."
+            )
         )
-        return False
+        return None
 
     iface = ifaces[0]
+
+    dlg_titled(
+        L("Scanning…", "Escaneando…"),
+        "--infobox",
+        L(f"Scanning for networks on {iface}…", f"Buscando redes en {iface}…"),
+        "5", "50"
+    )
     subprocess.call(
         f"iwctl station {shlex.quote(iface)} scan",
         shell=True, stderr=subprocess.DEVNULL
@@ -297,27 +307,48 @@ def screen_wifi_connect():
     if ssids:
         ssid = radiolist(
             L("WiFi Networks", "Redes WiFi"),
-            L(f"Interface: {iface}\nSelect a network:",
-              f"Interfaz: {iface}\nSelecciona una red:"),
+            L(
+                f"Interface: {iface}\n"
+                "Select a network (Cancel = go back):",
+                f"Interfaz: {iface}\n"
+                "Selecciona una red (Cancelar = volver):"
+            ),
             [(s, s) for s in ssids]
         )
     else:
         ssid = inputbox(
             L("WiFi — SSID", "WiFi — SSID"),
-            L(f"Interface: {iface}\nEnter network name (SSID):",
-              f"Interfaz: {iface}\nIngresa el nombre de la red (SSID):")
+            L(
+                f"Interface: {iface}\n"
+                "No networks found automatically.\n"
+                "Enter network name (SSID) or Cancel to go back:",
+                f"Interfaz: {iface}\n"
+                "No se encontraron redes automáticamente.\n"
+                "Ingresa el nombre de la red (SSID) o Cancelar para volver:"
+            )
         )
 
+    if ssid is None:
+        return None
     if not ssid:
-        return False
+        return None
 
     passphrase = passwordbox(
         L("WiFi Password", "Contraseña WiFi"),
-        L(f"Password for '{ssid}' (leave blank if open):",
-          f"Contraseña de '{ssid}' (vacío si es abierta):")
+        L(
+            f"Password for '{ssid}'\n(leave blank for open networks, Cancel to go back):",
+            f"Contraseña de '{ssid}'\n(vacío si es abierta, Cancelar para volver):"
+        )
     )
     if passphrase is None:
-        return False
+        return None
+
+    dlg_titled(
+        L("Connecting…", "Conectando…"),
+        "--infobox",
+        L(f"Connecting to '{ssid}'…", f"Conectando a '{ssid}'…"),
+        "5", "50"
+    )
 
     if passphrase:
         cmd = (
@@ -338,10 +369,97 @@ def screen_wifi_connect():
     if not ok:
         msgbox(
             L("WiFi Failed", "WiFi fallido"),
-            L(f"Could not connect to '{ssid}'.\nCheck the password and try again.",
-              f"No se pudo conectar a '{ssid}'.\nVerifica la contraseña e intenta de nuevo.")
+            L(
+                f"Could not connect to '{ssid}'.\n\n"
+                "Possible causes:\n"
+                "  - Wrong password\n"
+                "  - Network out of range\n"
+                "  - DHCP not responding\n\n"
+                "Press OK to go back and try again.",
+                f"No se pudo conectar a '{ssid}'.\n\n"
+                "Posibles causas:\n"
+                "  - Contraseña incorrecta\n"
+                "  - Red fuera de alcance\n"
+                "  - DHCP sin respuesta\n\n"
+                "Presiona OK para volver e intentarlo de nuevo."
+            )
         )
-    return ok
+        return False
+
+    return True
+
+
+def screen_network():
+    while True:
+        choice = menu(
+            L("Network Connection", "Conexión de red"),
+            L(
+                "An active internet connection is required for installation.\n\n"
+                "How are you connected to the internet?",
+                "Se necesita conexión a internet para la instalación.\n\n"
+                "¿Cómo estás conectado a internet?"
+            ),
+            [
+                ("wired", L(
+                    "Wired (Ethernet)  — cable already plugged in",
+                    "Cable (Ethernet)  — cable ya conectado"
+                )),
+                ("wifi",  L(
+                    "WiFi              — connect to a wireless network",
+                    "WiFi              — conectar a una red inalámbrica"
+                )),
+            ]
+        )
+
+        if choice is None:
+            if yesno(L("Exit", "Salir"), L("Exit the installer?", "¿Salir del instalador?")):
+                sys.exit(0)
+            continue
+
+        if choice == "wired":
+            dlg_titled(
+                L("Checking…", "Verificando…"),
+                "--infobox",
+                L("Testing wired connection…", "Probando conexión por cable…"),
+                "5", "50"
+            )
+            ok = subprocess.call(
+                "ping -c1 -W3 8.8.8.8 >/dev/null 2>&1",
+                shell=True, executable="/bin/bash"
+            ) == 0
+            if ok:
+                msgbox(
+                    L("Connected!", "¡Conectado!"),
+                    L("Wired connection detected. Ready to continue.",
+                      "Conexión por cable detectada. Listo para continuar.")
+                )
+                return
+            msgbox(
+                L("No connection detected", "Sin conexión detectada"),
+                L(
+                    "Could not reach the internet over the wired connection.\n\n"
+                    "Check that:\n"
+                    "  - The cable is securely plugged in\n"
+                    "  - Your router/switch is on\n\n"
+                    "Press OK to go back and choose again.",
+                    "No se pudo alcanzar internet por cable.\n\n"
+                    "Verifica que:\n"
+                    "  - El cable esté bien conectado\n"
+                    "  - Tu router/switch esté encendido\n\n"
+                    "Presiona OK para volver y elegir de nuevo."
+                )
+            )
+            continue
+
+        if choice == "wifi":
+            result = screen_wifi_connect()
+            if result is True:
+                msgbox(
+                    L("Connected!", "¡Conectado!"),
+                    L("WiFi connected successfully. Ready to continue.",
+                      "WiFi conectado correctamente. Listo para continuar.")
+                )
+                return
 
 def ensure_network():
     def ping():
@@ -1031,11 +1149,11 @@ def screen_bootloader():
         L("Bootloader", "Gestor de arranque"),
         L(
             "Choose a bootloader:\n\n"
-            "  GRUB         works on any firmware; feature-rich.\n"
-            "  systemd-boot is faster and simpler, but UEFI only.",
+            "  GRUB         works on uefi and bios legacy, feature-rich.\n"
+            "  systemd-boot is faster, UEFI only.",
             "Elige un gestor de arranque:\n\n"
-            "  GRUB         funciona en cualquier firmware; completo.\n"
-            "  systemd-boot es más rápido y simple, pero solo UEFI.",
+            "  GRUB         uefi y bios legacy; completo.\n"
+            "  systemd-boot es más rápido, solo UEFI.",
         ),
         options,
         default=state.get("bootloader", "grub"),
@@ -1352,6 +1470,7 @@ def screen_finish():
 def main():
     screen_welcome()
     screen_language()
+    screen_network()
     quick = screen_mode()
 
     if quick:
