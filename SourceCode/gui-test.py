@@ -456,9 +456,8 @@ def screen_welcome():
     text = (
         "\\Zb\\Z4Welcome to the Arch Linux Installer\\Zn\n\n"
         f"Version: {VERSION}\n\n"
-        "\\Zb\\Z1WARNING:\\Zn  This installer will ERASE the selected disk.\n\n"
-        "Use \\ZbTab\\Zn and \\ZbArrow keys\\Zn to navigate.\n"
-        "\\ZbMouse clicks\\Zn work on buttons and menu items.\n\n"
+        "\\Zb\\Z1WARNING:\\Zn  This installer will ERASE and install Arch Linux to the selected disk.\n\n"
+        "Use \\ZbTab\\Zn and \\ZbArrow keys\\Zn to navigate and space to select\n"
         "Press OK to begin."
     )
     dlg_titled("Welcome", "--msgbox", text, "16", "60")
