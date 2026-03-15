@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.2.0"
+VERSION  = "V1.1.2"
 LOG_FILE = "/mnt/install_log.txt"
 TITLE    = "Arch Linux Installer"
 
@@ -660,7 +660,6 @@ class InstallBackend:
 
 
     def _setup_luks(self, p3):
-        """Encrypt p3 with LUKS and open it as /dev/mapper/cryptroot."""
         passphrase = state["luks_pass"]
         self._stage(L("Encrypting partition with LUKS…", "Cifrando partición con LUKS…"))
 
@@ -669,7 +668,7 @@ class InstallBackend:
             f.write(passphrase)
 
         self._run_critical(
-            f"cryptsetup luksFormat --batch-mode --key-file {tmp_key} {p3}",
+            f"cryptsetup luksFormat --batch-mode --pbkdf pbkdf2 --key-file {tmp_key} {p3}",
             "cryptsetup luksFormat"
         )
         self._run_critical(
@@ -695,7 +694,6 @@ class InstallBackend:
         self._chroot_critical("grub-mkconfig -o /boot/grub/grub.cfg", "grub-mkconfig")
 
     def _install_systemd_boot(self, root_dev):
-        """Install systemd-boot. ESP must be mounted at /mnt/boot."""
         run_stream(
             "bootctl --esp-path=/mnt/boot install",
             on_line=self._log, ignore_error=True
@@ -705,24 +703,6 @@ class InstallBackend:
         kernel    = state["kernel"]
         microcode = detect_cpu()
         luks      = state.get("luks", False)
-
-        try:
-            partuuid = subprocess.check_output(
-                f"blkid -s PARTUUID -o value {root_dev}",
-                shell=True, text=True
-            ).strip()
-        except Exception:
-            partuuid = ""
-
-        loader_conf = (
-            "default arch.conf\n"
-            "timeout 4\n"
-            "console-mode max\n"
-            "editor no\n"
-        )
-        os.makedirs("/mnt/boot/loader", exist_ok=True)
-        with open("/mnt/boot/loader/loader.conf", "w") as f:
-            f.write(loader_conf)
 
         ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
 
@@ -735,13 +715,33 @@ class InstallBackend:
                 ).strip()
             except Exception:
                 luks_uuid = ""
-            cryptdevice = f"cryptdevice=UUID={luks_uuid}:cryptroot" if luks_uuid else \
-                          f"cryptdevice={raw_p3}:cryptroot"
-            root_opt = f"root=/dev/mapper/cryptroot {cryptdevice}"
+
+            if luks_uuid:
+                crypt_opt = f"rd.luks.name={luks_uuid}=cryptroot"
+            else:
+                crypt_opt = f"rd.luks.name={raw_p3}=cryptroot"
+            root_opt = f"{crypt_opt} root=/dev/mapper/cryptroot"
         else:
+            try:
+                partuuid = subprocess.check_output(
+                    f"blkid -s PARTUUID -o value {root_dev}",
+                    shell=True, text=True
+                ).strip()
+            except Exception:
+                partuuid = ""
             root_opt = f"root=PARTUUID={partuuid}" if partuuid else f"root={root_dev}"
 
         extra_opts = "rootflags=subvol=@ " if fs == "btrfs" else ""
+
+        loader_conf = (
+            "default arch.conf\n"
+            "timeout 4\n"
+            "console-mode max\n"
+            "editor no\n"
+        )
+        os.makedirs("/mnt/boot/loader", exist_ok=True)
+        with open("/mnt/boot/loader/loader.conf", "w") as f:
+            f.write(loader_conf)
 
         arch_conf = (
             f"title   Arch Linux\n"
@@ -817,21 +817,21 @@ class InstallBackend:
 
     def _configure_mkinitcpio(self):
         if state.get("luks"):
+            hooks = (
+                "HOOKS=(base udev autodetect microcode modconf kms "
+                "keyboard keymap consolefont block encrypt filesystems fsck)"
+            )
             self._chroot(
-                "sed -i 's/\\bblock\\b filesystems/block encrypt filesystems/' "
-                "/etc/mkinitcpio.conf",
+                f"sed -i 's/^HOOKS=(.*)/{hooks}/' /etc/mkinitcpio.conf",
                 ignore_error=True
             )
-            write_log("Added 'encrypt' hook to mkinitcpio.conf for LUKS.")
+            write_log("mkinitcpio HOOKS updated with encrypt + keyboard/keymap for LUKS.")
         self._chroot_critical("mkinitcpio -P", "mkinitcpio")
 
 
     def _configure_grub_cmdline(self, root_dev, raw_p3=None):
-        """Patch GRUB_CMDLINE_LINUX_DEFAULT and (for BTRFS) add rootflags."""
         fs   = state["filesystem"]
         luks = state.get("luks", False)
-
-        extra_parts = []
 
         if luks and raw_p3:
             try:
@@ -839,22 +839,33 @@ class InstallBackend:
                     f"blkid -s UUID -o value {raw_p3}",
                     shell=True, text=True
                 ).strip()
-                extra_parts.append(f"cryptdevice=UUID={luks_uuid}:cryptroot")
-                extra_parts.append("root=/dev/mapper/cryptroot")
             except Exception:
-                pass
+                luks_uuid = ""
 
-        if fs == "btrfs":
-            extra_parts.append("rootflags=subvol=@")
+            cryptdevice = (
+                f"cryptdevice=UUID={luks_uuid}:cryptroot"
+                if luks_uuid else f"cryptdevice={raw_p3}:cryptroot"
+            )
+            luks_cmdline = f"{cryptdevice} root=/dev/mapper/cryptroot"
 
-        if extra_parts:
-            extra = " ".join(extra_parts)
             self._chroot(
-                f"sed -i 's|GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"|"
-                f"GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 {extra}\"|' /etc/default/grub",
+                "echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub",
                 ignore_error=True
             )
-            write_log(f"GRUB cmdline extra: {extra}")
+            self._chroot(
+                f"sed -i 's|^GRUB_CMDLINE_LINUX=\"\"|GRUB_CMDLINE_LINUX=\"{luks_cmdline}\"|' "
+                "/etc/default/grub",
+                ignore_error=True
+            )
+            write_log(f"GRUB LUKS cmdline: {luks_cmdline}")
+
+        if fs == "btrfs":
+            self._chroot(
+                "sed -i 's|GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"|"
+                "GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 rootflags=subvol=@\"|' /etc/default/grub",
+                ignore_error=True
+            )
+            write_log("GRUB BTRFS rootflags=subvol=@ added.")
 
 
     def _install_flatpak(self, uname):
