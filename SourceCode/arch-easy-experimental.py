@@ -30,6 +30,7 @@ state = {
     "quick":      False,
     "yay":        False,
     "snapper":    False,
+    "bootloader": "grub",
 }
 
 DESKTOP_PKGS = {
@@ -111,8 +112,8 @@ def menu(title, text, items):
     flat = []
     for tag, desc in items:
         flat.extend([tag, desc])
-    height = min(len(items) + 8, 30)
-    rc, val = dlg_titled(title, "--menu", text, str(height), "72", str(len(items)), *flat)
+    height = min(len(items) + 12, 40)
+    rc, val = dlg_titled(title, "--menu", text, str(height), "76", str(len(items)), *flat)
     if rc != 0:
         return None
     return val
@@ -122,8 +123,8 @@ def radiolist(title, text, items, default=None):
     for tag, desc in items:
         status = "on" if tag == default else "off"
         flat.extend([tag, desc, status])
-    height = min(len(items) + 8, 30)
-    rc, val = dlg_titled(title, "--radiolist", text, str(height), "72", str(len(items)), *flat)
+    height = min(len(items) + 12, 40)
+    rc, val = dlg_titled(title, "--radiolist", text, str(height), "76", str(len(items)), *flat)
     if rc != 0:
         return None
     return val
@@ -466,6 +467,51 @@ class InstallBackend:
             )
         self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
 
+    def _install_systemd_boot(self, p3):
+        """Install systemd-boot. ESP must be mounted at /mnt/boot."""
+        run_stream(
+            "bootctl --esp-path=/mnt/boot install",
+            on_line=self._log, ignore_error=True
+        )
+
+        try:
+            partuuid = subprocess.check_output(
+                f"blkid -s PARTUUID -o value {p3}",
+                shell=True, text=True
+            ).strip()
+        except Exception:
+            partuuid = ""
+
+        kernel    = state["kernel"]
+        microcode = detect_cpu()
+
+        loader_conf = (
+            "default arch.conf\n"
+            "timeout 4\n"
+            "console-mode max\n"
+            "editor no\n"
+        )
+        os.makedirs("/mnt/boot/loader", exist_ok=True)
+        with open("/mnt/boot/loader/loader.conf", "w") as f:
+            f.write(loader_conf)
+
+        ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
+
+        root_opt = f"PARTUUID={partuuid}" if partuuid else p3
+
+        arch_conf = (
+            f"title   Arch Linux\n"
+            f"linux   /vmlinuz-{kernel}\n"
+            f"{ucode_line}"
+            f"initrd  /initramfs-{kernel}.img\n"
+            f"options root={root_opt} rw quiet\n"
+        )
+        os.makedirs("/mnt/boot/loader/entries", exist_ok=True)
+        with open("/mnt/boot/loader/entries/arch.conf", "w") as f:
+            f.write(arch_conf)
+
+        write_log("systemd-boot installed and configured.")
+
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
         p1, p2, p3 = partition_paths_for(disk_path)
@@ -473,6 +519,10 @@ class InstallBackend:
         kernel     = state["kernel"]
         microcode  = detect_cpu()
         uefi       = is_uefi()
+        bootloader = state.get("bootloader", "grub")
+
+        if bootloader == "systemd-boot" and not uefi:
+            bootloader = "grub"
 
         try:
             self._stage(L("Checking network…", "Verificando red…"))
@@ -524,17 +574,27 @@ class InstallBackend:
 
             if uefi:
                 self._stage(L("Mounting EFI…", "Montando EFI…"))
-                run_stream("mkdir -p /mnt/boot/efi",    on_line=self._log)
-                run_stream(f"mount {p1} /mnt/boot/efi", on_line=self._log)
+                if bootloader == "systemd-boot":
+                    run_stream("mkdir -p /mnt/boot",    on_line=self._log)
+                    run_stream(f"mount {p1} /mnt/boot", on_line=self._log)
+                else:
+                    run_stream("mkdir -p /mnt/boot/efi",    on_line=self._log)
+                    run_stream(f"mount {p1} /mnt/boot/efi", on_line=self._log)
             self._pct(18)
 
             ucode_pkg   = f" {microcode}" if microcode else ""
             extra_pkgs  = " btrfs-progs" if fs == "btrfs" else ""
             kernel_hdrs = f"{kernel}-headers"
-            efi_pkg     = " efibootmgr" if uefi else ""
+
+            if bootloader == "systemd-boot":
+                boot_pkgs = " efibootmgr"
+            else:
+                efi_flag  = " efibootmgr" if uefi else ""
+                boot_pkgs = f" grub{efi_flag}"
+
             pkgs = (
                 f"base {kernel} linux-firmware {kernel_hdrs} sof-firmware "
-                f"base-devel grub{efi_pkg} vim nano networkmanager git "
+                f"base-devel{boot_pkgs} vim nano networkmanager git "
                 f"sudo bash-completion{extra_pkgs}{ucode_pkg}"
             )
 
@@ -644,8 +704,12 @@ class InstallBackend:
 
             self._pct(94)
 
-            self._stage(L("Installing GRUB bootloader…", "Instalando GRUB…"))
-            self._install_grub(disk_path)
+            if bootloader == "systemd-boot":
+                self._stage(L("Installing systemd-boot…", "Instalando systemd-boot…"))
+                self._install_systemd_boot(p3)
+            else:
+                self._stage(L("Installing GRUB bootloader…", "Instalando GRUB…"))
+                self._install_grub(disk_path)
             self._pct(97)
 
             if state.get("snapper") and fs == "btrfs":
@@ -666,15 +730,13 @@ class InstallBackend:
                     "mkdir /.snapshots",
                     ignore_error=True
                 )
-                self._chroot(
-                    "mount -a",
-                    ignore_error=True
-                )
+                self._chroot("mount -a", ignore_error=True)
                 self._chroot("chmod 750 /.snapshots")
                 self._chroot("systemctl enable snapper-timeline.timer")
                 self._chroot("systemctl enable snapper-cleanup.timer")
-                self._chroot("systemctl enable grub-btrfs.path")
-                self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
+                if bootloader == "grub":
+                    self._chroot("systemctl enable grub-btrfs.path")
+                    self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
 
             if state.get("yay"):
                 self._stage(L("Installing yay (AUR helper)…", "Instalando yay (AUR helper)…"))
@@ -744,6 +806,7 @@ def screen_mode():
         state["gpu"]        = detect_gpu()
         state["yay"]        = True
         state["snapper"]    = True
+        state["bootloader"] = "grub"
     return result == "quick"
 
 def screen_identity():
@@ -924,12 +987,12 @@ def screen_filesystem():
 
 def screen_kernel():
     options = [
-        ("linux",     L("linux     — latest stable",
-                        "linux     — estable más reciente")),
-        ("linux-lts", L("linux-lts — long-term support",
-                        "linux-lts — soporte a largo plazo")),
-        ("linux-zen", L("linux-zen — optimized for desktop/gaming",
-                        "linux-zen — optimizado para escritorio/gaming")),
+        ("linux",     L("linux     — latest stable kernel",
+                        "linux     — kernel estable más reciente")),
+        ("linux-lts", L("linux-lts — long-term support kernel",
+                        "linux-lts — kernel de soporte a largo plazo")),
+        ("linux-zen", L("linux-zen — optimized for desktop / gaming",
+                        "linux-zen — optimizado para escritorio / gaming")),
     ]
     result = radiolist(
         L("Kernel", "Kernel"),
@@ -939,6 +1002,46 @@ def screen_kernel():
     )
     if result:
         state["kernel"] = result
+    return True
+
+def screen_bootloader():
+    uefi = is_uefi()
+
+    if not uefi:
+        state["bootloader"] = "grub"
+        return True
+
+    options = [
+        (
+            "grub",
+            L(
+                "GRUB         — stable, supports UEFI and BIOS, dual-boot friendly",
+                "GRUB         — estable, soporta UEFI y BIOS, amigable con dual-boot",
+            ),
+        ),
+        (
+            "systemd-boot",
+            L(
+                "systemd-boot — fast, minimal, UEFI only, built into systemd",
+                "systemd-boot — rápido, minimal, solo UEFI, incluido en systemd",
+            ),
+        ),
+    ]
+    result = radiolist(
+        L("Bootloader", "Gestor de arranque"),
+        L(
+            "Choose a bootloader:\n\n"
+            "  GRUB         works on any firmware; feature-rich.\n"
+            "  systemd-boot is faster and simpler, but UEFI only.",
+            "Elige un gestor de arranque:\n\n"
+            "  GRUB         funciona en cualquier firmware; completo.\n"
+            "  systemd-boot es más rápido y simple, pero solo UEFI.",
+        ),
+        options,
+        default=state.get("bootloader", "grub"),
+    )
+    if result:
+        state["bootloader"] = result
     return True
 
 def screen_mirrors():
@@ -1138,6 +1241,7 @@ def screen_review():
         (L("Username", "Usuario"),  state["username"] or "NOT SET"),
         ("Filesystem",              state["filesystem"]),
         ("Kernel",                  state["kernel"]),
+        ("Bootloader",              state["bootloader"]),
         ("Microcode",               microcode),
         ("Disk",                    f"/dev/{state['disk']}" if state["disk"] else "NOT SET"),
         ("Swap",                    f"{state['swap']} GB"),
@@ -1261,21 +1365,22 @@ def main():
         ]
     else:
         steps = [
-            (L("Disk",       "Disco"),            screen_disk,       True),
-            (L("Filesystem", "Sistema archivos"), screen_filesystem, True),
-            (L("Kernel",     "Kernel"),           screen_kernel,     True),
-            (L("Mirrors",    "Mirrors"),          screen_mirrors,    True),
-            (L("Identity",   "Identidad"),        screen_identity,   True),
-            (L("Passwords",  "Contraseñas"),      screen_passwords,  True),
-            (L("Keymap",     "Teclado"),          screen_keymap,     True),
-            (L("Timezone",   "Zona horaria"),     screen_timezone,   True),
-            (L("Desktop",    "Escritorio"),       screen_desktop,    True),
-            ("GPU",                               screen_gpu,        True),
-            (L("yay",        "yay"),              screen_yay,        True),
-            (L("Snapshots",  "Snapshots"),        screen_snapper,    True),
-            (L("Review",     "Revisión"),         screen_review,     True),
-            (L("Install",    "Instalar"),         screen_install,    False),
-            (L("Finish",     "Finalizar"),        screen_finish,     False),
+            (L("Disk",        "Disco"),            screen_disk,        True),
+            (L("Filesystem",  "Sistema archivos"), screen_filesystem,  True),
+            (L("Kernel",      "Kernel"),           screen_kernel,      True),
+            (L("Bootloader",  "Bootloader"),       screen_bootloader,  True),
+            (L("Mirrors",     "Mirrors"),          screen_mirrors,     True),
+            (L("Identity",    "Identidad"),        screen_identity,    True),
+            (L("Passwords",   "Contraseñas"),      screen_passwords,   True),
+            (L("Keymap",      "Teclado"),          screen_keymap,      True),
+            (L("Timezone",    "Zona horaria"),     screen_timezone,    True),
+            (L("Desktop",     "Escritorio"),       screen_desktop,     True),
+            ("GPU",                                screen_gpu,         True),
+            (L("yay",         "yay"),              screen_yay,         True),
+            (L("Snapshots",   "Snapshots"),        screen_snapper,     True),
+            (L("Review",      "Revisión"),         screen_review,      True),
+            (L("Install",     "Instalar"),         screen_install,     False),
+            (L("Finish",      "Finalizar"),        screen_finish,      False),
         ]
 
     idx = 0
