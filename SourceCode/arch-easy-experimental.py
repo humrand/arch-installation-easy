@@ -31,8 +31,6 @@ state = {
     "yay":        False,
     "snapper":    False,
     "bootloader": "grub",
-    "luks":       False,
-    "luks_pass":  "",
     "flatpak":    False,
 }
 
@@ -659,26 +657,6 @@ class InstallBackend:
         )
 
 
-    def _setup_luks(self, p3):
-        passphrase = state["luks_pass"]
-        self._stage(L("Encrypting partition with LUKS…", "Cifrando partición con LUKS…"))
-
-        tmp_key = "/tmp/luks_key"
-        with open(tmp_key, "w") as f:
-            f.write(passphrase)
-
-        self._run_critical(
-            f"cryptsetup luksFormat --batch-mode --pbkdf pbkdf2 --key-file {tmp_key} {p3}",
-            "cryptsetup luksFormat"
-        )
-        self._run_critical(
-            f"cryptsetup open --key-file {tmp_key} {p3} cryptroot",
-            "cryptsetup open"
-        )
-        os.remove(tmp_key)
-        return "/dev/mapper/cryptroot"
-
-
     def _install_grub(self, disk_path):
         if is_uefi():
             self._chroot_critical(
@@ -702,34 +680,16 @@ class InstallBackend:
         fs        = state["filesystem"]
         kernel    = state["kernel"]
         microcode = detect_cpu()
-        luks      = state.get("luks", False)
-
         ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
 
-        if luks:
-            raw_p3 = state.get("_luks_raw_p3", root_dev)
-            try:
-                luks_uuid = subprocess.check_output(
-                    f"blkid -s UUID -o value {raw_p3}",
-                    shell=True, text=True
-                ).strip()
-            except Exception:
-                luks_uuid = ""
-
-            if luks_uuid:
-                crypt_opt = f"rd.luks.name={luks_uuid}=cryptroot"
-            else:
-                crypt_opt = f"rd.luks.name={raw_p3}=cryptroot"
-            root_opt = f"{crypt_opt} root=/dev/mapper/cryptroot"
-        else:
-            try:
-                partuuid = subprocess.check_output(
-                    f"blkid -s PARTUUID -o value {root_dev}",
-                    shell=True, text=True
-                ).strip()
-            except Exception:
-                partuuid = ""
-            root_opt = f"root=PARTUUID={partuuid}" if partuuid else f"root={root_dev}"
+        try:
+            partuuid = subprocess.check_output(
+                f"blkid -s PARTUUID -o value {root_dev}",
+                shell=True, text=True
+            ).strip()
+        except Exception:
+            partuuid = ""
+        root_opt = f"root=PARTUUID={partuuid}" if partuuid else f"root={root_dev}"
 
         extra_opts = "rootflags=subvol=@ " if fs == "btrfs" else ""
 
@@ -816,57 +776,14 @@ class InstallBackend:
 
 
     def _configure_mkinitcpio(self):
-        if state.get("luks"):
-            hooks = (
-                "HOOKS=(base udev autodetect microcode modconf kms "
-                "keyboard keymap consolefont block encrypt filesystems fsck)"
-            )
-            self._chroot(
-                f"sed -i 's/^HOOKS=(.*)/{hooks}/' /etc/mkinitcpio.conf",
-                ignore_error=True
-            )
-            write_log("mkinitcpio HOOKS updated with encrypt + keyboard/keymap for LUKS.")
         self._chroot_critical("mkinitcpio -P", "mkinitcpio")
 
-
-    def _configure_grub_cmdline(self, root_dev, raw_p3=None):
-        fs   = state["filesystem"]
-        luks = state.get("luks", False)
-
-        if luks and raw_p3:
-            try:
-                luks_uuid = subprocess.check_output(
-                    f"blkid -s UUID -o value {raw_p3}",
-                    shell=True, text=True
-                ).strip()
-            except Exception:
-                luks_uuid = ""
-
-            cryptdevice = (
-                f"cryptdevice=UUID={luks_uuid}:cryptroot"
-                if luks_uuid else f"cryptdevice={raw_p3}:cryptroot"
-            )
-            luks_cmdline = f"{cryptdevice} root=/dev/mapper/cryptroot"
-
+    def _configure_grub_cmdline(self):
+        if state["filesystem"] == "btrfs":
             self._chroot(
-                "echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub",
+            "sed -i 's|GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\1 rootflags=subvol=@\"|' /etc/default/grub",
                 ignore_error=True
             )
-            self._chroot(
-                f"sed -i 's|^GRUB_CMDLINE_LINUX=\"\"|GRUB_CMDLINE_LINUX=\"{luks_cmdline}\"|' "
-                "/etc/default/grub",
-                ignore_error=True
-            )
-            write_log(f"GRUB LUKS cmdline: {luks_cmdline}")
-
-        if fs == "btrfs":
-            self._chroot(
-                "sed -i 's|GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"|"
-                "GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 rootflags=subvol=@\"|' /etc/default/grub",
-                ignore_error=True
-            )
-            write_log("GRUB BTRFS rootflags=subvol=@ added.")
-
 
     def _install_flatpak(self, uname):
         self._stage(L("Installing Flatpak + Flathub…", "Instalando Flatpak + Flathub…"))
@@ -891,7 +808,6 @@ class InstallBackend:
         microcode  = detect_cpu()
         uefi       = is_uefi()
         bootloader = state.get("bootloader", "grub")
-        luks       = state.get("luks", False)
         uname      = state["username"]
 
         if bootloader == "systemd-boot" and not uefi:
@@ -944,9 +860,6 @@ class InstallBackend:
             self._run_critical(f"mkswap {p2}", "mkswap")
             run_stream(f"swapon {p2}", on_line=self._log, ignore_error=True)
 
-            if luks:
-                state["_luks_raw_p3"] = p3
-                root_dev = self._setup_luks(p3)
 
             if fs == "btrfs":
                 self._setup_btrfs(root_dev, disk_path)
@@ -968,7 +881,6 @@ class InstallBackend:
             ucode_pkg   = f" {microcode}" if microcode else ""
             extra_pkgs  = " btrfs-progs" if fs == "btrfs" else ""
             kernel_hdrs = f"{kernel}-headers"
-            luks_pkgs   = " cryptsetup" if luks else ""
 
             if bootloader == "systemd-boot":
                 boot_pkgs = " efibootmgr"
@@ -979,7 +891,7 @@ class InstallBackend:
             pkgs = (
                 f"base {kernel} linux-firmware {kernel_hdrs} sof-firmware "
                 f"base-devel{boot_pkgs} vim nano networkmanager git "
-                f"sudo bash-completion{extra_pkgs}{ucode_pkg}{luks_pkgs}"
+                f"sudo bash-completion{extra_pkgs}{ucode_pkg}"
             )
 
             self._stage(L("Installing base system — this may take a while…",
@@ -1078,7 +990,7 @@ class InstallBackend:
                 self._install_systemd_boot(root_dev)
             else:
                 self._stage(L("Installing GRUB bootloader…", "Instalando GRUB…"))
-                self._configure_grub_cmdline(root_dev, raw_p3=state.get("_luks_raw_p3"))
+                self._configure_grub_cmdline()
                 self._install_grub(disk_path)
             self._pct(97)
 
@@ -1423,66 +1335,6 @@ def screen_bootloader():
         state["bootloader"] = result
     return True
 
-def screen_luks():
-    result = radiolist(
-        L("Disk Encryption", "Cifrado de disco"),
-        L(
-            "Encrypt the root partition with LUKS2?\n\n"
-            "  YES — full disk encryption (you will enter a passphrase at every boot)\n"
-            "  NO  — no encryption",
-            "¿Cifrar la partición raíz con LUKS2?\n\n"
-            "  SÍ  — cifrado total (pedirá contraseña en cada arranque)\n"
-            "  NO  — sin cifrado"
-        ),
-        [
-            ("yes", L("Yes — encrypt with LUKS2 (recommended for laptops)",
-                      "Sí — cifrar con LUKS2 (recomendado para portátiles)")),
-            ("no",  L("No  — no encryption",
-                      "No  — sin cifrado")),
-        ],
-        default="yes" if state.get("luks") else "no"
-    )
-
-    if result != "yes":
-        state["luks"]      = False
-        state["luks_pass"] = ""
-        return True
-
-    while True:
-        lp1 = passwordbox(
-            L("LUKS Passphrase", "Contraseña LUKS"),
-            L(
-                "Enter LUKS encryption passphrase:\n"
-                "(This will be required at every boot — do NOT forget it!)",
-                "Ingresa la contraseña de cifrado LUKS:\n"
-                "(Se pedirá en cada arranque — ¡NO la olvides!)"
-            )
-        )
-        if lp1 is None:
-            state["luks"] = False
-            return True
-
-        lp2 = passwordbox(
-            L("LUKS Passphrase", "Contraseña LUKS"),
-            L("Confirm LUKS passphrase:", "Confirma la contraseña LUKS:")
-        )
-        if lp2 is None:
-            state["luks"] = False
-            return True
-
-        if not lp1:
-            msgbox(L("Error", "Error"),
-                   L("Passphrase cannot be empty.", "La contraseña no puede estar vacía."))
-            continue
-        if lp1 != lp2:
-            msgbox(L("Error", "Error"),
-                   L("Passphrases do not match.", "Las contraseñas no coinciden."))
-            continue
-
-        state["luks"]      = True
-        state["luks_pass"] = lp1
-        return True
-
 def screen_mirrors():
     result = radiolist(
         L("Mirror Optimization", "Optimización de mirrors"),
@@ -1720,7 +1572,6 @@ def screen_review():
         ("Microcode",               microcode),
         ("Disk",                    f"/dev/{state['disk']}" if state["disk"] else "NOT SET"),
         ("Swap",                    f"{state['swap']} GB"),
-        ("LUKS",                    L("yes (encrypted)", "sí (cifrado)") if state.get("luks") else "no"),
         ("Mirrors",                 L("reflector (auto)", "reflector (auto)") if state["mirrors"] else L("default", "por defecto")),
         ("Keymap",                  state["keymap"]),
         ("Timezone",                state["timezone"]),
@@ -1836,7 +1687,6 @@ def main():
     if quick:
         steps = [
             (L("Disk",      "Disco"),       screen_disk,      True),
-            (L("Encryption","Cifrado"),     screen_luks,      True),
             (L("Identity",  "Identidad"),   screen_identity,  True),
             (L("Passwords", "Contraseñas"), screen_passwords, True),
             (L("Review",    "Revisión"),    screen_review,    True),
@@ -1849,7 +1699,6 @@ def main():
             (L("Filesystem",  "Sistema archivos"), screen_filesystem,  True),
             (L("Kernel",      "Kernel"),           screen_kernel,      True),
             (L("Bootloader",  "Bootloader"),       screen_bootloader,  True),
-            (L("Encryption",  "Cifrado"),          screen_luks,        True),
             (L("Mirrors",     "Mirrors"),          screen_mirrors,     True),
             (L("Identity",    "Identidad"),        screen_identity,    True),
             (L("Passwords",   "Contraseñas"),      screen_passwords,   True),
