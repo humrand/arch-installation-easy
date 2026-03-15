@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.2"
+VERSION  = "V1.2.0"
 LOG_FILE = "/mnt/install_log.txt"
 TITLE    = "Arch Linux Installer"
 
@@ -288,25 +288,34 @@ def screen_wifi_connect():
         f"iwctl station {shlex.quote(iface)} scan",
         shell=True, stderr=subprocess.DEVNULL
     )
-    time.sleep(3)
 
-    ssids = []
-    try:
-        raw = subprocess.check_output(
-            f"iwctl station {shlex.quote(iface)} get-networks 2>/dev/null",
-            shell=True, text=True
-        )
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+
+    def _parse_ssids(raw):
+        found = []
         for line in raw.splitlines():
             clean = ansi_escape.sub("", line).strip().lstrip("> ").strip()
             if not clean or re.match(r"^[-=*]+$", clean) or clean.lower().startswith("network"):
                 continue
             parts = clean.split()
             if parts and len(parts[0]) > 0:
-                ssids.append(parts[0])
-        ssids = list(dict.fromkeys(ssids))[:15]
-    except Exception:
-        ssids = []
+                found.append(parts[0])
+        return list(dict.fromkeys(found))[:15]
+
+    ssids    = []
+    deadline = time.time() + 12
+    while time.time() < deadline:
+        time.sleep(2)
+        try:
+            raw = subprocess.check_output(
+                f"iwctl station {shlex.quote(iface)} get-networks 2>/dev/null",
+                shell=True, text=True
+            )
+            ssids = _parse_ssids(raw)
+        except Exception:
+            ssids = []
+        if ssids:
+            break
 
     if ssids:
         ssid = radiolist(
@@ -680,8 +689,6 @@ class InstallBackend:
         fs        = state["filesystem"]
         kernel    = state["kernel"]
         microcode = detect_cpu()
-        ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
-
         try:
             partuuid = subprocess.check_output(
                 f"blkid -s PARTUUID -o value {root_dev}",
@@ -689,8 +696,7 @@ class InstallBackend:
             ).strip()
         except Exception:
             partuuid = ""
-        root_opt = f"root=PARTUUID={partuuid}" if partuuid else f"root={root_dev}"
-
+        root_opt   = f"root=PARTUUID={partuuid}" if partuuid else f"root={root_dev}"
         extra_opts = "rootflags=subvol=@ " if fs == "btrfs" else ""
 
         loader_conf = (
@@ -703,6 +709,8 @@ class InstallBackend:
         with open("/mnt/boot/loader/loader.conf", "w") as f:
             f.write(loader_conf)
 
+        # microcode initrd MUST come before the main initramfs
+        ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
         arch_conf = (
             f"title   Arch Linux\n"
             f"linux   /vmlinuz-{kernel}\n"
@@ -751,7 +759,7 @@ class InstallBackend:
             )
             self._pacman(
                 f"arch-chroot /mnt pacman -S --noconfirm "
-                f"{nvidia_pkg} nvidia-utils nvidia-settings",
+                f"{nvidia_pkg} nvidia-utils nvidia-settings nvidia-prime",
                 start_pct + (end_pct - start_pct) * 0.4, end_pct,
                 ignore_error=True
             )
@@ -781,7 +789,10 @@ class InstallBackend:
     def _configure_grub_cmdline(self):
         if state["filesystem"] == "btrfs":
             self._chroot(
-            "sed -i 's|GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\1 rootflags=subvol=@\"|' /etc/default/grub",
+                "grep -q 'rootflags=subvol=@' /etc/default/grub || "
+                "sed -i "
+                "'s|GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 rootflags=subvol=@\"|' "
+                "/etc/default/grub",
                 ignore_error=True
             )
 
@@ -954,6 +965,9 @@ class InstallBackend:
 
             self._stage(L("Enabling NetworkManager…", "Habilitando NetworkManager…"))
             self._chroot("systemctl enable NetworkManager")
+            if is_ssd(disk_path):
+                self._chroot("systemctl enable fstrim.timer", ignore_error=True)
+                write_log("SSD detected — fstrim.timer enabled.")
             self._pct(71)
 
             self._install_gpu_drivers(71, 77)
@@ -1002,12 +1016,10 @@ class InstallBackend:
                     "snapper snap-pac grub-btrfs inotify-tools",
                     97, 98, ignore_error=True
                 )
-                self._chroot("umount /.snapshots && rm -rf /.snapshots", ignore_error=True)
                 self._chroot("snapper -c root create-config /")
-                self._chroot(
-                    "btrfs subvolume delete /.snapshots && mkdir /.snapshots",
-                    ignore_error=True
-                )
+                self._chroot("umount /.snapshots", ignore_error=True)
+                self._chroot("rm -rf /.snapshots", ignore_error=True)
+                self._chroot("mkdir -p /.snapshots")
                 self._chroot("mount -a", ignore_error=True)
                 self._chroot("chmod 750 /.snapshots")
                 self._chroot("systemctl enable snapper-timeline.timer")
