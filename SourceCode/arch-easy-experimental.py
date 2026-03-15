@@ -28,6 +28,7 @@ state = {
     "kernel":     "linux",
     "mirrors":    True,
     "quick":      False,
+    "yay":        False,
 }
 
 DESKTOP_PKGS = {
@@ -616,7 +617,7 @@ class InstallBackend:
             self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
             self._pct(97)
 
-            if state.get("quick"):
+            if state.get("yay"):
                 self._stage(L("Installing yay (AUR helper)…", "Instalando yay (AUR helper)…"))
                 self._chroot(
                     "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
@@ -682,6 +683,7 @@ def screen_mode():
         state["desktop"]    = "KDE Plasma"
         state["mirrors"]    = True
         state["gpu"]        = detect_gpu()
+        state["yay"]        = True
     return result == "quick"
 
 def screen_identity():
@@ -987,6 +989,23 @@ def screen_gpu():
         state["gpu"] = result
     return True
 
+def screen_yay():
+    result = radiolist(
+        L("AUR Helper", "AUR Helper"),
+        L("Install yay? (AUR helper, lets you install packages from the AUR)",
+          "¿Instalar yay? (AUR helper, permite instalar paquetes del AUR)"),
+        [
+            ("yes", L("Yes — install yay after base setup",
+                      "Sí — instalar yay al finalizar")),
+            ("no",  L("No  — skip",
+                      "No  — omitir")),
+        ],
+        default="yes" if state["yay"] else "no"
+    )
+    if result:
+        state["yay"] = (result == "yes")
+    return True
+
 def screen_review():
     microcode = detect_cpu() or L("none detected", "no detectado")
     quick_tag = L("  [Quick Install]", "  [Instalación rápida]") if state["quick"] else ""
@@ -1007,7 +1026,7 @@ def screen_review():
         ("Desktop",                 state["desktop"]),
         ("GPU",                     state["gpu"]),
         ("Audio",                   "pipewire" if state["desktop"] != "None" else L("none", "ninguno")),
-        ("yay",                     L("yes", "sí") if state["quick"] else "no"),
+        ("yay",                     L("yes", "sí") if state["yay"] else "no"),
     ]
 
     text    = L(f"Review your settings:{quick_tag}\n\n",
@@ -1131,6 +1150,7 @@ def main():
             (L("Timezone",   "Zona horaria"),     screen_timezone,   True),
             (L("Desktop",    "Escritorio"),       screen_desktop,    True),
             ("GPU",                               screen_gpu,        True),
+            (L("yay",        "yay"),              screen_yay,        True),
             (L("Review",     "Revisión"),         screen_review,     True),
             (L("Install",    "Instalar"),         screen_install,    False),
             (L("Finish",     "Finalizar"),        screen_finish,     False),
@@ -1141,7 +1161,12 @@ def main():
         _, fn, can_go_back = steps[idx]
         result = fn()
         if result is False and can_go_back:
-            idx = max(0, idx - 1)
+            if idx == 0:
+                if yesno(L("Exit", "Salir"),
+                         L("Exit the installer?", "¿Salir del instalador?")):
+                    sys.exit(0)
+            else:
+                idx -= 1
         else:
             idx += 1
 
