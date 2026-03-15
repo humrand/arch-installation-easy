@@ -4,6 +4,13 @@ A fully automated Arch Linux installer written in Python, designed to run direct
 
 This installer simplifies Arch installation while keeping full control over the system. It now includes **GPU selection, multiple desktop environments, configurable swap, proper password input handling, automatic language selection.
 
+## How to run the instaler
+
+```bash
+python install.py
+```
+
+
 # ISO image
 
 The ISO image is available in the releases.
@@ -19,6 +26,7 @@ The ISO image is available in the releases.
 - Filesystem setup:
   - FAT32 for EFI
   - EXT4 for root
+  - BTRFS for roor if sleected
   - Swap activation
 - Automatic mounting of partitions
 - Hostname configuration
@@ -32,6 +40,10 @@ The ISO image is available in the releases.
 - Optional desktop environments:
   - KDE Plasma
   - Cinnamon
+  - Gnome
+  - Lxqt
+  - Xfce
+  - mate
 - Desktop installation includes:
   - Necessary Xorg packages
   - Firefox and basic apps (Alacritty, Konsole, Dolphin, Kate, and Ark)
@@ -41,7 +53,7 @@ The ISO image is available in the releases.
 ## Requirements
 
 - Internet connection  
-- UEFI system (EFI partition created automatically)
+- UEFI system 
 
 ## Usage
 
@@ -49,6 +61,3 @@ The ISO image is available in the releases.
 
 1. Boot from the Arch ISO  
 2. Run the installer:
-
-```bash
-python install.py
