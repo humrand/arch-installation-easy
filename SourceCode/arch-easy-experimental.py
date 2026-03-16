@@ -189,8 +189,6 @@ def partition_paths_for(disk_path):
     return f"{disk_path}1", f"{disk_path}2", f"{disk_path}3"
 
 def detect_gpu():
-    """Detect GPU(s). Returns 'NVIDIA', 'AMD', 'Intel', 'Intel+NVIDIA',
-    'Intel+AMD', or 'None'. Handles hybrid laptops."""
     try:
         out = subprocess.check_output(
             "lspci 2>/dev/null | grep -iE 'vga|3d|display'",
@@ -230,7 +228,6 @@ def is_uefi():
     return os.path.exists("/sys/firmware/efi")
 
 def is_ssd(disk_path):
-    """Return True if the given disk is a solid-state drive."""
     disk_name = disk_path.replace("/dev/", "")
     disk_name = re.sub(r"p?\d+$", "", disk_name)
     rotational = f"/sys/block/{disk_name}/queue/rotational"
@@ -241,7 +238,6 @@ def is_ssd(disk_path):
         return False
 
 def suggest_swap_gb():
-    """Suggest a swap size based on total RAM (GiB)."""
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -398,8 +394,6 @@ def screen_wifi_connect():
 
 
 def _check_connectivity():
-    """Check internet connectivity by trying archlinux.org first,
-    then falling back to 8.8.8.8.  Returns True if reachable."""
     for cmd in (
         "curl -sI --max-time 5 https://archlinux.org >/dev/null 2>&1",
         "ping -c1 -W3 archlinux.org >/dev/null 2>&1",
@@ -577,7 +571,6 @@ class InstallBackend:
             time.sleep(delay)
 
     def _run_critical(self, cmd, label="command"):
-        """Run a shell command; raise RuntimeError on failure."""
         rc = run_stream(cmd, on_line=self._log)
         if rc != 0:
             raise RuntimeError(
@@ -709,7 +702,6 @@ class InstallBackend:
         with open("/mnt/boot/loader/loader.conf", "w") as f:
             f.write(loader_conf)
 
-        # microcode initrd MUST come before the main initramfs
         ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
         arch_conf = (
             f"title   Arch Linux\n"
@@ -773,7 +765,6 @@ class InstallBackend:
             self._pct(end_pct)
 
     def _configure_nvidia_modeset(self):
-        """Enable nvidia_drm.modeset=1 via modprobe config."""
         modprobe_conf = "options nvidia_drm modeset=1\n"
         self._chroot(
             f"mkdir -p /etc/modprobe.d && "
@@ -1387,6 +1378,7 @@ def screen_keymap():
     if result:
         state["keymap"] = result
         run_simple(f"loadkeys {shlex.quote(result)}", ignore_error=True)
+        run_simple(f"echo 'KEYMAP={shlex.quote(result)}' > /etc/vconsole.conf", ignore_error=True)
     return True
 
 def screen_timezone():
