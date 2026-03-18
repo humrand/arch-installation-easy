@@ -228,13 +228,16 @@ def is_uefi():
     return os.path.exists("/sys/firmware/efi")
 
 def is_ssd(disk_path):
-    disk_name = disk_path.replace("/dev/", "")
-    disk_name = re.sub(r"p?\d+$", "", disk_name)
-    rotational = f"/sys/block/{disk_name}/queue/rotational"
+    disk_name = os.path.basename(disk_path)
+    if disk_name.startswith("nvme") or disk_name.startswith("mmcblk"):
+        block = re.sub(r"p\d+$", "", disk_name)   # nvme0n1p1 → nvme0n1
+    else:
+        block = re.sub(r"\d+$", "", disk_name)     # sda1 → sda
+    rotational = f"/sys/block/{block}/queue/rotational"
     try:
         with open(rotational) as f:
             return f.read().strip() == "0"
-    except Exception:
+    except FileNotFoundError:
         return False
 
 def suggest_swap_gb():
@@ -970,20 +973,20 @@ class InstallBackend:
             self._configure_mkinitcpio()
             self._pct(63)
 
-            self._stage(L("Setting passwords…", "Estableciendo contraseñas…"))
-            self._chroot_passwd("root", state["root_pass"])
-            self._pct(65)
-
             self._stage(L(f"Creating user '{uname}'…", f"Creando usuario '{uname}'…"))
             self._chroot_critical(
                 f"useradd -m -G wheel -s /bin/bash {shlex.quote(uname)}",
                 "useradd"
             )
-            self._chroot_passwd(uname, state["user_pass"])
             self._chroot(
                 "sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/"
                 "%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers"
             )
+            self._pct(63)
+
+            self._stage(L("Setting passwords…", "Estableciendo contraseñas…"))
+            self._chroot_passwd("root", state["root_pass"])
+            self._chroot_passwd(uname, state["user_pass"])
             self._pct(68)
 
             self._stage(L("Enabling NetworkManager…", "Habilitando NetworkManager…"))
