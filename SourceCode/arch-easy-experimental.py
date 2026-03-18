@@ -267,11 +267,12 @@ def suggest_swap_gb():
     return 8
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# BUG FIX 1: helper to settle partition table after sgdisk operations.
-# Without this, NVMe (and some SATA) drives freeze/fail because the kernel
-# hasn't updated its partition map before mkfs tries to open the new nodes.
-# ──────────────────────────────────────────────────────────────────────────────
+
+# BUG FIX: helper to settle partition table after sgdisk operations
+# Without this NVMe drives freeze because the kernel
+# hasn't updated its partition map before mkfs tries to open the new nodes
+#gosh this took so long to fix.
+
 def _settle_partitions(disk_path, log_fn=None):
     """Force kernel to re-read partition table and wait for udev."""
     for cmd in (
