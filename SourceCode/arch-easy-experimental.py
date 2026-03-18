@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.3-experimental"
+VERSION  = "V1.1.3"
 LOG_FILE = "/tmp/arch_install.log"
 TITLE    = "Arch Linux Installer"
 
@@ -82,7 +82,18 @@ def write_log(line):
         pass
 
 
+def _flush_stdin():
+    """Drena cualquier tecla pendiente en stdin para que no se cuele en el
+    siguiente diálogo (el Enter del 'OK' anterior dispara el OK siguiente)."""
+    import termios
+    try:
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
+
+
 def dlg_titled(title, *args):
+    _flush_stdin()
     cmd = [
         "dialog",
         "--colors",
