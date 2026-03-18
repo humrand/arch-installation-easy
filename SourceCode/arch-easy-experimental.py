@@ -8,30 +8,31 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.3"
+VERSION  = "V1.2.0"
 LOG_FILE = "/tmp/arch_install.log"
 TITLE    = "Arch Linux Installer"
 
 state = {
-    "lang":       "en",
-    "hostname":   "",
-    "username":   "",
-    "root_pass":  "",
-    "user_pass":  "",
-    "swap":       "8",
-    "disk":       None,
-    "desktop":    "None",
-    "gpu":        "None",
-    "keymap":     "us",
-    "timezone":   "UTC",
-    "filesystem": "ext4",
-    "kernel":     "linux",
-    "mirrors":    True,
-    "quick":      False,
-    "yay":        False,
-    "snapper":    False,
-    "bootloader": "grub",
-    "flatpak":    False,
+    "lang":               "en",
+    "hostname":           "",
+    "username":           "",
+    "root_pass":          "",
+    "user_pass":          "",
+    "swap":               "8",
+    "disk":               None,
+    "desktop":            "None",
+    "gpu":                "None",
+    "keymap":             "us",
+    "timezone":           "UTC",
+    "filesystem":         "ext4",
+    "kernel":             "linux",
+    "mirrors":            True,
+    "quick":              False,
+    "yay":                False,
+    "snapper":            False,
+    "bootloader":         "grub",
+    "flatpak":            False,
+    "hyprland_auto_yes":  True,
 }
 
 DESKTOP_PKGS = {
@@ -55,6 +56,11 @@ DESKTOP_PKGS = {
     "LXQt": [
         "xorg-server lxqt sddm breeze-icons alacritty firefox",
     ],
+
+    "Hyprland": [
+        "hyprland xdg-desktop-portal-hyprland polkit-kde-agent "
+        "qt5-wayland qt6-wayland sddm kitty firefox",
+    ],
 }
 
 DESKTOP_DM = {
@@ -64,12 +70,11 @@ DESKTOP_DM = {
     "XFCE":       "lightdm",
     "MATE":       "lightdm",
     "LXQt":       "sddm",
+    "Hyprland":   "sddm",
 }
-
 
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
-
 
 def nowtag():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -81,16 +86,12 @@ def write_log(line):
     except Exception:
         pass
 
-
 def _flush_stdin():
-    """Drena cualquier tecla pendiente en stdin para que no se cuele en el
-    siguiente diálogo (el Enter del 'OK' anterior dispara el OK siguiente)."""
     import termios
     try:
         termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
     except Exception:
         pass
-
 
 def dlg_titled(title, *args):
     _flush_stdin()
@@ -164,13 +165,11 @@ def gauge_update(proc, pct, message):
     except Exception:
         pass
 
-
 def validate_name(n):
     return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", n or ""))
 
 def validate_swap(s):
     return bool(re.match(r"^\d+$", s or "")) and 1 <= int(s) <= 128
-
 
 def list_disks():
     try:
@@ -241,9 +240,9 @@ def is_uefi():
 def is_ssd(disk_path):
     disk_name = os.path.basename(disk_path)
     if disk_name.startswith("nvme") or disk_name.startswith("mmcblk"):
-        block = re.sub(r"p\d+$", "", disk_name)   # nvme0n1p1 → nvme0n1
+        block = re.sub(r"p\d+$", "", disk_name)
     else:
-        block = re.sub(r"\d+$", "", disk_name)     # sda1 → sda
+        block = re.sub(r"\d+$", "", disk_name)
     rotational = f"/sys/block/{block}/queue/rotational"
     try:
         with open(rotational) as f:
@@ -266,15 +265,7 @@ def suggest_swap_gb():
         pass
     return 8
 
-
-
-# BUG FIX: helper to settle partition table after sgdisk operations
-# Without this NVMe drives freeze because the kernel
-# hasn't updated its partition map before mkfs tries to open the new nodes
-#gosh this took so long to fix.
-
 def _settle_partitions(disk_path, log_fn=None):
-    """Force kernel to re-read partition table and wait for udev."""
     for cmd in (
         f"partprobe {disk_path}",
         "udevadm settle --timeout=10",
@@ -284,7 +275,6 @@ def _settle_partitions(disk_path, log_fn=None):
         if log_fn:
             log_fn(f"[settle] {cmd}  rc={rc}")
     time.sleep(1)
-
 
 def _wifi_interfaces():
     try:
@@ -425,7 +415,6 @@ def screen_wifi_connect():
 
     return True
 
-
 def _check_connectivity():
     for cmd in (
         "curl -sI --max-time 5 https://archlinux.org >/dev/null 2>&1",
@@ -526,7 +515,6 @@ def ensure_network():
 
     return False
 
-
 _PAT_INSTALL  = re.compile(r"\((\d+)/(\d+)\)")
 _PAT_DOWNLOAD = re.compile(
     r"\S+\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)/s"
@@ -572,7 +560,6 @@ def run_simple(cmd, ignore_error=False):
     if r != 0 and not ignore_error:
         write_log(f"ERROR (rc={r}): {cmd}")
     return r
-
 
 class InstallBackend:
     def __init__(self, on_progress, on_stage, on_done):
@@ -665,7 +652,6 @@ class InstallBackend:
             on_line=self._log, ignore_error=True
         )
 
-  
     def _settle(self, disk_path):
         _settle_partitions(disk_path, log_fn=self._log)
 
@@ -708,8 +694,6 @@ class InstallBackend:
         self._chroot_critical("grub-mkconfig -o /boot/grub/grub.cfg", "grub-mkconfig")
 
     def _install_systemd_boot(self, root_dev):
-        # BUG FIX 2: run bootctl from within chroot so it uses the installed
-        # systemd version and writes to the correct EFI paths consistently.
         self._chroot_critical("bootctl install", "bootctl install")
 
         fs        = state["filesystem"]
@@ -737,7 +721,6 @@ class InstallBackend:
         with open("/mnt/boot/loader/loader.conf", "w") as f:
             f.write(loader_conf)
 
-        # BUG FIX 3: microcode must come BEFORE the main initramfs line.
         ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
         arch_conf = (
             f"title   Arch Linux\n"
@@ -835,6 +818,82 @@ class InstallBackend:
         )
         write_log("Flatpak + Flathub configured.")
 
+    def _ensure_yay(self, uname):
+        """Install yay if not already present in the chroot."""
+        rc = self._chroot("command -v yay >/dev/null 2>&1", ignore_error=True)
+        if rc == 0:
+            write_log("yay already installed — skipping.")
+            return
+        self._stage(L("Installing yay (needed for Hyprland setup)…",
+                      "Instalando yay (necesario para el setup de Hyprland)…"))
+        self._chroot(
+            "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
+            "> /etc/sudoers.d/99_nopasswd_tmp",
+            ignore_error=True
+        )
+        self._chroot(
+            f"su - {shlex.quote(uname)} -c "
+            "'git clone https://aur.archlinux.org/yay.git /tmp/yay "
+            "&& cd /tmp/yay && makepkg -si --noconfirm'",
+            ignore_error=True
+        )
+        self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp", ignore_error=True)
+
+    def _install_hyprland_dotfiles(self, uname):
+        """
+        Clone end-4/dots-hyprland into the user's ~/.cache and run
+        ./setup install.  All yes/no prompts from the script are handled
+        automatically according to state["hyprland_auto_yes"].
+        """
+        auto_yes = state.get("hyprland_auto_yes", True)
+
+        yes_cmd = "yes" if auto_yes else "yes n"
+
+        self._stage(
+            L("Installing Hyprland dotfiles (end-4/dots-hyprland)…",
+              "Instalando dotfiles de Hyprland (end-4/dots-hyprland)…")
+        )
+
+        self._ensure_yay(uname)
+
+        self._chroot(
+            "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
+            "> /etc/sudoers.d/99_nopasswd_tmp",
+            ignore_error=True
+        )
+
+        self._stage(
+            L("Cloning end-4/dots-hyprland…",
+              "Clonando end-4/dots-hyprland…")
+        )
+
+        user_cmd = (
+            "mkdir -p ~/.cache && "
+            "cd ~/.cache && "
+            "git clone https://github.com/end-4/dots-hyprland && "
+            "cd dots-hyprland && "
+            f"{yes_cmd} | bash ./setup install"
+        )
+
+        self._stage(
+            L("Running dots-hyprland setup.sh — this may take a while…",
+              "Ejecutando setup.sh de dots-hyprland — esto puede tardar…")
+        )
+
+        rc = self._chroot(
+            f"su - {shlex.quote(uname)} -c {shlex.quote(user_cmd)}",
+            ignore_error=True
+        )
+
+        self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp", ignore_error=True)
+
+        if rc != 0:
+            write_log(
+                f"WARNING: dots-hyprland setup.sh exited with rc={rc}. "
+                "The base Hyprland packages are installed; dotfiles may be incomplete."
+            )
+        else:
+            write_log("Hyprland dotfiles installation complete.")
 
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
@@ -845,7 +904,6 @@ class InstallBackend:
         uefi       = is_uefi()
         bootloader = state.get("bootloader", "grub")
         uname      = state["username"]
-
 
         if bootloader == "systemd-boot" and not uefi:
             write_log("systemd-boot requested but BIOS detected — falling back to GRUB")
@@ -877,12 +935,11 @@ class InstallBackend:
                 )
             self._pct(5)
 
-
             self._stage(L("Wiping disk…", "Borrando disco…"))
             self._gradual(7)
             run_stream(f"wipefs -a {disk_path}", on_line=self._log, ignore_error=True)
             self._run_critical(f"sgdisk -Z {disk_path}", "sgdisk -Z")
-            self._settle(disk_path)          # <── NEW: let kernel see the wipe
+            self._settle(disk_path)
             self._pct(8)
 
             self._stage(L("Creating partitions…", "Creando particiones…"))
@@ -894,7 +951,7 @@ class InstallBackend:
                 f"sgdisk -n2:0:+{state['swap']}G -t2:8200 {disk_path}", "sgdisk swap"
             )
             self._run_critical(f"sgdisk -n3:0:0 -t3:8300 {disk_path}", "sgdisk root")
-            self._settle(disk_path)          # <── NEW: wait for p1/p2/p3 nodes
+            self._settle(disk_path)
             self._pct(12)
 
             self._stage(L("Formatting partitions…", "Formateando particiones…"))
@@ -1060,18 +1117,25 @@ class InstallBackend:
                     self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
 
             if state.get("yay"):
-                self._stage(L("Installing yay (AUR helper)…", "Instalando yay (AUR helper)…"))
-                self._chroot(
-                    "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
-                    "> /etc/sudoers.d/99_nopasswd_tmp"
-                )
-                self._chroot(
-                    f"su - {shlex.quote(uname)} -c "
-                    "'git clone https://aur.archlinux.org/yay.git /tmp/yay "
-                    "&& cd /tmp/yay && makepkg -si --noconfirm'",
-                    ignore_error=True
-                )
-                self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp")
+                yay_rc = self._chroot("command -v yay >/dev/null 2>&1", ignore_error=True)
+                if yay_rc != 0:
+                    self._stage(
+                        L("Installing yay (AUR helper)…", "Instalando yay (AUR helper)…")
+                    )
+                    self._chroot(
+                        "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
+                        "> /etc/sudoers.d/99_nopasswd_tmp"
+                    )
+                    self._chroot(
+                        f"su - {shlex.quote(uname)} -c "
+                        "'git clone https://aur.archlinux.org/yay.git /tmp/yay "
+                        "&& cd /tmp/yay && makepkg -si --noconfirm'",
+                        ignore_error=True
+                    )
+                    self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp")
+
+            if desktop == "Hyprland":
+                self._install_hyprland_dotfiles(uname)
 
             if state.get("flatpak") and desktop != "None":
                 self._install_flatpak(uname)
@@ -1086,7 +1150,6 @@ class InstallBackend:
         except Exception as e:
             self._log(f"FATAL: {e}")
             self.on_done(False, str(e))
-
 
 def screen_welcome():
     boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS (Legacy)", "BIOS (Legacy)")
@@ -1485,6 +1548,8 @@ def screen_desktop():
                          "MATE      — fork de GNOME 2, muy estable")),
         ("LXQt",       L("LXQt      — minimal Qt desktop",
                          "LXQt      — escritorio Qt minimalista")),
+        ("Hyprland",   L("Hyprland  — pre-configured dotfiles (end-4/dots-hyprland)",
+                         "Hyprland  — dotfiles preconfigurados (end-4/dots-hyprland)")),
         ("None",       L("None      — CLI only, no desktop",
                          "None      — solo terminal, sin escritorio")),
     ]
@@ -1497,6 +1562,42 @@ def screen_desktop():
     if result is None:
         return False
     state["desktop"] = result
+    return True
+
+def screen_hyprland_opts():
+    """
+    Only shown when Hyprland is selected.
+    Asks how the user wants the dots-hyprland setup.sh prompts handled.
+    """
+    if state["desktop"] != "Hyprland":
+        return True
+
+    result = radiolist(
+        L("Hyprland Dotfiles — Setup Prompts",
+          "Dotfiles Hyprland — Prompts del setup"),
+        L(
+            "The end-4/dots-hyprland setup.sh script may ask yes/no questions\n"
+            "during installation (e.g. install extra packages, apply configs…).\n\n"
+            "How should all those prompts be answered automatically?",
+            "El script setup.sh de end-4/dots-hyprland puede hacer preguntas\n"
+            "durante la instalación (ej. instalar paquetes extra, aplicar configs…).\n\n"
+            "¿Cómo quieres responder automáticamente a todas esas preguntas?"
+        ),
+        [
+            ("yes", L(
+                "Yes to all  — accept every default / install everything",
+                "Sí a todo  — aceptar todo / instalar todo"
+            )),
+            ("no", L(
+                "No to all   — decline every optional step",
+                "No a todo   — rechazar cada paso opcional"
+            )),
+        ],
+        default="yes" if state.get("hyprland_auto_yes", True) else "no"
+    )
+    if result is None:
+        return False
+    state["hyprland_auto_yes"] = (result == "yes")
     return True
 
 def screen_gpu():
@@ -1613,6 +1714,13 @@ def screen_review():
     quick_tag = L("  [Quick Install]", "  [Instalación rápida]") if state["quick"] else ""
     boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS", "BIOS")
 
+    hypr_tag = ""
+    if state["desktop"] == "Hyprland":
+        hypr_tag = (
+            L("yes (auto)", "sí (auto)") if state.get("hyprland_auto_yes", True)
+            else L("no (auto)", "no (auto)")
+        )
+
     lines = [
         ("Mode",                    L("Quick", "Rápida") if state["quick"] else L("Custom", "Personalizada")),
         ("Boot",                    boot_mode),
@@ -1636,12 +1744,15 @@ def screen_review():
         ("snapper",                 L("yes", "sí") if state.get("snapper") else "no"),
     ]
 
+    if hypr_tag:
+        lines.append((L("Hyprland prompts", "Prompts Hyprland"), hypr_tag))
+
     text    = L(f"Review your settings:{quick_tag}\n\n",
                 f"Revisa tu configuración:{quick_tag}\n\n")
     missing = []
 
     for label, val in lines:
-        text += f"  {label:<14} {val}\n"
+        text += f"  {label:<18} {val}\n"
     text += "\n"
 
     if not state["hostname"]:  missing.append("hostname")
@@ -1665,14 +1776,6 @@ def screen_review():
     )
 
 class InstallScreen:
-    """
-    Renderizador de pantalla de instalación sin dialog.
-    Muestra una barra de progreso con ANSI.
-
-    Escribe 'debug' (sin Enter)  → vista de log en vivo
-    Escribe 'exit'  (sin Enter)  → vuelve a la barra de progreso
-    """
-
     _RST  = "\033[0m"
     _BOLD = "\033[1m"
     _DIM  = "\033[2m"
@@ -1680,9 +1783,8 @@ class InstallScreen:
     _SHOW = "\033[?25h"
     _CLS  = "\033[2J\033[H"
 
-    # colores
-    _BG_BLUE  = "\033[44m\033[97m"   # blanco sobre azul
-    _BG_DARK  = "\033[100m"          # gris oscuro (barra vacía)
+    _BG_BLUE  = "\033[44m\033[97m"
+    _BG_DARK  = "\033[100m"
     _FG_CYAN  = "\033[96m"
     _FG_YEL   = "\033[93m"
     _FG_RED   = "\033[91m"
@@ -1692,16 +1794,15 @@ class InstallScreen:
     def __init__(self, title, version):
         self._title        = title
         self._version      = version
-        self._mode         = "progress"   # "progress" | "debug"
-        self._prev_mode    = "progress"   # para detectar cambios de modo
+        self._mode         = "progress"
+        self._prev_mode    = "progress"
         self._pct          = 0.0
         self._stage        = L("Preparing…", "Preparando…")
-        self._lines        = []           # ring-buffer de log
+        self._lines        = []
         self._lock         = threading.Lock()
         self._running      = False
         self._keybuf       = ""
         self._old_tty      = None
-
 
     def start(self):
         self._running = True
@@ -1729,12 +1830,10 @@ class InstallScreen:
             self._stage = stage
 
     def feed(self, line):
-        """Añade una línea al buffer de log (llamado desde el hilo tailer)."""
         with self._lock:
             self._lines.append(line)
             if len(self._lines) > 2000:
                 self._lines = self._lines[-1000:]
-
 
     def _size(self):
         sz = shutil.get_terminal_size((80, 24))
@@ -1750,7 +1849,6 @@ class InstallScreen:
         if len(s) <= n:
             return s
         return s[:n - 1] + "…"
-
 
     def _render_loop(self):
         while self._running:
@@ -1844,7 +1942,6 @@ class InstallScreen:
         for i in range(len(visible), available):
             out.append(self._goto(3 + i) + self._clr())
 
-
     def _key_loop(self):
         import select as _sel
         while self._running:
@@ -1867,7 +1964,6 @@ class InstallScreen:
             except Exception:
                 pass
 
-
 def screen_install():
     try:
         open(LOG_FILE, "a").close()
@@ -1885,7 +1981,7 @@ def screen_install():
     def _tailer():
         try:
             with open(LOG_FILE, "r", errors="replace") as f:
-                f.seek(0, 2)                    # empieza desde el final
+                f.seek(0, 2)
                 while not stop_tail.is_set():
                     line = f.readline()
                     if line:
@@ -1949,7 +2045,6 @@ def screen_finish():
         subprocess.run("reboot",         shell=True)
     sys.exit(0)
 
-
 def main():
     screen_welcome()
     screen_language()
@@ -1967,23 +2062,25 @@ def main():
         ]
     else:
         steps = [
-            (L("Disk",        "Disco"),            screen_disk,        True),
-            (L("Filesystem",  "Sistema archivos"), screen_filesystem,  True),
-            (L("Kernel",      "Kernel"),           screen_kernel,      True),
-            (L("Bootloader",  "Bootloader"),       screen_bootloader,  True),
-            (L("Mirrors",     "Mirrors"),          screen_mirrors,     True),
-            (L("Identity",    "Identidad"),        screen_identity,    True),
-            (L("Passwords",   "Contraseñas"),      screen_passwords,   True),
-            (L("Keymap",      "Teclado"),          screen_keymap,      True),
-            (L("Timezone",    "Zona horaria"),     screen_timezone,    True),
-            (L("Desktop",     "Escritorio"),       screen_desktop,     True),
-            ("GPU",                                screen_gpu,         True),
-            (L("yay",         "yay"),              screen_yay,         True),
-            (L("Flatpak",     "Flatpak"),          screen_flatpak,     True),
-            (L("Snapshots",   "Snapshots"),        screen_snapper,     True),
-            (L("Review",      "Revisión"),         screen_review,      True),
-            (L("Install",     "Instalar"),         screen_install,     False),
-            (L("Finish",      "Finalizar"),        screen_finish,      False),
+            (L("Disk",             "Disco"),            screen_disk,           True),
+            (L("Filesystem",       "Sistema archivos"), screen_filesystem,     True),
+            (L("Kernel",           "Kernel"),           screen_kernel,         True),
+            (L("Bootloader",       "Bootloader"),       screen_bootloader,     True),
+            (L("Mirrors",          "Mirrors"),          screen_mirrors,        True),
+            (L("Identity",         "Identidad"),        screen_identity,       True),
+            (L("Passwords",        "Contraseñas"),      screen_passwords,      True),
+            (L("Keymap",           "Teclado"),          screen_keymap,         True),
+            (L("Timezone",         "Zona horaria"),     screen_timezone,       True),
+            (L("Desktop",          "Escritorio"),       screen_desktop,        True),
+
+            (L("Hyprland opts",    "Opts Hyprland"),    screen_hyprland_opts,  True),
+            ("GPU",                                     screen_gpu,            True),
+            (L("yay",              "yay"),              screen_yay,            True),
+            (L("Flatpak",          "Flatpak"),          screen_flatpak,        True),
+            (L("Snapshots",        "Snapshots"),        screen_snapper,        True),
+            (L("Review",           "Revisión"),         screen_review,         True),
+            (L("Install",          "Instalar"),         screen_install,        False),
+            (L("Finish",           "Finalizar"),        screen_finish,         False),
         ]
 
     idx = 0
