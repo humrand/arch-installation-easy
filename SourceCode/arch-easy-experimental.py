@@ -1322,8 +1322,9 @@ def screen_filesystem():
         options,
         default=state["filesystem"]
     )
-    if result:
-        state["filesystem"] = result
+    if result is None:
+        return False
+    state["filesystem"] = result
     return True
 
 def screen_kernel():
@@ -1341,8 +1342,9 @@ def screen_kernel():
         options,
         default=state["kernel"]
     )
-    if result:
-        state["kernel"] = result
+    if result is None:
+        return False
+    state["kernel"] = result
     return True
 
 def screen_bootloader():
@@ -1380,8 +1382,9 @@ def screen_bootloader():
         options,
         default=state.get("bootloader", "grub"),
     )
-    if result:
-        state["bootloader"] = result
+    if result is None:
+        return False
+    state["bootloader"] = result
     return True
 
 def screen_mirrors():
@@ -1397,8 +1400,9 @@ def screen_mirrors():
         ],
         default="yes" if state["mirrors"] else "no"
     )
-    if result:
-        state["mirrors"] = (result == "yes")
+    if result is None:
+        return False
+    state["mirrors"] = (result == "yes")
     return True
 
 def screen_keymap():
@@ -1421,9 +1425,10 @@ def screen_keymap():
         items,
         default=state["keymap"]
     )
-    if result:
-        state["keymap"] = result
-        run_simple(f"loadkeys {shlex.quote(result)}", ignore_error=True)
+    if result is None:
+        return False
+    state["keymap"] = result
+    run_simple(f"loadkeys {shlex.quote(result)}", ignore_error=True)
     return True
 
 def screen_timezone():
@@ -1450,7 +1455,7 @@ def screen_timezone():
         default=cur_region
     )
     if region is None:
-        return True
+        return False
     if region == "UTC":
         state["timezone"] = "UTC"
         return True
@@ -1495,8 +1500,9 @@ def screen_desktop():
         options,
         default=state["desktop"]
     )
-    if result:
-        state["desktop"] = result
+    if result is None:
+        return False
+    state["desktop"] = result
     return True
 
 def screen_gpu():
@@ -1533,8 +1539,9 @@ def screen_gpu():
         options,
         default=state["gpu"]
     )
-    if result:
-        state["gpu"] = result
+    if result is None:
+        return False
+    state["gpu"] = result
     return True
 
 def screen_yay():
@@ -1550,8 +1557,9 @@ def screen_yay():
         ],
         default="yes" if state["yay"] else "no"
     )
-    if result:
-        state["yay"] = (result == "yes")
+    if result is None:
+        return False
+    state["yay"] = (result == "yes")
     return True
 
 def screen_snapper():
@@ -1574,8 +1582,9 @@ def screen_snapper():
         ],
         default="yes" if state["snapper"] else "no"
     )
-    if result:
-        state["snapper"] = (result == "yes")
+    if result is None:
+        return False
+    state["snapper"] = (result == "yes")
     return True
 
 def screen_flatpak():
@@ -1600,8 +1609,9 @@ def screen_flatpak():
         ],
         default="yes" if state.get("flatpak") else "no"
     )
-    if result:
-        state["flatpak"] = (result == "yes")
+    if result is None:
+        return False
+    state["flatpak"] = (result == "yes")
     return True
 
 def screen_review():
