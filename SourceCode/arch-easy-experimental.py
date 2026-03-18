@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 VERSION  = "V1.1.3"
-LOG_FILE = "/mnt/install_log.txt"
+LOG_FILE = "/tmp/arch_install.log"
 TITLE    = "Arch Linux Installer"
 
 state = {
@@ -1672,16 +1672,17 @@ class InstallScreen:
     _FG_GRAY  = "\033[90m"
 
     def __init__(self, title, version):
-        self._title   = title
-        self._version = version
-        self._mode    = "progress"   # "progress" | "debug"
-        self._pct     = 0.0
-        self._stage   = L("Preparing…", "Preparando…")
-        self._lines   = []           # ring-buffer de log
-        self._lock    = threading.Lock()
-        self._running = False
-        self._keybuf  = ""
-        self._old_tty = None
+        self._title        = title
+        self._version      = version
+        self._mode         = "progress"   # "progress" | "debug"
+        self._prev_mode    = "progress"   # para detectar cambios de modo
+        self._pct          = 0.0
+        self._stage        = L("Preparing…", "Preparando…")
+        self._lines        = []           # ring-buffer de log
+        self._lock         = threading.Lock()
+        self._running      = False
+        self._keybuf       = ""
+        self._old_tty      = None
 
     # ── API pública ───────────────────────────────────────────────────────
 
@@ -1751,8 +1752,12 @@ class InstallScreen:
             pct   = self._pct
             stage = self._stage
             lines = list(self._lines)
+            mode_changed    = (mode != self._prev_mode)
+            self._prev_mode = mode
         rows, cols = self._size()
         out = []
+        if mode_changed:
+            out.append(self._CLS)
         if mode == "progress":
             self._draw_progress(out, pct, stage, rows, cols)
         else:
@@ -1763,11 +1768,18 @@ class InstallScreen:
     def _draw_progress(self, out, pct, stage, rows, cols):
         W   = min(cols - 2, 74)
         lft = max(0, (cols - W) // 2)
-        top = max(1, (rows - 9) // 2)
+        top = max(1, (rows - 6) // 2)
         pad = " " * lft
 
         def row(r, txt=""):
             out.append(self._goto(r) + self._clr() + pad + txt)
+
+        # limpiar filas sobrantes por encima (por si venimos de modo debug)
+        for r in range(1, top):
+            out.append(self._goto(r) + self._clr())
+        # limpiar filas sobrantes por debajo
+        for r in range(top + 7, rows + 1):
+            out.append(self._goto(r) + self._clr())
 
         # título
         title_str = f" {self._title}  —  {self._version} "
@@ -1780,22 +1792,16 @@ class InstallScreen:
             f"  {self._BOLD}{self._trunc(stage, W - 4)}{self._RST}")
         row(top + 3)
 
-        # barra
-        bar_w  = W - 10
+        # barra — porcentaje como entero igual que dialog --gauge
+        bar_w  = W - 9
         filled = int(bar_w * pct / 100)
         empty  = bar_w - filled
-        bar = (self._BG_BLUE  + " " * filled + self._RST +
+        bar = (self._BG_BLUE + " " * filled + self._RST +
                self._BG_DARK + " " * empty  + self._RST)
-        pct_s = f"{pct:5.1f}%"
+        pct_s = f"{int(pct):3d}%"
         row(top + 4, f"  [{bar}] {self._BOLD}{pct_s}{self._RST}")
         row(top + 5)
         row(top + 6)
-
-        # hint
-        row(top + 7,
-            f"  {self._FG_CYAN}escribe{self._RST} "
-            f"{self._BOLD}debug{self._RST} "
-            f"{self._FG_CYAN}para ver el log en vivo{self._RST}")
 
     def _draw_debug(self, out, pct, stage, lines, rows, cols):
         W = cols
