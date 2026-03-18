@@ -665,9 +665,7 @@ class InstallBackend:
             on_line=self._log, ignore_error=True
         )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # BUG FIX 1 (NVMe freeze): settle partition table after every sgdisk call.
-    # ──────────────────────────────────────────────────────────────────────────
+  
     def _settle(self, disk_path):
         _settle_partitions(disk_path, log_fn=self._log)
 
@@ -848,8 +846,7 @@ class InstallBackend:
         bootloader = state.get("bootloader", "grub")
         uname      = state["username"]
 
-        # BUG FIX 4: systemd-boot requires UEFI — enforce the fallback here
-        # (was already present but also needs to clear the EFI-only package list)
+
         if bootloader == "systemd-boot" and not uefi:
             write_log("systemd-boot requested but BIOS detected — falling back to GRUB")
             bootloader = "grub"
@@ -880,11 +877,7 @@ class InstallBackend:
                 )
             self._pct(5)
 
-            # ──────────────────────────────────────────────────────────────────
-            # BUG FIX 1 (NVMe freeze): wipe existing signatures FIRST with
-            # wipefs so sgdisk -Z doesn't stall on locked/protected areas,
-            # then settle so the kernel sees a clean slate.
-            # ──────────────────────────────────────────────────────────────────
+
             self._stage(L("Wiping disk…", "Borrando disco…"))
             self._gradual(7)
             run_stream(f"wipefs -a {disk_path}", on_line=self._log, ignore_error=True)
@@ -1709,11 +1702,9 @@ class InstallScreen:
         self._keybuf       = ""
         self._old_tty      = None
 
-    # ── API pública ───────────────────────────────────────────────────────
 
     def start(self):
         self._running = True
-        # modo raw para capturar teclas sin Enter
         if sys.stdin.isatty():
             import tty, termios
             self._old_tty = termios.tcgetattr(sys.stdin.fileno())
@@ -1744,7 +1735,6 @@ class InstallScreen:
             if len(self._lines) > 2000:
                 self._lines = self._lines[-1000:]
 
-    # ── internos ─────────────────────────────────────────────────────────
 
     def _size(self):
         sz = shutil.get_terminal_size((80, 24))
@@ -1761,7 +1751,6 @@ class InstallScreen:
             return s
         return s[:n - 1] + "…"
 
-    # ── render loop ───────────────────────────────────────────────────────
 
     def _render_loop(self):
         while self._running:
@@ -1799,25 +1788,20 @@ class InstallScreen:
         def row(r, txt=""):
             out.append(self._goto(r) + self._clr() + pad + txt)
 
-        # limpiar filas sobrantes por encima (por si venimos de modo debug)
         for r in range(1, top):
             out.append(self._goto(r) + self._clr())
-        # limpiar filas sobrantes por debajo
         for r in range(top + 7, rows + 1):
             out.append(self._goto(r) + self._clr())
 
-        # título
         title_str = f" {self._title}  —  {self._version} "
         row(top,
             self._BG_BLUE + self._BOLD + title_str.center(W) + self._RST)
         row(top + 1)
 
-        # stage
         row(top + 2,
             f"  {self._BOLD}{self._trunc(stage, W - 4)}{self._RST}")
         row(top + 3)
 
-        # barra — porcentaje como entero igual que dialog --gauge
         bar_w  = W - 9
         filled = int(bar_w * pct / 100)
         empty  = bar_w - filled
@@ -1831,7 +1815,6 @@ class InstallScreen:
     def _draw_debug(self, out, pct, stage, lines, rows, cols):
         W = cols
 
-        # cabecera
         pct_s    = f"{pct:.0f}%"
         hdr_l    = f" DEBUG  {pct_s}  {self._trunc(stage, W - 28)}"
         hdr_r    = "escribe 'exit' para volver "
@@ -1840,11 +1823,9 @@ class InstallScreen:
                     hdr_l + " " * gap + hdr_r + self._RST)
         out.append(self._goto(1) + self._clr() + hdr)
 
-        # separador
         out.append(self._goto(2) + self._clr() +
                    self._FG_CYAN + "─" * W + self._RST)
 
-        # área de log
         available = rows - 2
         visible   = lines[-available:] if lines else []
         for i, ln in enumerate(visible):
@@ -1860,11 +1841,9 @@ class InstallScreen:
                 self._goto(3 + i) + self._clr() +
                 color + self._trunc(ln, W - 1) + self._RST
             )
-        # limpiar filas sobrantes
         for i in range(len(visible), available):
             out.append(self._goto(3 + i) + self._clr())
 
-    # ── key loop ──────────────────────────────────────────────────────────
 
     def _key_loop(self):
         import select as _sel
@@ -1883,7 +1862,6 @@ class InstallScreen:
                         with self._lock:
                             self._mode = "progress"
                         self._keybuf = ""
-                    # evitar que el buffer crezca indefinidamente
                     if len(self._keybuf) > 20:
                         self._keybuf = self._keybuf[-10:]
             except Exception:
@@ -1891,7 +1869,6 @@ class InstallScreen:
 
 
 def screen_install():
-    # Aseguramos que el log file existe antes de hacer tail
     try:
         open(LOG_FILE, "a").close()
     except Exception:
@@ -1905,7 +1882,6 @@ def screen_install():
     _pct       = [0.0]
     _stage     = [L("Preparing…", "Preparando…")]
 
-    # Hilo que sigue el LOG_FILE y alimenta InstallScreen
     def _tailer():
         try:
             with open(LOG_FILE, "r", errors="replace") as f:
