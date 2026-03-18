@@ -810,43 +810,66 @@ class InstallBackend:
             "arch-chroot /mnt pacman -S --noconfirm flatpak",
             98, 99, ignore_error=True
         )
-        self._chroot(
-            f"su - {shlex.quote(uname)} -c "
-            "'flatpak remote-add --if-not-exists flathub "
-            "https://dl.flathub.org/repo/flathub.flatpakrepo'",
-            ignore_error=True
+        run_stream(
+            f"arch-chroot /mnt sudo -u {shlex.quote(uname)} -H "
+            f"flatpak remote-add --if-not-exists flathub "
+            f"https://dl.flathub.org/repo/flathub.flatpakrepo",
+            on_line=self._log, ignore_error=True
         )
         write_log("Flatpak + Flathub configured.")
 
+    def _grant_nopasswd(self, uname):
+        self._chroot(
+            f"echo {shlex.quote(uname + ' ALL=(ALL:ALL) NOPASSWD: ALL')} "
+            f"> /etc/sudoers.d/99_hypr_install && "
+            f"chmod 440 /etc/sudoers.d/99_hypr_install",
+            ignore_error=True
+        )
+
+    def _revoke_nopasswd(self):
+        self._chroot("rm -f /etc/sudoers.d/99_hypr_install", ignore_error=True)
+
+    def _run_as_user(self, uname, bash_script, ignore_error=False):
+        script_host = "/mnt/tmp/_arch_installer_user.sh"
+        script_chroot = "/tmp/_arch_installer_user.sh"
+        with open(script_host, "w") as f:
+            f.write("#!/bin/bash\nset -e\n")
+            f.write(f"export HOME=/home/{uname}\n")
+            f.write(f"export USER={uname}\n")
+            f.write(f"export LOGNAME={uname}\n")
+            f.write(f"export XDG_RUNTIME_DIR=/run/user/$(id -u {uname})\n")
+            f.write(bash_script)
+        os.chmod(script_host, 0o755)
+        rc = run_stream(
+            f"arch-chroot /mnt sudo -u {shlex.quote(uname)} -H bash {script_chroot}",
+            on_line=self._log,
+            ignore_error=ignore_error
+        )
+        try:
+            os.remove(script_host)
+        except Exception:
+            pass
+        return rc
+
     def _ensure_yay(self, uname):
-        """Install yay if not already present in the chroot."""
         rc = self._chroot("command -v yay >/dev/null 2>&1", ignore_error=True)
         if rc == 0:
             write_log("yay already installed — skipping.")
             return
         self._stage(L("Installing yay (needed for Hyprland setup)…",
                       "Instalando yay (necesario para el setup de Hyprland)…"))
-        self._chroot(
-            "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
-            "> /etc/sudoers.d/99_nopasswd_tmp",
+        self._grant_nopasswd(uname)
+        self._run_as_user(
+            uname,
+            "git clone https://aur.archlinux.org/yay.git /tmp/yay\n"
+            "cd /tmp/yay\n"
+            "makepkg -si --noconfirm\n",
             ignore_error=True
         )
-        self._chroot(
-            f"su - {shlex.quote(uname)} -c "
-            "'git clone https://aur.archlinux.org/yay.git /tmp/yay "
-            "&& cd /tmp/yay && makepkg -si --noconfirm'",
-            ignore_error=True
-        )
-        self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp", ignore_error=True)
+        self._revoke_nopasswd()
 
     def _install_hyprland_dotfiles(self, uname):
-        """
-        Clone end-4/dots-hyprland into the user's ~/.cache and run
-        ./setup install.  All yes/no prompts from the script are handled
-        automatically according to state["hyprland_auto_yes"].
-        """
         auto_yes = state.get("hyprland_auto_yes", True)
-
         yes_cmd = "yes" if auto_yes else "yes n"
 
         self._stage(
@@ -854,38 +877,28 @@ class InstallBackend:
               "Instalando dotfiles de Hyprland (end-4/dots-hyprland)…")
         )
 
+        self._grant_nopasswd(uname)
         self._ensure_yay(uname)
+        self._grant_nopasswd(uname)
 
-        self._chroot(
-            "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
-            "> /etc/sudoers.d/99_nopasswd_tmp",
-            ignore_error=True
-        )
-
-        self._stage(
-            L("Cloning end-4/dots-hyprland…",
-              "Clonando end-4/dots-hyprland…")
-        )
-
-        user_cmd = (
-            "mkdir -p ~/.cache && "
-            "cd ~/.cache && "
-            "git clone https://github.com/end-4/dots-hyprland && "
-            "cd dots-hyprland && "
-            f"{yes_cmd} | bash ./setup install"
-        )
+        self._stage(L("Cloning end-4/dots-hyprland…", "Clonando end-4/dots-hyprland…"))
 
         self._stage(
             L("Running dots-hyprland setup.sh — this may take a while…",
               "Ejecutando setup.sh de dots-hyprland — esto puede tardar…")
         )
 
-        rc = self._chroot(
-            f"su - {shlex.quote(uname)} -c {shlex.quote(user_cmd)}",
+        rc = self._run_as_user(
+            uname,
+            f"mkdir -p ~/.cache\n"
+            f"cd ~/.cache\n"
+            f"git clone https://github.com/end-4/dots-hyprland\n"
+            f"cd dots-hyprland\n"
+            f"{yes_cmd} | bash ./setup install\n",
             ignore_error=True
         )
 
-        self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp", ignore_error=True)
+        self._revoke_nopasswd()
 
         if rc != 0:
             write_log(
@@ -1122,17 +1135,15 @@ class InstallBackend:
                     self._stage(
                         L("Installing yay (AUR helper)…", "Instalando yay (AUR helper)…")
                     )
-                    self._chroot(
-                        "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
-                        "> /etc/sudoers.d/99_nopasswd_tmp"
-                    )
-                    self._chroot(
-                        f"su - {shlex.quote(uname)} -c "
-                        "'git clone https://aur.archlinux.org/yay.git /tmp/yay "
-                        "&& cd /tmp/yay && makepkg -si --noconfirm'",
+                    self._grant_nopasswd(uname)
+                    self._run_as_user(
+                        uname,
+                        "git clone https://aur.archlinux.org/yay.git /tmp/yay\n"
+                        "cd /tmp/yay\n"
+                        "makepkg -si --noconfirm\n",
                         ignore_error=True
                     )
-                    self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp")
+                    self._revoke_nopasswd()
 
             if desktop == "Hyprland":
                 self._install_hyprland_dotfiles(uname)
