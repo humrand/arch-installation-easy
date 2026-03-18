@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.2"
+VERSION  = "V1.1.3"
 LOG_FILE = "/mnt/install_log.txt"
 TITLE    = "Arch Linux Installer"
 
@@ -189,8 +189,6 @@ def partition_paths_for(disk_path):
     return f"{disk_path}1", f"{disk_path}2", f"{disk_path}3"
 
 def detect_gpu():
-    """Detect GPU(s). Returns 'NVIDIA', 'AMD', 'Intel', 'Intel+NVIDIA',
-    'Intel+AMD', or 'None'. Handles hybrid laptops."""
     try:
         out = subprocess.check_output(
             "lspci 2>/dev/null | grep -iE 'vga|3d|display'",
@@ -230,7 +228,6 @@ def is_uefi():
     return os.path.exists("/sys/firmware/efi")
 
 def is_ssd(disk_path):
-    """Return True if the given disk is a solid-state drive."""
     disk_name = disk_path.replace("/dev/", "")
     disk_name = re.sub(r"p?\d+$", "", disk_name)
     rotational = f"/sys/block/{disk_name}/queue/rotational"
@@ -241,7 +238,6 @@ def is_ssd(disk_path):
         return False
 
 def suggest_swap_gb():
-    """Suggest a swap size based on total RAM (GiB)."""
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -255,6 +251,24 @@ def suggest_swap_gb():
     except Exception:
         pass
     return 8
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BUG FIX 1: helper to settle partition table after sgdisk operations.
+# Without this, NVMe (and some SATA) drives freeze/fail because the kernel
+# hasn't updated its partition map before mkfs tries to open the new nodes.
+# ──────────────────────────────────────────────────────────────────────────────
+def _settle_partitions(disk_path, log_fn=None):
+    """Force kernel to re-read partition table and wait for udev."""
+    for cmd in (
+        f"partprobe {disk_path}",
+        "udevadm settle --timeout=10",
+    ):
+        rc = subprocess.call(cmd, shell=True, executable="/bin/bash",
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if log_fn:
+            log_fn(f"[settle] {cmd}  rc={rc}")
+    time.sleep(1)
 
 
 def _wifi_interfaces():
@@ -398,8 +412,6 @@ def screen_wifi_connect():
 
 
 def _check_connectivity():
-    """Check internet connectivity by trying archlinux.org first,
-    then falling back to 8.8.8.8.  Returns True if reachable."""
     for cmd in (
         "curl -sI --max-time 5 https://archlinux.org >/dev/null 2>&1",
         "ping -c1 -W3 archlinux.org >/dev/null 2>&1",
@@ -555,7 +567,6 @@ class InstallBackend:
         self._progress   = 0.0
         self._lock       = threading.Lock()
 
-
     def _log(self, msg):
         write_log(msg)
 
@@ -577,7 +588,6 @@ class InstallBackend:
             time.sleep(delay)
 
     def _run_critical(self, cmd, label="command"):
-        """Run a shell command; raise RuntimeError on failure."""
         rc = run_stream(cmd, on_line=self._log)
         if rc != 0:
             raise RuntimeError(
@@ -640,6 +650,11 @@ class InstallBackend:
             on_line=self._log, ignore_error=True
         )
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # BUG FIX 1 (NVMe freeze): settle partition table after every sgdisk call.
+    # ──────────────────────────────────────────────────────────────────────────
+    def _settle(self, disk_path):
+        _settle_partitions(disk_path, log_fn=self._log)
 
     def _btrfs_opts(self, disk_path):
         opts = "noatime,compress=zstd,space_cache=v2"
@@ -665,7 +680,6 @@ class InstallBackend:
             f"mount -o {opts},subvol=@snapshots {p3} /mnt/.snapshots",     "mount @snapshots"
         )
 
-
     def _install_grub(self, disk_path):
         if is_uefi():
             self._chroot_critical(
@@ -681,14 +695,14 @@ class InstallBackend:
         self._chroot_critical("grub-mkconfig -o /boot/grub/grub.cfg", "grub-mkconfig")
 
     def _install_systemd_boot(self, root_dev):
-        run_stream(
-            "bootctl --esp-path=/mnt/boot install",
-            on_line=self._log, ignore_error=True
-        )
+        # BUG FIX 2: run bootctl from within chroot so it uses the installed
+        # systemd version and writes to the correct EFI paths consistently.
+        self._chroot_critical("bootctl install", "bootctl install")
 
         fs        = state["filesystem"]
         kernel    = state["kernel"]
         microcode = detect_cpu()
+
         try:
             partuuid = subprocess.check_output(
                 f"blkid -s PARTUUID -o value {root_dev}",
@@ -696,6 +710,7 @@ class InstallBackend:
             ).strip()
         except Exception:
             partuuid = ""
+
         root_opt   = f"root=PARTUUID={partuuid}" if partuuid else f"root={root_dev}"
         extra_opts = "rootflags=subvol=@ " if fs == "btrfs" else ""
 
@@ -709,6 +724,7 @@ class InstallBackend:
         with open("/mnt/boot/loader/loader.conf", "w") as f:
             f.write(loader_conf)
 
+        # BUG FIX 3: microcode must come BEFORE the main initramfs line.
         ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
         arch_conf = (
             f"title   Arch Linux\n"
@@ -722,7 +738,6 @@ class InstallBackend:
             f.write(arch_conf)
 
         write_log("systemd-boot installed and configured.")
-
 
     def _install_gpu_drivers(self, start_pct, end_pct):
         gpu    = state["gpu"]
@@ -772,7 +787,6 @@ class InstallBackend:
             self._pct(end_pct)
 
     def _configure_nvidia_modeset(self):
-        """Enable nvidia_drm.modeset=1 via modprobe config."""
         modprobe_conf = "options nvidia_drm modeset=1\n"
         self._chroot(
             f"mkdir -p /etc/modprobe.d && "
@@ -780,7 +794,6 @@ class InstallBackend:
             ignore_error=True
         )
         write_log("nvidia_drm modeset=1 configured in /etc/modprobe.d/nvidia.conf")
-
 
     def _configure_mkinitcpio(self):
         self._chroot_critical("mkinitcpio -P", "mkinitcpio")
@@ -820,8 +833,12 @@ class InstallBackend:
         bootloader = state.get("bootloader", "grub")
         uname      = state["username"]
 
+        # BUG FIX 4: systemd-boot requires UEFI — enforce the fallback here
+        # (was already present but also needs to clear the EFI-only package list)
         if bootloader == "systemd-boot" and not uefi:
+            write_log("systemd-boot requested but BIOS detected — falling back to GRUB")
             bootloader = "grub"
+            state["bootloader"] = "grub"
 
         root_dev = p3
 
@@ -848,9 +865,16 @@ class InstallBackend:
                 )
             self._pct(5)
 
+            # ──────────────────────────────────────────────────────────────────
+            # BUG FIX 1 (NVMe freeze): wipe existing signatures FIRST with
+            # wipefs so sgdisk -Z doesn't stall on locked/protected areas,
+            # then settle so the kernel sees a clean slate.
+            # ──────────────────────────────────────────────────────────────────
             self._stage(L("Wiping disk…", "Borrando disco…"))
             self._gradual(7)
+            run_stream(f"wipefs -a {disk_path}", on_line=self._log, ignore_error=True)
             self._run_critical(f"sgdisk -Z {disk_path}", "sgdisk -Z")
+            self._settle(disk_path)          # <── NEW: let kernel see the wipe
             self._pct(8)
 
             self._stage(L("Creating partitions…", "Creando particiones…"))
@@ -862,6 +886,7 @@ class InstallBackend:
                 f"sgdisk -n2:0:+{state['swap']}G -t2:8200 {disk_path}", "sgdisk swap"
             )
             self._run_critical(f"sgdisk -n3:0:0 -t3:8300 {disk_path}", "sgdisk root")
+            self._settle(disk_path)          # <── NEW: wait for p1/p2/p3 nodes
             self._pct(12)
 
             self._stage(L("Formatting partitions…", "Formateando particiones…"))
@@ -869,7 +894,6 @@ class InstallBackend:
                 self._run_critical(f"mkfs.fat -F32 {p1}", "mkfs.fat")
             self._run_critical(f"mkswap {p2}", "mkswap")
             run_stream(f"swapon {p2}", on_line=self._log, ignore_error=True)
-
 
             if fs == "btrfs":
                 self._setup_btrfs(root_dev, disk_path)
@@ -1622,48 +1646,278 @@ def screen_review():
         )
     )
 
+class InstallScreen:
+    """
+    Renderizador de pantalla de instalación sin dialog.
+    Muestra una barra de progreso con ANSI.
+
+    Escribe 'debug' (sin Enter)  → vista de log en vivo
+    Escribe 'exit'  (sin Enter)  → vuelve a la barra de progreso
+    """
+
+    _RST  = "\033[0m"
+    _BOLD = "\033[1m"
+    _DIM  = "\033[2m"
+    _HIDE = "\033[?25l"
+    _SHOW = "\033[?25h"
+    _CLS  = "\033[2J\033[H"
+
+    # colores
+    _BG_BLUE  = "\033[44m\033[97m"   # blanco sobre azul
+    _BG_DARK  = "\033[100m"          # gris oscuro (barra vacía)
+    _FG_CYAN  = "\033[96m"
+    _FG_YEL   = "\033[93m"
+    _FG_RED   = "\033[91m"
+    _FG_GRN   = "\033[92m"
+    _FG_GRAY  = "\033[90m"
+
+    def __init__(self, title, version):
+        self._title   = title
+        self._version = version
+        self._mode    = "progress"   # "progress" | "debug"
+        self._pct     = 0.0
+        self._stage   = L("Preparing…", "Preparando…")
+        self._lines   = []           # ring-buffer de log
+        self._lock    = threading.Lock()
+        self._running = False
+        self._keybuf  = ""
+        self._old_tty = None
+
+    # ── API pública ───────────────────────────────────────────────────────
+
+    def start(self):
+        self._running = True
+        # modo raw para capturar teclas sin Enter
+        if sys.stdin.isatty():
+            import tty, termios
+            self._old_tty = termios.tcgetattr(sys.stdin.fileno())
+            tty.setraw(sys.stdin.fileno())
+        sys.stdout.write(self._HIDE + self._CLS)
+        sys.stdout.flush()
+        threading.Thread(target=self._render_loop, daemon=True).start()
+        threading.Thread(target=self._key_loop,    daemon=True).start()
+
+    def stop(self):
+        self._running = False
+        time.sleep(0.15)
+        if self._old_tty is not None:
+            import termios
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_tty)
+        sys.stdout.write(self._SHOW + self._CLS)
+        sys.stdout.flush()
+
+    def update(self, pct, stage):
+        with self._lock:
+            self._pct   = pct
+            self._stage = stage
+
+    def feed(self, line):
+        """Añade una línea al buffer de log (llamado desde el hilo tailer)."""
+        with self._lock:
+            self._lines.append(line)
+            if len(self._lines) > 2000:
+                self._lines = self._lines[-1000:]
+
+    # ── internos ─────────────────────────────────────────────────────────
+
+    def _size(self):
+        sz = shutil.get_terminal_size((80, 24))
+        return sz.lines, sz.columns
+
+    def _goto(self, r, c=1):
+        return f"\033[{r};{c}H"
+
+    def _clr(self):
+        return "\033[2K"
+
+    def _trunc(self, s, n):
+        if len(s) <= n:
+            return s
+        return s[:n - 1] + "…"
+
+    # ── render loop ───────────────────────────────────────────────────────
+
+    def _render_loop(self):
+        while self._running:
+            try:
+                self._draw()
+            except Exception:
+                pass
+            time.sleep(0.08)
+
+    def _draw(self):
+        with self._lock:
+            mode  = self._mode
+            pct   = self._pct
+            stage = self._stage
+            lines = list(self._lines)
+        rows, cols = self._size()
+        out = []
+        if mode == "progress":
+            self._draw_progress(out, pct, stage, rows, cols)
+        else:
+            self._draw_debug(out, pct, stage, lines, rows, cols)
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def _draw_progress(self, out, pct, stage, rows, cols):
+        W   = min(cols - 2, 74)
+        lft = max(0, (cols - W) // 2)
+        top = max(1, (rows - 9) // 2)
+        pad = " " * lft
+
+        def row(r, txt=""):
+            out.append(self._goto(r) + self._clr() + pad + txt)
+
+        # título
+        title_str = f" {self._title}  —  {self._version} "
+        row(top,
+            self._BG_BLUE + self._BOLD + title_str.center(W) + self._RST)
+        row(top + 1)
+
+        # stage
+        row(top + 2,
+            f"  {self._BOLD}{self._trunc(stage, W - 4)}{self._RST}")
+        row(top + 3)
+
+        # barra
+        bar_w  = W - 10
+        filled = int(bar_w * pct / 100)
+        empty  = bar_w - filled
+        bar = (self._BG_BLUE  + " " * filled + self._RST +
+               self._BG_DARK + " " * empty  + self._RST)
+        pct_s = f"{pct:5.1f}%"
+        row(top + 4, f"  [{bar}] {self._BOLD}{pct_s}{self._RST}")
+        row(top + 5)
+        row(top + 6)
+
+        # hint
+        row(top + 7,
+            f"  {self._FG_CYAN}escribe{self._RST} "
+            f"{self._BOLD}debug{self._RST} "
+            f"{self._FG_CYAN}para ver el log en vivo{self._RST}")
+
+    def _draw_debug(self, out, pct, stage, lines, rows, cols):
+        W = cols
+
+        # cabecera
+        pct_s    = f"{pct:.0f}%"
+        hdr_l    = f" DEBUG  {pct_s}  {self._trunc(stage, W - 28)}"
+        hdr_r    = "escribe 'exit' para volver "
+        gap      = max(0, W - len(hdr_l) - len(hdr_r))
+        hdr      = (self._BG_BLUE + self._BOLD +
+                    hdr_l + " " * gap + hdr_r + self._RST)
+        out.append(self._goto(1) + self._clr() + hdr)
+
+        # separador
+        out.append(self._goto(2) + self._clr() +
+                   self._FG_CYAN + "─" * W + self._RST)
+
+        # área de log
+        available = rows - 2
+        visible   = lines[-available:] if lines else []
+        for i, ln in enumerate(visible):
+            if "ERROR" in ln or "FATAL" in ln or "CRITICAL" in ln:
+                color = self._FG_RED + self._BOLD
+            elif ">>>" in ln:
+                color = self._FG_YEL + self._BOLD
+            elif ln.startswith("[") and "]" in ln:
+                color = self._FG_GRAY
+            else:
+                color = self._RST
+            out.append(
+                self._goto(3 + i) + self._clr() +
+                color + self._trunc(ln, W - 1) + self._RST
+            )
+        # limpiar filas sobrantes
+        for i in range(len(visible), available):
+            out.append(self._goto(3 + i) + self._clr())
+
+    # ── key loop ──────────────────────────────────────────────────────────
+
+    def _key_loop(self):
+        import select as _sel
+        while self._running:
+            try:
+                ready = _sel.select([sys.stdin], [], [], 0.05)[0]
+                if ready:
+                    ch = os.read(sys.stdin.fileno(), 1).decode("utf-8", errors="ignore")
+                    self._keybuf += ch
+                    lb = self._keybuf.lower()
+                    if lb.endswith("debug"):
+                        with self._lock:
+                            self._mode = "debug"
+                        self._keybuf = ""
+                    elif lb.endswith("exit"):
+                        with self._lock:
+                            self._mode = "progress"
+                        self._keybuf = ""
+                    # evitar que el buffer crezca indefinidamente
+                    if len(self._keybuf) > 20:
+                        self._keybuf = self._keybuf[-10:]
+            except Exception:
+                pass
+
+
 def screen_install():
-    gauge         = gauge_open(
-        L("Installing Arch Linux", "Instalando Arch Linux"),
-        L("Preparing…", "Preparando…"), pct=0
-    )
-    current_stage = [L("Preparing…", "Preparando…")]
-    current_pct   = [0.0]
-    failed        = [False]
-    fail_reason   = [""]
-    done_event    = threading.Event()
-
-    def on_progress(pct):
-        current_pct[0] = pct
-        gauge_update(gauge, pct, current_stage[0])
-
-    def on_stage(msg):
-        current_stage[0] = msg
-        gauge_update(gauge, current_pct[0], msg)
-
-    def on_done(success, reason):
-        failed[0]      = not success
-        fail_reason[0] = reason
-        done_event.set()
-
-    t = threading.Thread(
-        target=InstallBackend(on_progress, on_stage, on_done).run,
-        daemon=True
-    )
-    t.start()
-    done_event.wait()
-
+    # Aseguramos que el log file existe antes de hacer tail
     try:
-        gauge.stdin.close()
+        open(LOG_FILE, "a").close()
     except Exception:
         pass
-    gauge.wait()
+
+    screen     = InstallScreen(TITLE, VERSION)
+    stop_tail  = threading.Event()
+    failed     = [False]
+    fail_msg   = [""]
+    done_event = threading.Event()
+    _pct       = [0.0]
+    _stage     = [L("Preparing…", "Preparando…")]
+
+    # Hilo que sigue el LOG_FILE y alimenta InstallScreen
+    def _tailer():
+        try:
+            with open(LOG_FILE, "r", errors="replace") as f:
+                f.seek(0, 2)                    # empieza desde el final
+                while not stop_tail.is_set():
+                    line = f.readline()
+                    if line:
+                        screen.feed(line.rstrip("\n"))
+                    else:
+                        time.sleep(0.05)
+        except Exception:
+            pass
+
+    def on_progress(pct):
+        _pct[0] = pct
+        screen.update(pct, _stage[0])
+
+    def on_stage(msg):
+        _stage[0] = msg
+        screen.update(_pct[0], msg)
+
+    def on_done(success, reason):
+        failed[0]  = not success
+        fail_msg[0] = reason
+        done_event.set()
+
+    screen.start()
+    threading.Thread(target=_tailer, daemon=True).start()
+    threading.Thread(
+        target=InstallBackend(on_progress, on_stage, on_done).run,
+        daemon=True
+    ).start()
+
+    done_event.wait()
+    stop_tail.set()
+    time.sleep(0.15)
+    screen.stop()
 
     if failed[0]:
         msgbox(
             L("Installation Failed", "Instalación fallida"),
-            L(f"Installation failed.\n\n{fail_reason[0]}\n\nCheck {LOG_FILE} for details.",
-              f"La instalación falló.\n\n{fail_reason[0]}\n\nRevisa {LOG_FILE} para detalles.")
+            L(f"Installation failed.\n\n{fail_msg[0]}\n\nCheck {LOG_FILE} for details.",
+              f"La instalación falló.\n\n{fail_msg[0]}\n\nRevisa {LOG_FILE} para detalles.")
         )
         return False
     return True
