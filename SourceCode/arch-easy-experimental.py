@@ -143,13 +143,8 @@ def dlg_titled(title, *args):
 def msgbox(title, text):
     dlg_titled(title, "--msgbox", text, "0", "0")
 
-def yesno(title, text, yes_label=None, no_label=None):
-    args = ["--yesno", text, "0", "0"]
-    if yes_label:
-        args = ["--yes-label", yes_label] + args
-    if no_label:
-        args = ["--no-label", no_label] + args
-    rc, _ = dlg_titled(title, *args)
+def yesno(title, text):
+    rc, _ = dlg_titled(title, "--yesno", text, "0", "0")
     return rc == 0
 
 def inputbox(title, text, init=""):
@@ -1355,103 +1350,92 @@ def screen_passwords():
         state["user_pass"] = up1
         return True
 
+
 def screen_disk():
-    disks = list_disks()
-    if not disks:
-        msgbox(
-            L("No disks found", "Sin discos"),
-            L(
-                "No disks were detected.\n\n"
-                "Check that your storage device is properly connected.",
-                "No se detectaron discos.\n\n"
-                "Verifica que tu dispositivo de almacenamiento esté conectado."
-            )
-        )
-        sys.exit(1)
-
-    try:
-        lsblk_info = subprocess.check_output(
-            "lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null | head -40",
-            shell=True, text=True
-        )
-    except Exception:
-        lsblk_info = ""
-
-    if lsblk_info:
-        msgbox(
-            L("Current Disk Layout", "Layout actual de discos"),
-            L(
-                "\\ZbReview your disks before selecting one to erase.\\Zn\n\n"
-                + lsblk_info +
-                "\n\\Z1ALL DATA on the selected disk will be permanently erased.\\Zn",
-                "\\ZbRevisa tus discos antes de elegir uno para borrar.\\Zn\n\n"
-                + lsblk_info +
-                "\n\\Z1TODOS LOS DATOS del disco seleccionado se borrarán permanentemente.\\Zn"
-            )
-        )
-
-    items   = [(f"/dev/{n}", f"{gb} GB  —  {model}") for n, gb, model in disks]
-    default = f"/dev/{state['disk']}" if state["disk"] else items[0][0]
-
-    result = radiolist(
-        L("Select Installation Disk", "Seleccionar disco de instalación"),
-        L(
-            "\\Z1WARNING:\\Zn ALL DATA on the selected disk will be \\ZbERASED\\Zn.\n"
-            "Make sure you pick the correct disk.\n\n"
-            "Select the target disk:" + _nav(),
-            "\\Z1ADVERTENCIA:\\Zn Se BORRARÁN TODOS LOS DATOS del disco seleccionado.\n"
-            "Asegúrate de elegir el disco correcto.\n\n"
-            "Selecciona el disco de instalación:" + _nav()
-        ),
-        items,
-        default=default
-    )
-    if result is None:
-        return False
-
-    disk_size = next((gb for n, gb, m in disks if f"/dev/{n}" == result), "?")
-    confirm = yesno(
-        L("Confirm Erase", "Confirmar borrado"),
-        L(
-            f"You selected:  \\Zb{result}\\Zn  ({disk_size} GB)\n\n"
-            "\\Z1ALL DATA on this disk will be permanently destroyed.\\Zn\n\n"
-            "Are you absolutely sure you want to continue?",
-            f"Seleccionaste:  \\Zb{result}\\Zn  ({disk_size} GB)\n\n"
-            "\\Z1TODOS LOS DATOS en este disco se destruirán permanentemente.\\Zn\n\n"
-            "¿Estás completamente seguro de continuar?"
-        ),
-        yes_label=L("Yes", "Sí"),
-        no_label=L("No", "No")
-    )
-    if not confirm:
-        return False
-
-    state["disk"] = result.replace("/dev/", "")
-
-    suggested = str(suggest_swap_gb())
     while True:
-        swap = inputbox(
-            L("Swap Size", "Tamaño de Swap"),
-            L(
-                "\\ZbSwap\\Zn is disk space used as overflow RAM.\n"
-                "It also enables hibernation if sized >= your RAM.\n\n"
-                f"Suggested for your system: \\Zb{suggested} GB\\Zn\n\n"
-                "Enter swap size in GB (1–128):",
-                "\\ZbSwap\\Zn es espacio en disco que actúa como RAM de desbordamiento.\n"
-                "También permite hibernación si es >= tu RAM.\n\n"
-                f"Sugerido para tu sistema: \\Zb{suggested} GB\\Zn\n\n"
-                "Ingresa el tamaño en GB (1–128):"
-            ),
-            state.get("swap", suggested)
-        )
-        if swap is None:
+        disks = list_disks()
+        if not disks:
+            msgbox(
+                L("No disks found", "Sin discos"),
+                L(
+                    "No installation disks were found.",
+                    "No se encontraron discos de instalación."
+                )
+            )
             return False
-        if validate_swap(swap.strip()):
-            state["swap"] = swap.strip()
-            return True
-        msgbox(L("Invalid swap", "Swap inválido"),
-               L("Must be a whole number between 1 and 128.",
-                 "Debe ser un número entero entre 1 y 128."))
+
+        items = [(f"/dev/{n}", f"{gb} GB  —  {model}") for n, gb, model in disks]
+        default = f"/dev/{state['disk']}" if state["disk"] else items[0][0]
+
+        result = radiolist(
+            L("Select Installation Disk", "Seleccionar disco de instalación"),
+            L(
+                "\Z1WARNING:\Zn ALL DATA on the selected disk will be \ZbERASED\Zn.\n"
+                "Make sure you pick the correct disk.\n\n"
+                "Select the target disk:" + _nav(),
+                "\Z1ADVERTENCIA:\Zn Se BORRARÁN TODOS LOS DATOS del disco seleccionado.\n"
+                "Asegúrate de elegir el disco correcto.\n\n"
+                "Selecciona el disco de instalación:" + _nav()
+            ),
+            items,
+            default=default
+        )
+        if result is None:
+            return False
+
+        disk_size = next((gb for n, gb, m in disks if f"/dev/{n}" == result), "?")
+        confirm = yesno(
+            L("Confirm Erase", "Confirmar borrado"),
+            L(
+                f"You selected:  \Zb{result}\Zn  ({disk_size} GB)\n\n"
+                "\Z1ALL DATA on this disk will be permanently destroyed.\Zn\n\n"
+                "Are you absolutely sure you want to continue?",
+                f"Seleccionaste:  \Zb{result}\Zn  ({disk_size} GB)\n\n"
+                "\Z1TODOS LOS DATOS en este disco se destruirán permanentemente.\Zn\n\n"
+                "¿Estás completamente seguro de continuar?"
+            )
+        )
+
+        if not confirm:
+            return False
+
+        state["disk"] = result.replace("/dev/", "")
+        suggested = str(suggest_swap_gb())
+
+        while True:
+            swap = inputbox(
+                L("Swap Size", "Tamaño de Swap"),
+                L(
+                    "\ZbSwap\Zn is disk space used as overflow RAM.\n"
+                    "It also enables hibernation if sized >= your RAM.\n\n"
+                    f"Suggested for your system: \Zb{suggested} GB\Zn\n\n"
+                    "Enter swap size in GB (1–128):",
+                    "\ZbSwap\Zn es espacio en disco que actúa como RAM de desbordamiento.\n"
+                    "También permite hibernación si es >= tu RAM.\n\n"
+                    f"Sugerido para tu sistema: \Zb{suggested} GB\Zn\n\n"
+                    "Ingresa el tamaño en GB (1–128):"
+                ),
+                state.get("swap", suggested)
+            )
+
+            if swap is None:
+                # Keep the chosen disk and continue instead of triggering the
+                # installer exit path.
+                state["swap"] = state.get("swap", suggested)
+                return True
+
+            if validate_swap(swap.strip()):
+                state["swap"] = swap.strip()
+                return True
+
+            msgbox(
+                L("Invalid swap", "Swap inválido"),
+                L(
+                    "Must be a whole number between 1 and 128.",
+                    "Debe ser un número entero entre 1 y 128."
+                )
+            )
+
 
 def screen_filesystem():
     result = radiolist(
@@ -1553,7 +1537,7 @@ def screen_bootloader():
     return True
 
 def screen_mirrors():
-    state["mirrors"] = yesno(
+    result = radiolist(
         L("Mirror Optimization", "Optimización de mirrors"),
         L(
             "Arch Linux downloads packages from mirror servers worldwide.\n\n"
@@ -1564,8 +1548,18 @@ def screen_mirrors():
             "\\ZbSí (recomendado)\\Zn — Usa \\Zbreflector\\Zn para medir y elegir los\n"
             "  10 mirrors más rápidos para tu ubicación. Añade ~1 min al inicio.\n\n"
             "\\ZbNo\\Zn — Mantener los mirrors por defecto. Funciona, pero puede ser más lento." + _nav()
-        )
+        ),
+        [
+            ("yes", L("Yes — auto-select the 10 fastest mirrors (recommended)",
+                      "Sí — seleccionar los 10 mirrors más rápidos (recomendado)")),
+            ("no",  L("No  — keep default mirrors",
+                      "No  — mantener mirrors por defecto")),
+        ],
+        default="yes" if state["mirrors"] else "no"
     )
+    if result is None:
+        return False
+    state["mirrors"] = (result == "yes")
     return True
 
 def screen_locale():
