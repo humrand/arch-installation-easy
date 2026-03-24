@@ -1424,23 +1424,31 @@ def screen_disk():
                 "\\ZbSwap\\Zn is disk space used as overflow RAM.\n"
                 "It also enables hibernation if sized >= your RAM.\n\n"
                 f"Suggested for your system: \\Zb{suggested} GB\\Zn\n\n"
-                "Enter swap size in GB (1–128):",
+                "Enter swap size in GB (1–128).\n"
+                "Press Enter to accept suggested, or Cancel to go back:",
                 "\\ZbSwap\\Zn es espacio en disco que actúa como RAM de desbordamiento.\n"
                 "También permite hibernación si es >= tu RAM.\n\n"
                 f"Sugerido para tu sistema: \\Zb{suggested} GB\\Zn\n\n"
-                "Ingresa el tamaño en GB (1–128):"
+                "Ingresa el tamaño en GB (1–128).\n"
+                "Presiona Enter para aceptar el sugerido, o Cancelar para volver:"
             ),
             state.get("swap", suggested)
         )
         if swap is None:
-            return False
+            if yesno(L("Cancel swap", "Cancelar swap"),
+                     L("Do you want to cancel disk selection and go back?",
+                       "¿Quieres cancelar la selección de disco y volver atrás?")):
+                return False
+            else:
+                continue
+        if not swap.strip():
+            swap = suggested
         if validate_swap(swap.strip()):
             state["swap"] = swap.strip()
             return True
         msgbox(L("Invalid swap", "Swap inválido"),
                L("Must be a whole number between 1 and 128.",
                  "Debe ser un número entero entre 1 y 128."))
-
 def screen_filesystem():
     result = radiolist(
         L("Filesystem", "Sistema de archivos"),
