@@ -147,6 +147,7 @@ def yesno(title, text):
     rc, _ = dlg_titled(title, "--yesno", text, "0", "0")
     return rc == 0
 
+
 def inputbox(title, text, init=""):
     rc, val = dlg_titled(title, "--inputbox", text, "0", "64", init)
     if rc != 0:
@@ -1408,17 +1409,16 @@ def screen_disk():
     if not yesno(
         L("Confirm Erase", "Confirmar borrado"),
         L(
-            f"You selected:  \\Zb{result}\\Zn  ({disk_size} GB)\n\n"
-            "\\Z1ALL DATA on this disk will be permanently destroyed.\\Zn\n\n"
+            f"You selected:  \Zb{result}\Zn  ({disk_size} GB)\n\n"
+            "\Z1ALL DATA on this disk will be permanently destroyed.\Zn\n\n"
             "Are you absolutely sure you want to continue?",
-            f"Seleccionaste:  \\Zb{result}\\Zn  ({disk_size} GB)\n\n"
-            "\\Z1TODOS LOS DATOS en este disco se destruirán permanentemente.\\Zn\n\n"
+            f"Seleccionaste:  \Zb{result}\Zn  ({disk_size} GB)\n\n"
+            "\Z1TODOS LOS DATOS en este disco se destruirán permanentemente.\Zn\n\n"
             "¿Estás completamente seguro de continuar?"
         )
     ):
         return False
 
-    state["disk"] = result.replace("/dev/", "")
 
     suggested = str(suggest_swap_gb())
     while True:
