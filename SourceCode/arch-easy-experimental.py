@@ -1425,23 +1425,17 @@ def screen_disk():
                 "It also enables hibernation if sized >= your RAM.\n\n"
                 f"Suggested for your system: \\Zb{suggested} GB\\Zn\n\n"
                 "Enter swap size in GB (1–128).\n"
-                "Press Enter to accept suggested, or Cancel to go back:",
+                "Press Enter to accept suggested, or Cancel to use suggested:",
                 "\\ZbSwap\\Zn es espacio en disco que actúa como RAM de desbordamiento.\n"
                 "También permite hibernación si es >= tu RAM.\n\n"
                 f"Sugerido para tu sistema: \\Zb{suggested} GB\\Zn\n\n"
                 "Ingresa el tamaño en GB (1–128).\n"
-                "Presiona Enter para aceptar el sugerido, o Cancelar para volver:"
+                "Presiona Enter para aceptar el sugerido, o Cancelar para usar el sugerido:"
             ),
             state.get("swap", suggested)
         )
-        if swap is None:
-            if yesno(L("Cancel swap", "Cancelar swap"),
-                     L("Do you want to go back to disk selection?",
-                       "¿Quieres volver a la selección de disco?")):
-                return False
-            else:
-                continue
-        if not swap.strip():
+        # Si el usuario cancela o deja vacío, usar el tamaño sugerido
+        if swap is None or not swap.strip():
             swap = suggested
         if validate_swap(swap.strip()):
             state["swap"] = swap.strip()
