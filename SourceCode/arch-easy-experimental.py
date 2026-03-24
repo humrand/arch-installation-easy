@@ -143,8 +143,13 @@ def dlg_titled(title, *args):
 def msgbox(title, text):
     dlg_titled(title, "--msgbox", text, "0", "0")
 
-def yesno(title, text):
-    rc, _ = dlg_titled(title, "--yesno", text, "0", "0")
+def yesno(title, text, yes_label=None, no_label=None):
+    args = ["--yesno", text, "0", "0"]
+    if yes_label:
+        args = ["--yes-label", yes_label] + args
+    if no_label:
+        args = ["--no-label", no_label] + args
+    rc, _ = dlg_titled(title, *args)
     return rc == 0
 
 def inputbox(title, text, init=""):
@@ -1405,7 +1410,7 @@ def screen_disk():
         return False
 
     disk_size = next((gb for n, gb, m in disks if f"/dev/{n}" == result), "?")
-    if not yesno(
+    confirm = yesno(
         L("Confirm Erase", "Confirmar borrado"),
         L(
             f"You selected:  \\Zb{result}\\Zn  ({disk_size} GB)\n\n"
@@ -1414,8 +1419,11 @@ def screen_disk():
             f"Seleccionaste:  \\Zb{result}\\Zn  ({disk_size} GB)\n\n"
             "\\Z1TODOS LOS DATOS en este disco se destruirán permanentemente.\\Zn\n\n"
             "¿Estás completamente seguro de continuar?"
-        )
-    ):
+        ),
+        yes_label=L("Yes", "Sí"),
+        no_label=L("No", "No")
+    )
+    if not confirm:
         return False
 
     state["disk"] = result.replace("/dev/", "")
