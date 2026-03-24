@@ -1436,8 +1436,8 @@ def screen_disk():
         )
         if swap is None:
             if yesno(L("Cancel swap", "Cancelar swap"),
-                     L("Do you want to cancel disk selection and go back?",
-                       "¿Quieres cancelar la selección de disco y volver atrás?")):
+                     L("Do you want to go back to disk selection?",
+                       "¿Quieres volver a la selección de disco?")):
                 return False
             else:
                 continue
