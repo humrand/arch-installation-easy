@@ -1408,7 +1408,8 @@ def screen_disk():
                     state.get("swap", suggested)
                 )
                 if swap is None:
-                    return False
+                    state["swap"] = suggested
+                    return True
                 if validate_swap(swap.strip()):
                     state["swap"] = swap.strip()
                     return True
