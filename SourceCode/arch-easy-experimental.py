@@ -99,7 +99,6 @@ LOCALE_OPTIONS = [
     ("ar_EG.UTF-8", "Arabiya (Misr)"),
 ]
 
-
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
 
@@ -119,14 +118,12 @@ def write_log(line):
     except Exception:
         pass
 
-
 def _flush_stdin():
     import termios
     try:
         termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
     except Exception:
         pass
-
 
 def dlg_titled(title, *args):
     _flush_stdin()
@@ -200,13 +197,11 @@ def gauge_update(proc, pct, message):
     except Exception:
         pass
 
-
 def validate_name(n):
     return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", n or ""))
 
 def validate_swap(s):
     return bool(re.match(r"^\d+$", s or "")) and 1 <= int(s) <= 128
-
 
 def list_disks():
     try:
@@ -311,7 +306,6 @@ def _settle_partitions(disk_path, log_fn=None):
             log_fn(f"[settle] {cmd}  rc={rc}")
     time.sleep(1)
 
-
 def _wifi_interfaces():
     try:
         out = subprocess.check_output("ls /sys/class/net/", shell=True, text=True)
@@ -329,7 +323,7 @@ def screen_wifi_connect():
                 "Make sure your WiFi adapter is recognized by the live system.\n"
                 "You can check with:  ip link",
                 "No se encontraron interfaces inalámbricas.\n\n"
-                "Verifica que el adaptador WiFi sea reconocido.\n"
+                "Verifica que tu adaptador WiFi sea reconocido.\n"
                 "Puedes comprobar con:  ip link"
             )
         )
@@ -461,7 +455,6 @@ def screen_wifi_connect():
 
     return True
 
-
 def _check_connectivity():
     for cmd in (
         "curl -sI --max-time 5 https://archlinux.org >/dev/null 2>&1",
@@ -567,7 +560,6 @@ def ensure_network():
             return screen_wifi_connect()
     return False
 
-
 _PAT_INSTALL  = re.compile(r"\((\d+)/(\d+)\)")
 _PAT_DOWNLOAD = re.compile(
     r"\S+\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)\s+\d+(?:\.\d+)?\s*(?:B|KiB|MiB|GiB)/s"
@@ -613,7 +605,6 @@ def run_simple(cmd, ignore_error=False):
     if r != 0 and not ignore_error:
         write_log(f"ERROR (rc={r}): {cmd}")
     return r
-
 
 class InstallBackend:
     def __init__(self, on_progress, on_stage, on_done):
@@ -881,7 +872,6 @@ class InstallBackend:
         )
         write_log("Flatpak + Flathub configured.")
 
-
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
         p1, p2, p3 = partition_paths_for(disk_path)
@@ -1147,7 +1137,6 @@ class InstallBackend:
             self._log(f"FATAL: {e}")
             self.on_done(False, str(e))
 
-
 def screen_welcome():
     boot_mode = "\\Z2UEFI\\Zn" if is_uefi() else "\\Z3BIOS (Legacy)\\Zn"
     cpu_info  = detect_cpu() or L("unknown CPU", "CPU desconocida")
@@ -1179,6 +1168,8 @@ def screen_language():
     )
     if result:
         state["lang"] = result
+        return True
+    return False
 
 def screen_mode():
     result = menu(
@@ -1202,6 +1193,8 @@ def screen_mode():
                          "Instalación personalizada  — control total")),
         ]
     )
+    if result is None:
+        return None
     if result == "quick":
         state["quick"]      = True
         state["filesystem"] = "btrfs"
@@ -1216,7 +1209,10 @@ def screen_mode():
         state["shell"]      = "bash"
         state["extras"]     = False
         state["locale"]     = "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
-    return result == "quick"
+        return True
+    else:
+        state["quick"] = False
+        return False
 
 def screen_identity():
     while True:
@@ -1960,6 +1956,7 @@ def screen_review():
     if not state["username"]:  missing.append(L("username", "usuario"))
     if not state["disk"]:      missing.append(L("disk", "disco"))
     if not state["root_pass"]: missing.append(L("root password", "contraseña root"))
+    if not state["user_pass"]: missing.append(L("user password", "contraseña de usuario"))
 
     if missing:
         text += L(
@@ -1977,7 +1974,6 @@ def screen_review():
             f"\n\n\\Z1ADVERTENCIA: /dev/{state['disk']} será borrado.\\Zn\n\n¿Proceder con la instalación?"
         )
     )
-
 
 class InstallScreen:
     _RST  = "\033[0m"
@@ -2196,7 +2192,6 @@ class InstallScreen:
             except Exception:
                 pass
 
-
 def screen_install():
     try:
         open(LOG_FILE, "a").close()
@@ -2319,12 +2314,14 @@ def screen_finish():
         subprocess.run("reboot",         shell=True)
     sys.exit(0)
 
-
 def main():
     screen_welcome()
-    screen_language()
+    if not screen_language():
+        sys.exit(0)
     screen_network()
     quick = screen_mode()
+    if quick is None:
+        sys.exit(0)
 
     if quick:
         steps = [
@@ -2361,8 +2358,11 @@ def main():
 
     idx = 0
     while idx < len(steps):
-        _, fn, can_go_back = steps[idx]
+        name, fn, can_go_back = steps[idx]
         result = fn()
+        # Si la instalación falla, salir inmediatamente
+        if fn is screen_install and not result:
+            sys.exit(1)
         if result is False and can_go_back:
             if idx == 0:
                 if yesno(L("Exit", "Salir"),
