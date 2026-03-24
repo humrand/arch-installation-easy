@@ -14,6 +14,7 @@ from datetime import datetime
 VERSION  = "V1.1.3"
 LOG_FILE = "/tmp/arch_install.log"
 TITLE    = "Arch Linux Installer"
+BACK     = object()
 
 state = {
     "lang":       "en",
@@ -1172,8 +1173,7 @@ def screen_language():
     if result:
         state["lang"] = result
         return True
-    return False
-
+    return BACK
 def screen_mode():
     result = menu(
         L("Install Mode", "Modo de instalación"),
@@ -1234,7 +1234,7 @@ def screen_identity():
             state.get("hostname", "")
         )
         if hn is None:
-            return False
+            return BACK
         if not validate_name(hn):
             msgbox(
                 L("Invalid hostname", "Hostname inválido"),
@@ -1262,7 +1262,7 @@ def screen_identity():
             state.get("username", "")
         )
         if un is None:
-            return False
+            return BACK
         if not validate_name(un):
             msgbox(
                 L("Invalid username", "Usuario inválido"),
@@ -1293,13 +1293,13 @@ def screen_passwords():
             )
         )
         if rp1 is None:
-            return False
+            return BACK
         rp2 = passwordbox(
             L("Root Password — Confirm", "Contraseña root — Confirmar"),
             L("Confirm ROOT password:", "Confirma la contraseña de ROOT:")
         )
         if rp2 is None:
-            return False
+            return BACK
         if not rp1:
             msgbox(L("Error", "Error"), L(
                 "Root password cannot be empty.",
@@ -1325,13 +1325,13 @@ def screen_passwords():
             )
         )
         if up1 is None:
-            return False
+            return BACK
         up2 = passwordbox(
             L("User Password — Confirm", "Contraseña usuario — Confirmar"),
             L("Confirm USER password:", "Confirma la contraseña de USUARIO:")
         )
         if up2 is None:
-            return False
+            return BACK
         if not up1:
             msgbox(L("Error", "Error"), L(
                 "User password cannot be empty.",
@@ -1401,8 +1401,7 @@ def screen_disk():
         default=default
     )
     if result is None:
-        return False
-
+        return BACK
     disk_size = next((gb for n, gb, m in disks if f"/dev/{n}" == result), "?")
     if not yesno(
         L("Confirm Erase", "Confirmar borrado"),
@@ -1415,8 +1414,7 @@ def screen_disk():
             "¿Estás completamente seguro de continuar?"
         )
     ):
-        return False
-
+        return BACK
     state["disk"] = result.replace("/dev/", "")
 
     suggested = str(suggest_swap_gb())
@@ -1472,7 +1470,7 @@ def screen_filesystem():
         default=state["filesystem"]
     )
     if result is None:
-        return False
+        return BACK
     state["filesystem"] = result
     return True
 
@@ -1506,7 +1504,7 @@ def screen_kernel():
         default=state["kernel"]
     )
     if result is None:
-        return False
+        return BACK
     state["kernel"] = result
     return True
 
@@ -1541,7 +1539,7 @@ def screen_bootloader():
         default=state.get("bootloader", "grub")
     )
     if result is None:
-        return False
+        return BACK
     state["bootloader"] = result
     return True
 
@@ -1586,7 +1584,7 @@ def screen_locale():
         default=default
     )
     if result is None:
-        return False
+        return BACK
     state["locale"] = result
     return True
 
@@ -1619,7 +1617,7 @@ def screen_keymap():
         default=state["keymap"]
     )
     if result is None:
-        return False
+        return BACK
     state["keymap"] = result
     run_simple(f"loadkeys {shlex.quote(result)}", ignore_error=True)
     return True
@@ -1655,7 +1653,7 @@ def screen_timezone():
         default=cur_region
     )
     if region is None:
-        return False
+        return BACK
     if region == "UTC":
         state["timezone"] = "UTC"
         return True
@@ -1678,7 +1676,7 @@ def screen_timezone():
         default=cur_city
     )
     if city is None:
-        return False
+        return BACK
     state["timezone"] = f"{region}/{city}"
     return True
 
@@ -1712,7 +1710,7 @@ def screen_desktop():
         default=state["desktop"]
     )
     if result is None:
-        return False
+        return BACK
     state["desktop"] = result
     return True
 
@@ -1754,7 +1752,7 @@ def screen_gpu():
         default=state["gpu"]
     )
     if result is None:
-        return False
+        return BACK
     state["gpu"] = result
     return True
 
@@ -1786,7 +1784,7 @@ def screen_shell():
         default=state.get("shell", "bash")
     )
     if result is None:
-        return False
+        return BACK
     state["shell"] = result
     return True
 
@@ -1814,7 +1812,7 @@ def screen_yay():
         default="yes" if state["yay"] else "no"
     )
     if result is None:
-        return False
+        return BACK
     state["yay"] = (result == "yes")
     return True
 
@@ -1844,7 +1842,7 @@ def screen_extras():
         default="yes" if state.get("extras") else "no"
     )
     if result is None:
-        return False
+        return BACK
     state["extras"] = (result == "yes")
     return True
 
@@ -1875,7 +1873,7 @@ def screen_snapper():
         default="yes" if state["snapper"] else "no"
     )
     if result is None:
-        return False
+        return BACK
     state["snapper"] = (result == "yes")
     return True
 
@@ -1906,9 +1904,11 @@ def screen_flatpak():
         default="yes" if state.get("flatpak") else "no"
     )
     if result is None:
-        return False
+        return BACK
     state["flatpak"] = (result == "yes")
     return True
+
+
 
 def screen_review():
     microcode = detect_cpu() or L("none detected", "no detectado")
@@ -1945,14 +1945,14 @@ def screen_review():
     ]
 
     text = L(
-        f"\\ZbReview your settings:\\Zn{quick_tag}\n\n",
-        f"\\ZbRevisa tu configuración:\\Zn{quick_tag}\n\n"
+        f"\\ZbReview your settings:\\Zn{quick_tag}\\n\\n",
+        f"\\ZbRevisa tu configuración:\\Zn{quick_tag}\\n\\n"
     )
     missing = []
 
     for label, val in lines:
-        text += f"  {label:<14} {val}\n"
-    text += "\n"
+        text += f"  {label:<14} {val}\\n"
+    text += "\\n"
 
     if not state["hostname"]:  missing.append("hostname")
     if not state["username"]:  missing.append(L("username", "usuario"))
@@ -1962,20 +1962,21 @@ def screen_review():
 
     if missing:
         text += L(
-            f"\\Z1MISSING: {', '.join(missing)}\\Zn\n\nGo back and fix before continuing.",
-            f"\\Z1FALTA: {', '.join(missing)}\\Zn\n\nVuelve atrás y corrígelo antes de continuar."
+            f"\\Z1MISSING: {', '.join(missing)}\\Zn\\n\\nGo back and fix before continuing.",
+            f"\\Z1FALTA: {', '.join(missing)}\\Zn\\n\\nVuelve atrás y corrígelo antes de continuar."
         )
         msgbox(L("Review — Incomplete", "Revisión — Incompleto"), text)
-        return False
+        return BACK
 
     text += L("\\Z2All settings look good.\\Zn", "\\Z2Todo listo.\\Zn")
-    return yesno(
+    return True if yesno(
         L("Review & Confirm", "Revisar y confirmar"),
         text + L(
-            f"\n\n\\Z1WARNING: /dev/{state['disk']} will be erased.\\Zn\n\nProceed with installation?",
-            f"\n\n\\Z1ADVERTENCIA: /dev/{state['disk']} será borrado.\\Zn\n\n¿Proceder con la instalación?"
+            f"\\n\\n\\Z1WARNING: /dev/{state['disk']} will be erased.\\Zn\\n\\nProceed with installation?",
+            f"\\n\\n\\Z1ADVERTENCIA: /dev/{state['disk']} será borrado.\\Zn\\n\\n¿Proceder con la instalación?"
         )
-    )
+    ) else BACK
+
 
 class InstallScreen:
     _RST  = "\033[0m"
@@ -2365,7 +2366,7 @@ def main():
         # Si la instalación falla, salir inmediatamente
         if fn is screen_install and not result:
             sys.exit(1)
-        if result is False and can_go_back:
+        if result is BACK and can_go_back:
             if idx == 0:
                 if yesno(L("Exit", "Salir"),
                          L("Exit the installer?", "¿Salir del instalador?")):
