@@ -1542,20 +1542,22 @@ def screen_bootloader():
     state["bootloader"] = result
     return True
 def screen_mirrors():
-    result = menu(
+    default = "yes" if state["mirrors"] else "no"
+    result = radiolist(
         L("Mirror Optimization", "Optimización de mirrors"),
         L(
             "Arch Linux downloads packages from mirror servers worldwide.\n\n"
-            "Use arrow keys to move, Enter to select." + _nav(),
+            "Use the arrow keys to move, Space to select, Enter to confirm." + _nav(),
             "Arch Linux descarga paquetes desde servidores mirror de todo el mundo.\n\n"
-            "Usa las flechas para moverte, Enter para seleccionar." + _nav()
+            "Usa las flechas para moverte, Espacio para seleccionar, Enter para confirmar." + _nav()
         ),
         [
             ("yes", L("Yes — auto-select the 10 fastest mirrors (recommended)",
                       "Sí — seleccionar los 10 mirrors más rápidos (recomendado)")),
             ("no",  L("No  — keep default mirrors",
                       "No  — mantener mirrors por defecto")),
-        ]
+        ],
+        default=default
     )
     if result is None:
         return False
