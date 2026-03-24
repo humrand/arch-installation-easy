@@ -1542,22 +1542,25 @@ def screen_bootloader():
     state["bootloader"] = result
     return True
 def screen_mirrors():
-    result = radiolist(
+    result = menu(
         L("Mirror Optimization", "Optimización de mirrors"),
-        L("Use reflector to select the 10 fastest mirrors? (recommended)",
-          "¿Usar reflector para seleccionar los 10 mirrors más rápidos? (recomendado)"),
+        L(
+            "Arch Linux downloads packages from mirror servers worldwide.\n\n"
+            "Select an option. Use arrow keys to move, Enter to confirm." + _nav(),
+            "Arch Linux descarga paquetes desde servidores mirror de todo el mundo.\n\n"
+            "Selecciona una opción. Usa las flechas para moverte, Enter para confirmar." + _nav()
+        ),
         [
-            ("yes", L("Yes — auto-select fastest mirrors",
-                      "Sí — seleccionar mirrors más rápidos")),
+            ("yes", L("Yes — auto-select the 10 fastest mirrors (recommended)",
+                      "Sí — seleccionar los 10 mirrors más rápidos (recomendado)")),
             ("no",  L("No  — keep default mirrors",
                       "No  — mantener mirrors por defecto")),
-        ],
-        default="yes" if state["mirrors"] else "no"
+        ]
     )
-    if result:
-        state["mirrors"] = (result == "yes")
+    if result is None:
+        return False
+    state["mirrors"] = (result == "yes")
     return True
-
 def screen_locale():
     default = state.get("locale") or (
         "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
