@@ -1544,21 +1544,6 @@ def screen_mirrors():
         return False
     state["mirrors"] = (result == "yes")
     state["mirrors_done"] = False
-    if state["mirrors"]:
-        dlg_titled(
-            L("Optimizing mirrors…", "Optimizando mirrors…"),
-            "--infobox",
-            L("Running reflector to select the 10 fastest mirrors…",
-              "Ejecutando reflector para seleccionar los 10 mirrors más rápidos…"),
-            "5", "70"
-        )
-        run_stream("pacman -Sy --noconfirm reflector",
-                   on_line=None, ignore_error=True)
-        run_stream(
-            "timeout 120s reflector --latest 10 --sort rate --save /etc/pacman.d/mirrorlist",
-            on_line=None, ignore_error=True
-        )
-        state["mirrors_done"] = True
     return True
 
 def screen_locale():
