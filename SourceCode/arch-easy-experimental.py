@@ -29,6 +29,7 @@ state = {
     "kernel":     "linux",
     "shell":      "bash",
     "mirrors":    True,
+    "mirrors_done": False,
     "quick":      False,
     "yay":        False,
     "snapper":    False,
@@ -914,13 +915,13 @@ class InstallBackend:
             run_stream("pacman -Sy --noconfirm archlinux-keyring",
                        on_line=self._log, ignore_error=True)
 
-            if state.get("mirrors", True):
+            if state.get("mirrors", True) and not state.get("mirrors_done", False):
                 self._stage(L("Optimizing mirrors with reflector…",
                               "Optimizando mirrors con reflector…"))
                 run_stream("pacman -Sy --noconfirm reflector",
                            on_line=self._log, ignore_error=True)
                 run_stream(
-                    "timeout 120s reflector --latest 10 --sort rate --save /etc/pacman.d/mirrorlist",
+                    "reflector --latest 10 --sort rate --save /etc/pacman.d/mirrorlist",
                     on_line=self._log, ignore_error=True
                 )
             self._pct(5)
@@ -1542,6 +1543,22 @@ def screen_mirrors():
     if result is None:
         return False
     state["mirrors"] = (result == "yes")
+    state["mirrors_done"] = False
+    if state["mirrors"]:
+        dlg_titled(
+            L("Optimizing mirrors…", "Optimizando mirrors…"),
+            "--infobox",
+            L("Running reflector to select the 10 fastest mirrors…",
+              "Ejecutando reflector para seleccionar los 10 mirrors más rápidos…"),
+            "5", "70"
+        )
+        run_stream("pacman -Sy --noconfirm reflector",
+                   on_line=None, ignore_error=True)
+        run_stream(
+            "timeout 120s reflector --latest 10 --sort rate --save /etc/pacman.d/mirrorlist",
+            on_line=None, ignore_error=True
+        )
+        state["mirrors_done"] = True
     return True
 
 def screen_locale():
