@@ -1434,7 +1434,6 @@ def screen_disk():
             ),
             state.get("swap", suggested)
         )
-        # Si el usuario cancela o deja vacío, usar el tamaño sugerido
         if swap is None or not swap.strip():
             swap = suggested
         if validate_swap(swap.strip()):
@@ -1443,6 +1442,7 @@ def screen_disk():
         msgbox(L("Invalid swap", "Swap inválido"),
                L("Must be a whole number between 1 and 128.",
                  "Debe ser un número entero entre 1 y 128."))
+
 def screen_filesystem():
     result = radiolist(
         L("Filesystem", "Sistema de archivos"),
@@ -1541,15 +1541,16 @@ def screen_bootloader():
         return False
     state["bootloader"] = result
     return True
+
 def screen_mirrors():
     default = "yes" if state["mirrors"] else "no"
     result = radiolist(
         L("Mirror Optimization", "Optimización de mirrors"),
         L(
             "Arch Linux downloads packages from mirror servers worldwide.\n\n"
-            "Use arrow keys to move, Space to select, Enter to confirm.",
+            "Use arrow keys to move, Space to select, Enter to confirm." + _nav(),
             "Arch Linux descarga paquetes desde servidores mirror de todo el mundo.\n\n"
-            "Usa las flechas para moverte, Espacio para seleccionar, Enter para confirmar."
+            "Usa las flechas para moverte, Espacio para seleccionar, Enter para confirmar." + _nav()
         ),
         [
             ("yes", L("Yes — auto-select the 10 fastest mirrors (recommended)",
@@ -1563,6 +1564,7 @@ def screen_mirrors():
         return False
     state["mirrors"] = (result == "yes")
     return True
+
 def screen_locale():
     default = state.get("locale") or (
         "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
