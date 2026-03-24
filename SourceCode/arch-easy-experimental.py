@@ -920,7 +920,7 @@ class InstallBackend:
                 run_stream("pacman -Sy --noconfirm reflector",
                            on_line=self._log, ignore_error=True)
                 run_stream(
-                    "reflector --latest 10 --sort rate --save /etc/pacman.d/mirrorlist",
+                    "timeout 120s reflector --latest 10 --sort rate --save /etc/pacman.d/mirrorlist",
                     on_line=self._log, ignore_error=True
                 )
             self._pct(5)
