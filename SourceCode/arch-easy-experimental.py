@@ -14,7 +14,7 @@ TITLE    = "Arch Linux Installer"
 
 state = {
     "lang":       "en",
-    "locale":     "en_US.UTF-8",   # FIX 1: locale separado del idioma del instalador
+    "locale":     "en_US.UTF-8",
     "hostname":   "",
     "username":   "",
     "root_pass":  "",
@@ -67,8 +67,6 @@ DESKTOP_DM = {
     "LXQt":       "sddm",
 }
 
-# FIX 2: mapa keymap de consola (loadkeys) -> layout X11 (XKB)
-# Son distintos sistemas de nombres; sin esto el teclado del escritorio quedaba en "us"
 CONSOLE_TO_X11 = {
     "us":          "us",
     "es":          "es",
@@ -95,7 +93,6 @@ CONSOLE_TO_X11 = {
     "kr106":       "kr",
 }
 
-# Sugerencia de keymap por defecto al elegir un locale
 LOCALE_TO_KEYMAP = {
     "es_ES.UTF-8": "es",
     "es_MX.UTF-8": "us",
@@ -867,20 +864,11 @@ class InstallBackend:
                 ignore_error=True
             )
 
-    # -------------------------------------------------------------------------
-    # FIX 2+3: configurar teclado de forma completa en el sistema instalado
-    # El codigo original solo escribia vconsole.conf (TTY) y nunca tocaba X11.
-    # Ahora tambien creamos /etc/X11/xorg.conf.d/00-keyboard.conf y llamamos
-    # a localectl (lo leen KDE, GNOME, sway, etc. en Wayland/X11).
-    # -------------------------------------------------------------------------
     def _configure_keyboard(self, keymap_val):
-        # 1. TTY (loadkeys)
         self._chroot(f"echo 'KEYMAP={keymap_val}' > /etc/vconsole.conf")
 
-        # 2. Traducir nombre de consola -> nombre XKB para X11/Wayland
         x11_layout = CONSOLE_TO_X11.get(keymap_val, keymap_val)
 
-        # 3. Xorg (para KDE con SDDM en modo X11, XFCE, MATE, LXQt, Cinnamon)
         xorg_conf = (
             'Section "InputClass"\n'
             '    Identifier "system-keyboard"\n'
@@ -895,9 +883,7 @@ class InstallBackend:
             ignore_error=True
         )
 
-        # 4. localectl en chroot -> escribe /etc/vconsole.conf y
-        #    /etc/X11/xorg.conf.d/00-keyboard.conf de forma canoninca.
-        #    Lo leen tambien algunos compositores Wayland (KDE Plasma 6, GNOME).
+
         self._chroot(
             f"localectl --no-ask-password set-x11-keymap {shlex.quote(x11_layout)} || true",
             ignore_error=True
@@ -930,7 +916,6 @@ class InstallBackend:
         bootloader = state.get("bootloader", "grub")
         uname      = state["username"]
 
-        # FIX 1: usar state["locale"] en vez de deducirlo de state["lang"]
         locale     = state.get("locale", "en_US.UTF-8")
         keymap_val = state["keymap"]
 
@@ -1042,11 +1027,9 @@ class InstallBackend:
                 )
             self._pct(55)
 
-            # FIX 1: locale viene de state["locale"], NO de state["lang"]
             self._stage(L("Configuring locale & timezone...",
                           "Configurando locale y zona horaria..."))
             locale_line = f"{locale} UTF-8"
-            # Siempre habilitar en_US.UTF-8 como fallback
             self._chroot("sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen")
             if locale != "en_US.UTF-8":
                 self._chroot(
@@ -1059,7 +1042,6 @@ class InstallBackend:
             self._chroot("hwclock --systohc")
             self._pct(59)
 
-            # FIX 2+3: teclado TTY + X11 unificado en un solo metodo
             self._stage(L("Configuring keyboard layout...",
                           "Configurando distribucion de teclado..."))
             self._configure_keyboard(keymap_val)
@@ -1227,8 +1209,6 @@ def screen_mode():
         state["snapper"]    = True
         state["bootloader"] = "grub"
         state["swap"]       = str(suggest_swap_gb())
-        # locale y keymap se configuran en screen_locale/screen_keymap,
-        # que ahora tambien aparecen en el modo rapido
     return result == "quick"
 
 def screen_identity():
@@ -1493,10 +1473,6 @@ def screen_mirrors():
     return True
 
 
-# =============================================================================
-# FIX 1: nueva pantalla de locale del SISTEMA INSTALADO, independiente del
-#         idioma de este instalador.
-# =============================================================================
 def screen_locale():
     options = [
         ("en_US.UTF-8", "English (United States)      en_US.UTF-8"),
@@ -1544,7 +1520,6 @@ def screen_locale():
 
     state["locale"] = result
 
-    # Sugerir el keymap correspondiente al locale elegido
     suggested_km = LOCALE_TO_KEYMAP.get(result)
     if suggested_km and suggested_km != state["keymap"]:
         if yesno(
@@ -1791,7 +1766,6 @@ def screen_review():
     quick_tag = L("  [Quick Install]", "  [Instalacion rapida]") if state["quick"] else ""
     boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS", "BIOS")
 
-    # FIX: mostrar locale Y keymap X11 en la pantalla de revision
     x11_layout = CONSOLE_TO_X11.get(state["keymap"], state["keymap"])
 
     lines = [
@@ -2125,7 +2099,6 @@ def main():
     quick = screen_mode()
 
     if quick:
-        # FIX: locale y keymap disponibles tambien en modo rapido
         steps = [
             (L("Locale",    "Idioma sistema"), screen_locale,    True),
             (L("Keymap",    "Teclado"),        screen_keymap,    True),
@@ -2138,7 +2111,6 @@ def main():
         ]
     else:
         steps = [
-            # FIX: locale va primero para que la sugerencia de keymap sea util
             (L("Locale",      "Idioma sistema"),    screen_locale,      True),
             (L("Disk",        "Disco"),             screen_disk,        True),
             (L("Filesystem",  "Sistema archivos"),  screen_filesystem,  True),
