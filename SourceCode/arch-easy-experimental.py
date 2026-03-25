@@ -8,12 +8,13 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.3"
+VERSION  = "V1.1.4"
 LOG_FILE = "/tmp/arch_install.log"
 TITLE    = "Arch Linux Installer"
 
 state = {
     "lang":       "en",
+    "locale":     "en_US.UTF-8",   # FIX 1: locale separado del idioma del instalador
     "hostname":   "",
     "username":   "",
     "root_pass":  "",
@@ -66,6 +67,64 @@ DESKTOP_DM = {
     "LXQt":       "sddm",
 }
 
+# FIX 2: mapa keymap de consola (loadkeys) -> layout X11 (XKB)
+# Son distintos sistemas de nombres; sin esto el teclado del escritorio quedaba en "us"
+CONSOLE_TO_X11 = {
+    "us":          "us",
+    "es":          "es",
+    "uk":          "gb",
+    "fr":          "fr",
+    "de":          "de",
+    "it":          "it",
+    "ru":          "ru",
+    "ara":         "ara",
+    "pt-latin9":   "pt",
+    "br-abnt2":    "br",
+    "pl2":         "pl",
+    "hu":          "hu",
+    "cz-qwerty":   "cz",
+    "sk-qwerty":   "sk",
+    "ro_win":      "ro",
+    "dk":          "dk",
+    "no":          "no",
+    "sv-latin1":   "se",
+    "fi":          "fi",
+    "nl":          "nl",
+    "tr_q-latin5": "tr",
+    "ja106":       "jp",
+    "kr106":       "kr",
+}
+
+# Sugerencia de keymap por defecto al elegir un locale
+LOCALE_TO_KEYMAP = {
+    "es_ES.UTF-8": "es",
+    "es_MX.UTF-8": "us",
+    "es_AR.UTF-8": "us",
+    "en_US.UTF-8": "us",
+    "en_GB.UTF-8": "uk",
+    "fr_FR.UTF-8": "fr",
+    "de_DE.UTF-8": "de",
+    "it_IT.UTF-8": "it",
+    "pt_PT.UTF-8": "pt-latin9",
+    "pt_BR.UTF-8": "br-abnt2",
+    "ru_RU.UTF-8": "ru",
+    "nl_NL.UTF-8": "nl",
+    "pl_PL.UTF-8": "pl2",
+    "cs_CZ.UTF-8": "cz-qwerty",
+    "sk_SK.UTF-8": "sk-qwerty",
+    "hu_HU.UTF-8": "hu",
+    "ro_RO.UTF-8": "ro_win",
+    "da_DK.UTF-8": "dk",
+    "nb_NO.UTF-8": "no",
+    "sv_SE.UTF-8": "sv-latin1",
+    "fi_FI.UTF-8": "fi",
+    "tr_TR.UTF-8": "tr_q-latin5",
+    "ja_JP.UTF-8": "ja106",
+    "ko_KR.UTF-8": "kr106",
+    "zh_CN.UTF-8": "us",
+    "ar_SA.UTF-8": "ara",
+}
+
 
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
@@ -83,8 +142,6 @@ def write_log(line):
 
 
 def _flush_stdin():
-    """Drena cualquier tecla pendiente en stdin para que no se cuele en el
-    siguiente diálogo (el Enter del 'OK' anterior dispara el OK siguiente)."""
     import termios
     try:
         termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
@@ -97,7 +154,7 @@ def dlg_titled(title, *args):
     cmd = [
         "dialog",
         "--colors",
-        "--backtitle", f"\\Zb\\Z4{TITLE}\\Zn  —  {VERSION}",
+        "--backtitle", f"\\Zb\\Z4{TITLE}\\Zn  -  {VERSION}",
         "--title", f" {title} ",
     ]
     cmd.extend(args)
@@ -148,7 +205,7 @@ def gauge_open(title, text, pct=0):
     proc = subprocess.Popen(
         [
             "dialog", "--colors",
-            "--backtitle", f"\\Zb\\Z4{TITLE}\\Zn  —  {VERSION}",
+            "--backtitle", f"\\Zb\\Z4{TITLE}\\Zn  -  {VERSION}",
             "--title", f" {title} ",
             "--gauge", text, "8", "72", str(pct),
         ],
@@ -241,9 +298,9 @@ def is_uefi():
 def is_ssd(disk_path):
     disk_name = os.path.basename(disk_path)
     if disk_name.startswith("nvme") or disk_name.startswith("mmcblk"):
-        block = re.sub(r"p\d+$", "", disk_name)   # nvme0n1p1 → nvme0n1
+        block = re.sub(r"p\d+$", "", disk_name)
     else:
-        block = re.sub(r"\d+$", "", disk_name)     # sda1 → sda
+        block = re.sub(r"\d+$", "", disk_name)
     rotational = f"/sys/block/{block}/queue/rotational"
     try:
         with open(rotational) as f:
@@ -267,14 +324,7 @@ def suggest_swap_gb():
     return 8
 
 
-
-# BUG FIX: helper to settle partition table after sgdisk operations
-# Without this NVMe drives freeze because the kernel
-# hasn't updated its partition map before mkfs tries to open the new nodes
-#gosh this took so long to fix.
-
 def _settle_partitions(disk_path, log_fn=None):
-    """Force kernel to re-read partition table and wait for udev."""
     for cmd in (
         f"partprobe {disk_path}",
         "udevadm settle --timeout=10",
@@ -300,7 +350,7 @@ def screen_wifi_connect():
             L("WiFi", "WiFi"),
             L(
                 "No wireless interfaces found.\n\nMake sure your WiFi adapter is recognized.",
-                "No se encontraron interfaces inalámbricas.\n\nVerifica que tu adaptador WiFi sea reconocido."
+                "No se encontraron interfaces inalambricas.\n\nVerifica que tu adaptador WiFi sea reconocido."
             )
         )
         return None
@@ -308,9 +358,9 @@ def screen_wifi_connect():
     iface = ifaces[0]
 
     dlg_titled(
-        L("Scanning…", "Escaneando…"),
+        L("Scanning...", "Escaneando..."),
         "--infobox",
-        L(f"Scanning for networks on {iface}…", f"Buscando redes en {iface}…"),
+        L(f"Scanning for networks on {iface}...", f"Buscando redes en {iface}..."),
         "5", "50"
     )
     subprocess.call(
@@ -359,13 +409,13 @@ def screen_wifi_connect():
         )
     else:
         ssid = inputbox(
-            L("WiFi — SSID", "WiFi — SSID"),
+            L("WiFi - SSID", "WiFi - SSID"),
             L(
                 f"Interface: {iface}\n"
                 "No networks found automatically.\n"
                 "Enter network name (SSID) or Cancel to go back:",
                 f"Interfaz: {iface}\n"
-                "No se encontraron redes automáticamente.\n"
+                "No se encontraron redes automaticamente.\n"
                 "Ingresa el nombre de la red (SSID) o Cancelar para volver:"
             )
         )
@@ -374,19 +424,19 @@ def screen_wifi_connect():
         return None
 
     passphrase = passwordbox(
-        L("WiFi Password", "Contraseña WiFi"),
+        L("WiFi Password", "Contrasena WiFi"),
         L(
             f"Password for '{ssid}'\n(leave blank for open networks, Cancel to go back):",
-            f"Contraseña de '{ssid}'\n(vacío si es abierta, Cancelar para volver):"
+            f"Contrasena de '{ssid}'\n(vacio si es abierta, Cancelar para volver):"
         )
     )
     if passphrase is None:
         return None
 
     dlg_titled(
-        L("Connecting…", "Conectando…"),
+        L("Connecting...", "Conectando..."),
         "--infobox",
-        L(f"Connecting to '{ssid}'…", f"Conectando a '{ssid}'…"),
+        L(f"Connecting to '{ssid}'...", f"Conectando a '{ssid}'..."),
         "5", "50"
     )
 
@@ -415,7 +465,7 @@ def screen_wifi_connect():
                 "Press OK to go back and try again.",
                 f"No se pudo conectar a '{ssid}'.\n\n"
                 "Posibles causas:\n"
-                "  - Contraseña incorrecta\n"
+                "  - Contrasena incorrecta\n"
                 "  - Red fuera de alcance\n"
                 "  - DHCP sin respuesta\n\n"
                 "Presiona OK para volver e intentarlo de nuevo."
@@ -440,46 +490,46 @@ def _check_connectivity():
 def screen_network():
     while True:
         choice = menu(
-            L("Network Connection", "Conexión de red"),
+            L("Network Connection", "Conexion de red"),
             L(
                 "An active internet connection is required for installation.\n\n"
                 "How are you connected to the internet?",
-                "Se necesita conexión a internet para la instalación.\n\n"
-                "¿Cómo estás conectado a internet?"
+                "Se necesita conexion a internet para la instalacion.\n\n"
+                "Como estas conectado a internet?"
             ),
             [
                 ("wired", L(
-                    "Wired (Ethernet)  — cable already plugged in",
-                    "Cable (Ethernet)  — cable ya conectado"
+                    "Wired (Ethernet)  - cable already plugged in",
+                    "Cable (Ethernet)  - cable ya conectado"
                 )),
                 ("wifi",  L(
-                    "WiFi              — connect to a wireless network",
-                    "WiFi              — conectar a una red inalámbrica"
+                    "WiFi              - connect to a wireless network",
+                    "WiFi              - conectar a una red inalambrica"
                 )),
             ]
         )
 
         if choice is None:
-            if yesno(L("Exit", "Salir"), L("Exit the installer?", "¿Salir del instalador?")):
+            if yesno(L("Exit", "Salir"), L("Exit the installer?", "Salir del instalador?")):
                 sys.exit(0)
             continue
 
         if choice == "wired":
             dlg_titled(
-                L("Checking…", "Verificando…"),
+                L("Checking...", "Verificando..."),
                 "--infobox",
-                L("Testing wired connection…", "Probando conexión por cable…"),
+                L("Testing wired connection...", "Probando conexion por cable..."),
                 "5", "50"
             )
             if _check_connectivity():
                 msgbox(
-                    L("Connected!", "¡Conectado!"),
+                    L("Connected!", "Conectado!"),
                     L("Wired connection detected. Ready to continue.",
-                      "Conexión por cable detectada. Listo para continuar.")
+                      "Conexion por cable detectada. Listo para continuar.")
                 )
                 return
             msgbox(
-                L("No connection detected", "Sin conexión detectada"),
+                L("No connection detected", "Sin conexion detectada"),
                 L(
                     "Could not reach archlinux.org over the wired connection.\n\n"
                     "Check that:\n"
@@ -488,8 +538,8 @@ def screen_network():
                     "Press OK to go back and choose again.",
                     "No se pudo alcanzar archlinux.org por cable.\n\n"
                     "Verifica que:\n"
-                    "  - El cable esté bien conectado\n"
-                    "  - Tu router/switch esté encendido\n\n"
+                    "  - El cable este bien conectado\n"
+                    "  - Tu router/switch este encendido\n\n"
                     "Presiona OK para volver y elegir de nuevo."
                 )
             )
@@ -499,7 +549,7 @@ def screen_network():
             result = screen_wifi_connect()
             if result is True:
                 msgbox(
-                    L("Connected!", "¡Conectado!"),
+                    L("Connected!", "Conectado!"),
                     L("WiFi connected successfully. Ready to continue.",
                       "WiFi conectado correctamente. Listo para continuar.")
                 )
@@ -520,7 +570,7 @@ def ensure_network():
         if yesno(
             L("No network detected", "Sin red detectada"),
             L("No wired connection found.\nConnect via WiFi?",
-              "No se detectó conexión cableada.\n¿Conectar por WiFi?")
+              "No se detecto conexion cableada.\nConectar por WiFi?")
         ):
             return screen_wifi_connect()
 
@@ -607,7 +657,7 @@ class InstallBackend:
         if rc != 0:
             raise RuntimeError(
                 L(f"{label} failed (rc={rc}). Check {LOG_FILE}.",
-                  f"{label} falló (rc={rc}). Revisa {LOG_FILE}.")
+                  f"{label} fallo (rc={rc}). Revisa {LOG_FILE}.")
             )
         return rc
 
@@ -640,7 +690,7 @@ class InstallBackend:
         if rc != 0:
             raise RuntimeError(
                 L(f"{label} failed (rc={rc}). Check {LOG_FILE}.",
-                  f"{label} falló (rc={rc}). Revisa {LOG_FILE}.")
+                  f"{label} fallo (rc={rc}). Revisa {LOG_FILE}.")
             )
         return rc
 
@@ -655,7 +705,7 @@ class InstallBackend:
         if rc != 0:
             raise RuntimeError(
                 L(f"{label} failed (rc={rc}). Check {LOG_FILE}.",
-                  f"{label} falló (rc={rc}). Revisa {LOG_FILE}.")
+                  f"{label} fallo (rc={rc}). Revisa {LOG_FILE}.")
             )
 
     def _chroot_passwd(self, user, pwd):
@@ -665,7 +715,6 @@ class InstallBackend:
             on_line=self._log, ignore_error=True
         )
 
-  
     def _settle(self, disk_path):
         _settle_partitions(disk_path, log_fn=self._log)
 
@@ -673,7 +722,7 @@ class InstallBackend:
         opts = "noatime,compress=zstd,space_cache=v2"
         if is_ssd(disk_path):
             opts += ",ssd,discard=async"
-            self._log(f"SSD detected on {disk_path} — adding ssd,discard=async to BTRFS opts")
+            self._log(f"SSD detected on {disk_path} - adding ssd,discard=async to BTRFS opts")
         return opts
 
     def _setup_btrfs(self, p3, disk_path):
@@ -708,8 +757,6 @@ class InstallBackend:
         self._chroot_critical("grub-mkconfig -o /boot/grub/grub.cfg", "grub-mkconfig")
 
     def _install_systemd_boot(self, root_dev):
-        # BUG FIX 2: run bootctl from within chroot so it uses the installed
-        # systemd version and writes to the correct EFI paths consistently.
         self._chroot_critical("bootctl install", "bootctl install")
 
         fs        = state["filesystem"]
@@ -737,7 +784,6 @@ class InstallBackend:
         with open("/mnt/boot/loader/loader.conf", "w") as f:
             f.write(loader_conf)
 
-        # BUG FIX 3: microcode must come BEFORE the main initramfs line.
         ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
         arch_conf = (
             f"title   Arch Linux\n"
@@ -759,7 +805,7 @@ class InstallBackend:
         nvidia_pkg = "nvidia" if kernel == "linux" else "nvidia-dkms"
 
         def _do(pkgs, label):
-            self._stage(L(f"Installing {label} drivers…", f"Instalando drivers {label}…"))
+            self._stage(L(f"Installing {label} drivers...", f"Instalando drivers {label}..."))
             self._pacman(
                 f"arch-chroot /mnt pacman -S --noconfirm {pkgs}",
                 start_pct, end_pct, ignore_error=True
@@ -776,8 +822,8 @@ class InstallBackend:
             _do("mesa vulkan-intel intel-media-driver", "Intel")
 
         elif gpu == "Intel+NVIDIA":
-            self._stage(L("Installing Intel+NVIDIA (hybrid) drivers…",
-                          "Instalando drivers Intel+NVIDIA (hybrid)…"))
+            self._stage(L("Installing Intel+NVIDIA (hybrid) drivers...",
+                          "Instalando drivers Intel+NVIDIA (hybrid)..."))
             self._pacman(
                 "arch-chroot /mnt pacman -S --noconfirm "
                 "mesa vulkan-intel intel-media-driver",
@@ -821,8 +867,46 @@ class InstallBackend:
                 ignore_error=True
             )
 
+    # -------------------------------------------------------------------------
+    # FIX 2+3: configurar teclado de forma completa en el sistema instalado
+    # El codigo original solo escribia vconsole.conf (TTY) y nunca tocaba X11.
+    # Ahora tambien creamos /etc/X11/xorg.conf.d/00-keyboard.conf y llamamos
+    # a localectl (lo leen KDE, GNOME, sway, etc. en Wayland/X11).
+    # -------------------------------------------------------------------------
+    def _configure_keyboard(self, keymap_val):
+        # 1. TTY (loadkeys)
+        self._chroot(f"echo 'KEYMAP={keymap_val}' > /etc/vconsole.conf")
+
+        # 2. Traducir nombre de consola -> nombre XKB para X11/Wayland
+        x11_layout = CONSOLE_TO_X11.get(keymap_val, keymap_val)
+
+        # 3. Xorg (para KDE con SDDM en modo X11, XFCE, MATE, LXQt, Cinnamon)
+        xorg_conf = (
+            'Section "InputClass"\n'
+            '    Identifier "system-keyboard"\n'
+            '    MatchIsKeyboard "on"\n'
+            f'    Option "XkbLayout" "{x11_layout}"\n'
+            'EndSection\n'
+        )
+        self._chroot(
+            f"mkdir -p /etc/X11/xorg.conf.d && "
+            f"printf {shlex.quote(xorg_conf)} "
+            f"> /etc/X11/xorg.conf.d/00-keyboard.conf",
+            ignore_error=True
+        )
+
+        # 4. localectl en chroot -> escribe /etc/vconsole.conf y
+        #    /etc/X11/xorg.conf.d/00-keyboard.conf de forma canoninca.
+        #    Lo leen tambien algunos compositores Wayland (KDE Plasma 6, GNOME).
+        self._chroot(
+            f"localectl --no-ask-password set-x11-keymap {shlex.quote(x11_layout)} || true",
+            ignore_error=True
+        )
+
+        write_log(f"Keyboard configured: console={keymap_val}  x11={x11_layout}")
+
     def _install_flatpak(self, uname):
-        self._stage(L("Installing Flatpak + Flathub…", "Instalando Flatpak + Flathub…"))
+        self._stage(L("Installing Flatpak + Flathub...", "Instalando Flatpak + Flathub..."))
         self._pacman(
             "arch-chroot /mnt pacman -S --noconfirm flatpak",
             98, 99, ignore_error=True
@@ -846,20 +930,23 @@ class InstallBackend:
         bootloader = state.get("bootloader", "grub")
         uname      = state["username"]
 
+        # FIX 1: usar state["locale"] en vez de deducirlo de state["lang"]
+        locale     = state.get("locale", "en_US.UTF-8")
+        keymap_val = state["keymap"]
 
         if bootloader == "systemd-boot" and not uefi:
-            write_log("systemd-boot requested but BIOS detected — falling back to GRUB")
+            write_log("systemd-boot requested but BIOS detected - falling back to GRUB")
             bootloader = "grub"
             state["bootloader"] = "grub"
 
         root_dev = p3
 
         try:
-            self._stage(L("Checking network…", "Verificando red…"))
+            self._stage(L("Checking network...", "Verificando red..."))
             if not ensure_network():
                 self.on_done(False, L(
                     "No network connection. Connect and retry.",
-                    "Sin conexión de red. Conéctese e intente de nuevo."
+                    "Sin conexion de red. Conectese e intente de nuevo."
                 ))
                 return
 
@@ -867,8 +954,8 @@ class InstallBackend:
                        on_line=self._log, ignore_error=True)
 
             if state.get("mirrors", True):
-                self._stage(L("Optimizing mirrors with reflector…",
-                              "Optimizando mirrors con reflector…"))
+                self._stage(L("Optimizing mirrors with reflector...",
+                              "Optimizando mirrors con reflector..."))
                 run_stream("pacman -Sy --noconfirm reflector",
                            on_line=self._log, ignore_error=True)
                 run_stream(
@@ -877,15 +964,14 @@ class InstallBackend:
                 )
             self._pct(5)
 
-
-            self._stage(L("Wiping disk…", "Borrando disco…"))
+            self._stage(L("Wiping disk...", "Borrando disco..."))
             self._gradual(7)
             run_stream(f"wipefs -a {disk_path}", on_line=self._log, ignore_error=True)
             self._run_critical(f"sgdisk -Z {disk_path}", "sgdisk -Z")
-            self._settle(disk_path)          # <── NEW: let kernel see the wipe
+            self._settle(disk_path)
             self._pct(8)
 
-            self._stage(L("Creating partitions…", "Creando particiones…"))
+            self._stage(L("Creating partitions...", "Creando particiones..."))
             if uefi:
                 self._run_critical(f"sgdisk -n1:0:+1G -t1:ef00 {disk_path}", "sgdisk EFI")
             else:
@@ -894,10 +980,10 @@ class InstallBackend:
                 f"sgdisk -n2:0:+{state['swap']}G -t2:8200 {disk_path}", "sgdisk swap"
             )
             self._run_critical(f"sgdisk -n3:0:0 -t3:8300 {disk_path}", "sgdisk root")
-            self._settle(disk_path)          # <── NEW: wait for p1/p2/p3 nodes
+            self._settle(disk_path)
             self._pct(12)
 
-            self._stage(L("Formatting partitions…", "Formateando particiones…"))
+            self._stage(L("Formatting partitions...", "Formateando particiones..."))
             if uefi:
                 self._run_critical(f"mkfs.fat -F32 {p1}", "mkfs.fat")
             self._run_critical(f"mkswap {p2}", "mkswap")
@@ -911,7 +997,7 @@ class InstallBackend:
             self._pct(16)
 
             if uefi:
-                self._stage(L("Mounting EFI…", "Montando EFI…"))
+                self._stage(L("Mounting EFI...", "Montando EFI..."))
                 if bootloader == "systemd-boot":
                     self._run_critical("mkdir -p /mnt/boot",    "mkdir /mnt/boot")
                     self._run_critical(f"mount {p1} /mnt/boot", "mount ESP /mnt/boot")
@@ -936,15 +1022,15 @@ class InstallBackend:
                 f"sudo bash-completion{extra_pkgs}{ucode_pkg}"
             )
 
-            self._stage(L("Installing base system — this may take a while…",
-                          "Instalando sistema base — esto puede tardar…"))
+            self._stage(L("Installing base system - this may take a while...",
+                          "Instalando sistema base - esto puede tardar..."))
             self._pacman_critical(f"pacstrap -K /mnt {pkgs}", 18, 52, "pacstrap")
 
-            self._stage(L("Generating fstab…", "Generando fstab…"))
+            self._stage(L("Generating fstab...", "Generando fstab..."))
             self._run_critical("genfstab -U /mnt >> /mnt/etc/fstab", "genfstab")
             self._pct(53)
 
-            self._stage(L("Configuring hostname…", "Configurando hostname…"))
+            self._stage(L("Configuring hostname...", "Configurando hostname..."))
             hn = state["hostname"]
             with open("/mnt/etc/hostname", "w") as f:
                 f.write(hn + "\n")
@@ -956,10 +1042,11 @@ class InstallBackend:
                 )
             self._pct(55)
 
-            self._stage(L("Configuring locale & timezone…",
-                          "Configurando locale y zona horaria…"))
-            locale      = "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
+            # FIX 1: locale viene de state["locale"], NO de state["lang"]
+            self._stage(L("Configuring locale & timezone...",
+                          "Configurando locale y zona horaria..."))
             locale_line = f"{locale} UTF-8"
+            # Siempre habilitar en_US.UTF-8 como fallback
             self._chroot("sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen")
             if locale != "en_US.UTF-8":
                 self._chroot(
@@ -970,15 +1057,19 @@ class InstallBackend:
             self._chroot(f"echo 'LANG={locale}' > /etc/locale.conf")
             self._chroot(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
             self._chroot("hwclock --systohc")
-            keymap_val = state['keymap']
-            self._chroot(f"echo 'KEYMAP={keymap_val}' > /etc/vconsole.conf")
             self._pct(59)
 
-            self._stage(L("Generating initramfs…", "Generando initramfs…"))
+            # FIX 2+3: teclado TTY + X11 unificado en un solo metodo
+            self._stage(L("Configuring keyboard layout...",
+                          "Configurando distribucion de teclado..."))
+            self._configure_keyboard(keymap_val)
+            self._pct(61)
+
+            self._stage(L("Generating initramfs...", "Generando initramfs..."))
             self._configure_mkinitcpio()
             self._pct(63)
 
-            self._stage(L(f"Creating user '{uname}'…", f"Creando usuario '{uname}'…"))
+            self._stage(L(f"Creating user '{uname}'...", f"Creando usuario '{uname}'..."))
             self._chroot_critical(
                 f"useradd -m -G wheel -s /bin/bash {shlex.quote(uname)}",
                 "useradd"
@@ -989,16 +1080,16 @@ class InstallBackend:
             )
             self._pct(63)
 
-            self._stage(L("Setting passwords…", "Estableciendo contraseñas…"))
+            self._stage(L("Setting passwords...", "Estableciendo contrasenas..."))
             self._chroot_passwd("root", state["root_pass"])
             self._chroot_passwd(uname, state["user_pass"])
             self._pct(68)
 
-            self._stage(L("Enabling NetworkManager…", "Habilitando NetworkManager…"))
+            self._stage(L("Enabling NetworkManager...", "Habilitando NetworkManager..."))
             self._chroot("systemctl enable NetworkManager")
             if is_ssd(disk_path):
                 self._chroot("systemctl enable fstrim.timer", ignore_error=True)
-                write_log("SSD detected — fstrim.timer enabled.")
+                write_log("SSD detected - fstrim.timer enabled.")
             self._pct(71)
 
             self._install_gpu_drivers(71, 77)
@@ -1006,7 +1097,7 @@ class InstallBackend:
 
             desktop = state["desktop"]
             if desktop != "None":
-                self._stage(L(f"Installing {desktop}…", f"Instalando {desktop}…"))
+                self._stage(L(f"Installing {desktop}...", f"Instalando {desktop}..."))
                 pkg_groups = DESKTOP_PKGS.get(desktop, [])
                 n          = max(len(pkg_groups), 1)
                 step       = 14.0 / n
@@ -1021,7 +1112,7 @@ class InstallBackend:
                 if dm:
                     self._chroot(f"systemctl enable {dm}")
 
-                self._stage(L("Installing audio (pipewire)…", "Instalando audio (pipewire)…"))
+                self._stage(L("Installing audio (pipewire)...", "Instalando audio (pipewire)..."))
                 self._pacman(
                     "arch-chroot /mnt pacman -S --noconfirm "
                     "pipewire pipewire-pulse wireplumber",
@@ -1031,17 +1122,17 @@ class InstallBackend:
             self._pct(94)
 
             if bootloader == "systemd-boot":
-                self._stage(L("Installing systemd-boot…", "Instalando systemd-boot…"))
+                self._stage(L("Installing systemd-boot...", "Instalando systemd-boot..."))
                 self._install_systemd_boot(root_dev)
             else:
-                self._stage(L("Installing GRUB bootloader…", "Instalando GRUB…"))
+                self._stage(L("Installing GRUB bootloader...", "Instalando GRUB..."))
                 self._configure_grub_cmdline()
                 self._install_grub(disk_path)
             self._pct(97)
 
             if state.get("snapper") and fs == "btrfs":
-                self._stage(L("Setting up snapper (BTRFS snapshots)…",
-                              "Configurando snapper (snapshots BTRFS)…"))
+                self._stage(L("Setting up snapper (BTRFS snapshots)...",
+                              "Configurando snapper (snapshots BTRFS)..."))
                 self._pacman(
                     "arch-chroot /mnt pacman -S --noconfirm "
                     "snapper snap-pac grub-btrfs inotify-tools",
@@ -1060,7 +1151,7 @@ class InstallBackend:
                     self._chroot("grub-mkconfig -o /boot/grub/grub.cfg")
 
             if state.get("yay"):
-                self._stage(L("Installing yay (AUR helper)…", "Instalando yay (AUR helper)…"))
+                self._stage(L("Installing yay (AUR helper)...", "Instalando yay (AUR helper)..."))
                 self._chroot(
                     "echo '%wheel ALL=(ALL) NOPASSWD: ALL' "
                     "> /etc/sudoers.d/99_nopasswd_tmp"
@@ -1077,7 +1168,7 @@ class InstallBackend:
                 self._install_flatpak(uname)
 
             self._pct(100)
-            self._stage(L("Installation complete!", "¡Instalación completa!"))
+            self._stage(L("Installation complete!", "Instalacion completa!"))
             self.on_done(True, "")
 
         except RuntimeError as e:
@@ -1111,18 +1202,18 @@ def screen_language():
 
 def screen_mode():
     result = menu(
-        L("Install Mode", "Modo de instalación"),
+        L("Install Mode", "Modo de instalacion"),
         L(
-            "Quick Install  —  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
-            "Custom Install —  configure everything step by step",
-            "Instalación rápida  —  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
-            "Instalación personalizada — configura todo paso a paso"
+            "Quick Install  -  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
+            "Custom Install -  configure everything step by step",
+            "Instalacion rapida  -  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
+            "Instalacion personalizada - configura todo paso a paso"
         ),
         [
             ("quick",  L("Quick Install   (sane defaults, installs yay + snapper)",
-                         "Instalación rápida   (valores por defecto, instala yay + snapper)")),
+                         "Instalacion rapida   (valores por defecto, instala yay + snapper)")),
             ("custom", L("Custom Install  (full control)",
-                         "Instalación personalizada  (control total)")),
+                         "Instalacion personalizada  (control total)")),
         ]
     )
     if result == "quick":
@@ -1136,39 +1227,41 @@ def screen_mode():
         state["snapper"]    = True
         state["bootloader"] = "grub"
         state["swap"]       = str(suggest_swap_gb())
+        # locale y keymap se configuran en screen_locale/screen_keymap,
+        # que ahora tambien aparecen en el modo rapido
     return result == "quick"
 
 def screen_identity():
     while True:
         hn = inputbox(
             L("System Identity", "Identidad del sistema"),
-            L("Enter hostname (letters, digits, -, _ — max 32 chars):",
-              "Ingresa el nombre del equipo (letras, dígitos, -, _ — max 32):"),
+            L("Enter hostname (letters, digits, -, _ - max 32 chars):",
+              "Ingresa el nombre del equipo (letras, digitos, -, _ - max 32):"),
             state.get("hostname", "")
         )
         if hn is None:
             return False
         if not validate_name(hn):
             msgbox(
-                L("Invalid hostname", "Hostname inválido"),
+                L("Invalid hostname", "Hostname invalido"),
                 L("Only letters, digits, hyphens and underscores. Max 32 chars.",
-                  "Solo letras, dígitos, guiones y guiones bajos. Max 32 caracteres.")
+                  "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres.")
             )
             continue
 
         un = inputbox(
             L("System Identity", "Identidad del sistema"),
-            L("Enter username (letters, digits, -, _ — max 32 chars):",
-              "Ingresa el nombre de usuario (letras, dígitos, -, _ — max 32):"),
+            L("Enter username (letters, digits, -, _ - max 32 chars):",
+              "Ingresa el nombre de usuario (letras, digitos, -, _ - max 32):"),
             state.get("username", "")
         )
         if un is None:
             return False
         if not validate_name(un):
             msgbox(
-                L("Invalid username", "Usuario inválido"),
+                L("Invalid username", "Usuario invalido"),
                 L("Only letters, digits, hyphens and underscores. Max 32 chars.",
-                  "Solo letras, dígitos, guiones y guiones bajos. Max 32 caracteres.")
+                  "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres.")
             )
             continue
 
@@ -1179,45 +1272,45 @@ def screen_identity():
 def screen_passwords():
     while True:
         rp1 = passwordbox(
-            L("Passwords", "Contraseñas"),
-            L("Enter ROOT password:", "Ingresa la contraseña de ROOT:")
+            L("Passwords", "Contrasenas"),
+            L("Enter ROOT password:", "Ingresa la contrasena de ROOT:")
         )
         if rp1 is None:
             return False
         rp2 = passwordbox(
-            L("Passwords", "Contraseñas"),
-            L("Confirm ROOT password:", "Confirma la contraseña de ROOT:")
+            L("Passwords", "Contrasenas"),
+            L("Confirm ROOT password:", "Confirma la contrasena de ROOT:")
         )
         if rp2 is None:
             return False
         if not rp1:
             msgbox(L("Error", "Error"), L("Root password cannot be empty.",
-                                          "La contraseña root no puede estar vacía."))
+                                          "La contrasena root no puede estar vacia."))
             continue
         if rp1 != rp2:
             msgbox(L("Error", "Error"), L("Root passwords do not match.",
-                                          "Las contraseñas root no coinciden."))
+                                          "Las contrasenas root no coinciden."))
             continue
 
         up1 = passwordbox(
-            L("Passwords", "Contraseñas"),
-            L("Enter USER password:", "Ingresa la contraseña de USUARIO:")
+            L("Passwords", "Contrasenas"),
+            L("Enter USER password:", "Ingresa la contrasena de USUARIO:")
         )
         if up1 is None:
             return False
         up2 = passwordbox(
-            L("Passwords", "Contraseñas"),
-            L("Confirm USER password:", "Confirma la contraseña de USUARIO:")
+            L("Passwords", "Contrasenas"),
+            L("Confirm USER password:", "Confirma la contrasena de USUARIO:")
         )
         if up2 is None:
             return False
         if not up1:
             msgbox(L("Error", "Error"), L("User password cannot be empty.",
-                                          "La contraseña de usuario no puede estar vacía."))
+                                          "La contrasena de usuario no puede estar vacia."))
             continue
         if up1 != up2:
             msgbox(L("Error", "Error"), L("User passwords do not match.",
-                                          "Las contraseñas de usuario no coinciden."))
+                                          "Las contrasenas de usuario no coinciden."))
             continue
 
         state["root_pass"] = rp1
@@ -1243,23 +1336,23 @@ def screen_disk():
 
     if lsblk_info:
         msgbox(
-            L("Disk Overview — Read before selecting!", "Vista de discos — ¡Lee antes de elegir!"),
+            L("Disk Overview - Read before selecting!", "Vista de discos - Lee antes de elegir!"),
             L(
                 "Current disk layout (lsblk -f):\n\n" + lsblk_info +
                 "\nWARNING: The disk you select will be COMPLETELY ERASED.",
                 "Layout actual de discos (lsblk -f):\n\n" + lsblk_info +
-                "\nADVERTENCIA: El disco seleccionado se BORRARÁ COMPLETAMENTE."
+                "\nADVERTENCIA: El disco seleccionado se BORRARA COMPLETAMENTE."
             )
         )
 
-    items   = [(f"/dev/{n}", f"{gb} GB  —  {model}") for n, gb, model in disks]
+    items   = [(f"/dev/{n}", f"{gb} GB  -  {model}") for n, gb, model in disks]
     default = f"/dev/{state['disk']}" if state["disk"] else items[0][0]
 
     result = radiolist(
-        L("Disk Selection", "Selección de disco"),
+        L("Disk Selection", "Seleccion de disco"),
         L("WARNING: ALL DATA on the selected disk will be ERASED!\n\n"
           "Select the installation disk:",
-          "ADVERTENCIA: ¡Se borrarán todos los datos del disco seleccionado!\n\n"
+          "ADVERTENCIA: Se borraran todos los datos del disco seleccionado!\n\n"
           "Selecciona el disco:"),
         items,
         default=default
@@ -1274,8 +1367,8 @@ def screen_disk():
             "ALL data on this disk will be permanently destroyed.\n\n"
             "Are you absolutely sure?",
             f"Seleccionaste: {result}\n\n"
-            "TODOS los datos en este disco se destruirán permanentemente.\n\n"
-            "¿Estás completamente seguro?"
+            "TODOS los datos en este disco se destruiran permanentemente.\n\n"
+            "Estas completamente seguro?"
         )
     ):
         return False
@@ -1285,12 +1378,12 @@ def screen_disk():
     suggested = str(suggest_swap_gb())
     while True:
         swap = inputbox(
-            L("Swap Size", "Tamaño de Swap"),
+            L("Swap Size", "Tamano de Swap"),
             L(
                 f"Suggested swap size based on your RAM: {suggested} GB\n\n"
                 "Enter swap size in GB (1-128):",
-                f"Tamaño de swap sugerido según tu RAM: {suggested} GB\n\n"
-                "Ingresa el tamaño del swap en GB (1-128):"
+                f"Tamano de swap sugerido segun tu RAM: {suggested} GB\n\n"
+                "Ingresa el tamano del swap en GB (1-128):"
             ),
             state.get("swap", suggested)
         )
@@ -1299,20 +1392,20 @@ def screen_disk():
         if validate_swap(swap.strip()):
             state["swap"] = swap.strip()
             return True
-        msgbox(L("Invalid swap", "Swap inválido"),
+        msgbox(L("Invalid swap", "Swap invalido"),
                L("Swap must be a number between 1 and 128.",
-                 "El swap debe ser un número entre 1 y 128."))
+                 "El swap debe ser un numero entre 1 y 128."))
 
 def screen_filesystem():
     options = [
-        ("ext4",  L("ext4  — stable, widely supported",
-                    "ext4  — estable, amplio soporte")),
-        ("btrfs", L("btrfs — subvolumes (@, @home, @var, @snapshots) + zstd compression",
-                    "btrfs — subvolúmenes (@, @home, @var, @snapshots) + compresión zstd")),
+        ("ext4",  L("ext4  - stable, widely supported",
+                    "ext4  - estable, amplio soporte")),
+        ("btrfs", L("btrfs - subvolumes (@, @home, @var, @snapshots) + zstd compression",
+                    "btrfs - subvolumenes (@, @home, @var, @snapshots) + compresion zstd")),
     ]
     result = radiolist(
         L("Filesystem", "Sistema de archivos"),
-        L("Choose the root filesystem:", "Elige el sistema de archivos raíz:"),
+        L("Choose the root filesystem:", "Elige el sistema de archivos raiz:"),
         options,
         default=state["filesystem"]
     )
@@ -1323,12 +1416,12 @@ def screen_filesystem():
 
 def screen_kernel():
     options = [
-        ("linux",     L("linux     — latest stable kernel",
-                        "linux     — kernel estable más reciente")),
-        ("linux-lts", L("linux-lts — long-term support kernel",
-                        "linux-lts — kernel de soporte a largo plazo")),
-        ("linux-zen", L("linux-zen — optimized for desktop / gaming",
-                        "linux-zen — optimizado para escritorio / gaming")),
+        ("linux",     L("linux     - latest stable kernel",
+                        "linux     - kernel estable mas reciente")),
+        ("linux-lts", L("linux-lts - long-term support kernel",
+                        "linux-lts - kernel de soporte a largo plazo")),
+        ("linux-zen", L("linux-zen - optimized for desktop / gaming",
+                        "linux-zen - optimizado para escritorio / gaming")),
     ]
     result = radiolist(
         L("Kernel", "Kernel"),
@@ -1351,15 +1444,15 @@ def screen_bootloader():
         (
             "grub",
             L(
-                "GRUB — stable, uefi and bios",
-                "GRUB — estable, uefi y bios",
+                "GRUB - stable, uefi and bios",
+                "GRUB - estable, uefi y bios",
             ),
         ),
         (
             "systemd-boot",
             L(
-                "systemd-boot — fast, only uefi",
-                "systemd-boot — rápido, solo UEFI",
+                "systemd-boot - fast, only uefi",
+                "systemd-boot - rapido, solo UEFI",
             ),
         ),
     ]
@@ -1383,14 +1476,14 @@ def screen_bootloader():
 
 def screen_mirrors():
     result = radiolist(
-        L("Mirror Optimization", "Optimización de mirrors"),
+        L("Mirror Optimization", "Optimizacion de mirrors"),
         L("Use reflector to select the 10 fastest mirrors? (recommended)",
-          "¿Usar reflector para seleccionar los 10 mirrors más rápidos? (recomendado)"),
+          "Usar reflector para seleccionar los 10 mirrors mas rapidos? (recomendado)"),
         [
-            ("yes", L("Yes — auto-select fastest mirrors",
-                      "Sí — seleccionar mirrors más rápidos")),
-            ("no",  L("No  — keep default mirrors",
-                      "No  — mantener mirrors por defecto")),
+            ("yes", L("Yes - auto-select fastest mirrors",
+                      "Si - seleccionar mirrors mas rapidos")),
+            ("no",  L("No  - keep default mirrors",
+                      "No  - mantener mirrors por defecto")),
         ],
         default="yes" if state["mirrors"] else "no"
     )
@@ -1398,6 +1491,78 @@ def screen_mirrors():
         return False
     state["mirrors"] = (result == "yes")
     return True
+
+
+# =============================================================================
+# FIX 1: nueva pantalla de locale del SISTEMA INSTALADO, independiente del
+#         idioma de este instalador.
+# =============================================================================
+def screen_locale():
+    options = [
+        ("en_US.UTF-8", "English (United States)      en_US.UTF-8"),
+        ("en_GB.UTF-8", "English (United Kingdom)     en_GB.UTF-8"),
+        ("es_ES.UTF-8", "Espanol (Espana)              es_ES.UTF-8"),
+        ("es_MX.UTF-8", "Espanol (Mexico)              es_MX.UTF-8"),
+        ("es_AR.UTF-8", "Espanol (Argentina)           es_AR.UTF-8"),
+        ("fr_FR.UTF-8", "Francais (France)             fr_FR.UTF-8"),
+        ("de_DE.UTF-8", "Deutsch (Deutschland)         de_DE.UTF-8"),
+        ("it_IT.UTF-8", "Italiano (Italia)             it_IT.UTF-8"),
+        ("pt_PT.UTF-8", "Portugues (Portugal)          pt_PT.UTF-8"),
+        ("pt_BR.UTF-8", "Portugues (Brasil)            pt_BR.UTF-8"),
+        ("ru_RU.UTF-8", "Russkiy (Rossiya)             ru_RU.UTF-8"),
+        ("pl_PL.UTF-8", "Polski (Polska)               pl_PL.UTF-8"),
+        ("nl_NL.UTF-8", "Nederlands (Nederland)        nl_NL.UTF-8"),
+        ("cs_CZ.UTF-8", "Cestina (Ceska republika)     cs_CZ.UTF-8"),
+        ("hu_HU.UTF-8", "Magyar (Magyarorszag)         hu_HU.UTF-8"),
+        ("ro_RO.UTF-8", "Romana (Romania)              ro_RO.UTF-8"),
+        ("da_DK.UTF-8", "Dansk (Danmark)               da_DK.UTF-8"),
+        ("nb_NO.UTF-8", "Norsk (Norge)                 nb_NO.UTF-8"),
+        ("sv_SE.UTF-8", "Svenska (Sverige)             sv_SE.UTF-8"),
+        ("fi_FI.UTF-8", "Suomi (Suomi)                 fi_FI.UTF-8"),
+        ("tr_TR.UTF-8", "Turkce (Turkiye)              tr_TR.UTF-8"),
+        ("ja_JP.UTF-8", "Japanese (Japan)              ja_JP.UTF-8"),
+        ("ko_KR.UTF-8", "Korean (Korea)                ko_KR.UTF-8"),
+        ("zh_CN.UTF-8", "Chinese Simplified (China)    zh_CN.UTF-8"),
+        ("ar_SA.UTF-8", "Arabic (Saudi Arabia)         ar_SA.UTF-8"),
+    ]
+
+    result = radiolist(
+        L("System Locale", "Idioma del sistema instalado"),
+        L(
+            "Choose the locale for the INSTALLED SYSTEM.\n"
+            "This is INDEPENDENT of the installer UI language.\n\n"
+            "Controls: system language, date/number formats, etc.",
+            "Elige el locale para el SISTEMA INSTALADO.\n"
+            "Es INDEPENDIENTE del idioma de este instalador.\n\n"
+            "Controla: idioma del sistema, formatos de fecha/numeros, etc."
+        ),
+        options,
+        default=state.get("locale", "en_US.UTF-8")
+    )
+    if result is None:
+        return False
+
+    state["locale"] = result
+
+    # Sugerir el keymap correspondiente al locale elegido
+    suggested_km = LOCALE_TO_KEYMAP.get(result)
+    if suggested_km and suggested_km != state["keymap"]:
+        if yesno(
+            L("Keyboard suggestion", "Sugerencia de teclado"),
+            L(
+                f"The locale '{result}' typically uses keymap '{suggested_km}'.\n\n"
+                f"Current keymap: '{state['keymap']}'\n\n"
+                f"Switch keymap to '{suggested_km}'?",
+                f"El locale '{result}' suele usar el teclado '{suggested_km}'.\n\n"
+                f"Teclado actual: '{state['keymap']}'\n\n"
+                f"Cambiar teclado a '{suggested_km}'?"
+            )
+        ):
+            state["keymap"] = suggested_km
+            run_simple(f"loadkeys {shlex.quote(suggested_km)}", ignore_error=True)
+
+    return True
+
 
 def screen_keymap():
     try:
@@ -1409,13 +1574,23 @@ def screen_keymap():
     except Exception:
         maps = []
 
-    wanted  = ["us", "es", "uk", "fr", "de", "it", "ru", "ara", "pt-latin9", "br-abnt2"]
+    wanted = [
+        "us", "es", "uk", "fr", "de", "it", "ru", "ara",
+        "pt-latin9", "br-abnt2", "pl2", "hu", "cz-qwerty",
+        "sk-qwerty", "ro_win", "dk", "no", "sv-latin1",
+        "fi", "nl", "tr_q-latin5", "ja106", "kr106",
+    ]
     options = [m for m in wanted if m in maps] if maps else wanted
     items   = [(m, f"Keyboard layout: {m}") for m in options]
 
     result = radiolist(
-        L("Keyboard Layout", "Distribución de teclado"),
-        L("Select your keyboard layout:", "Selecciona la distribución de tu teclado:"),
+        L("Keyboard Layout", "Distribucion de teclado"),
+        L(
+            "Select your keyboard layout.\n"
+            "Applied to both TTY console and the desktop (X11/Wayland).",
+            "Selecciona la distribucion de teclado.\n"
+            "Se aplica a la TTY y al escritorio (X11/Wayland)."
+        ),
         items,
         default=state["keymap"]
     )
@@ -1443,8 +1618,8 @@ def screen_timezone():
     cur_region = state["timezone"].split("/")[0] if "/" in state["timezone"] else "UTC"
 
     region = radiolist(
-        L("Timezone — Region", "Zona horaria — Región"),
-        L("Select your region:", "Selecciona tu región:"),
+        L("Timezone - Region", "Zona horaria - Region"),
+        L("Select your region:", "Selecciona tu region:"),
         [(r, r) for r in regions],
         default=cur_region
     )
@@ -1454,16 +1629,19 @@ def screen_timezone():
         state["timezone"] = "UTC"
         return True
 
-    cities   = [(z.split("/", 1)[1], z) for z in zones if z.startswith(region + "/")]
+    cities = [
+        (z.split("/", 1)[1], z.split("/", 1)[1])
+        for z in zones if z.startswith(region + "/")
+    ]
     if not cities:
         state["timezone"] = region
         return True
 
     cur_city = state["timezone"].split("/", 1)[1] if "/" in state["timezone"] else ""
     city = radiolist(
-        L("Timezone — City", "Zona horaria — Ciudad"),
+        L("Timezone - City", "Zona horaria - Ciudad"),
         L(f"Region: {region}\nSelect your city:",
-          f"Región: {region}\nSelecciona tu ciudad:"),
+          f"Region: {region}\nSelecciona tu ciudad:"),
         cities,
         default=cur_city
     )
@@ -1473,20 +1651,20 @@ def screen_timezone():
 
 def screen_desktop():
     options = [
-        ("KDE Plasma", L("KDE Plasma — full featured, modern",
-                         "KDE Plasma — completo, moderno")),
-        ("GNOME",      L("GNOME     — clean, Wayland-first",
-                         "GNOME     — limpio, Wayland primero")),
-        ("Cinnamon",   L("Cinnamon  — classic, Windows-like",
-                         "Cinnamon  — clásico, similar a Windows")),
-        ("XFCE",       L("XFCE      — lightweight, traditional",
-                         "XFCE      — ligero, tradicional")),
-        ("MATE",       L("MATE      — GNOME 2 fork, very stable",
-                         "MATE      — fork de GNOME 2, muy estable")),
-        ("LXQt",       L("LXQt      — minimal Qt desktop",
-                         "LXQt      — escritorio Qt minimalista")),
-        ("None",       L("None      — CLI only, no desktop",
-                         "None      — solo terminal, sin escritorio")),
+        ("KDE Plasma", L("KDE Plasma - full featured, modern",
+                         "KDE Plasma - completo, moderno")),
+        ("GNOME",      L("GNOME     - clean, Wayland-first",
+                         "GNOME     - limpio, Wayland primero")),
+        ("Cinnamon",   L("Cinnamon  - classic, Windows-like",
+                         "Cinnamon  - clasico, similar a Windows")),
+        ("XFCE",       L("XFCE      - lightweight, traditional",
+                         "XFCE      - ligero, tradicional")),
+        ("MATE",       L("MATE      - GNOME 2 fork, very stable",
+                         "MATE      - fork de GNOME 2, muy estable")),
+        ("LXQt",       L("LXQt      - minimal Qt desktop",
+                         "LXQt      - escritorio Qt minimalista")),
+        ("None",       L("None      - CLI only, no desktop",
+                         "None      - solo terminal, sin escritorio")),
     ]
     result = radiolist(
         L("Desktop Environment", "Entorno de escritorio"),
@@ -1522,9 +1700,9 @@ def screen_gpu():
         ("Intel",        L("Intel open-source (mesa + vulkan-intel + intel-media-driver)",
                            "Intel open-source (mesa + vulkan-intel + intel-media-driver)")),
         ("Intel+NVIDIA", L("Intel + NVIDIA hybrid (Mesa + proprietary NVIDIA)",
-                           "Intel + NVIDIA híbrido (Mesa + NVIDIA propietario)")),
+                           "Intel + NVIDIA hibrido (Mesa + NVIDIA propietario)")),
         ("Intel+AMD",    L("Intel + AMD hybrid (Mesa + vulkan-radeon)",
-                           "Intel + AMD híbrido (Mesa + vulkan-radeon)")),
+                           "Intel + AMD hibrido (Mesa + vulkan-radeon)")),
         ("None",         L("No additional GPU drivers", "Sin drivers adicionales de GPU")),
     ]
     result = radiolist(
@@ -1542,12 +1720,12 @@ def screen_yay():
     result = radiolist(
         L("AUR Helper", "AUR Helper"),
         L("Install yay? (AUR helper, lets you install packages from the AUR)",
-          "¿Instalar yay? (AUR helper, permite instalar paquetes del AUR)"),
+          "Instalar yay? (AUR helper, permite instalar paquetes del AUR)"),
         [
-            ("yes", L("Yes — install yay after base setup",
-                      "Sí — instalar yay al finalizar")),
-            ("no",  L("No  — skip",
-                      "No  — omitir")),
+            ("yes", L("Yes - install yay after base setup",
+                      "Si - instalar yay al finalizar")),
+            ("no",  L("No  - skip",
+                      "No  - omitir")),
         ],
         default="yes" if state["yay"] else "no"
     )
@@ -1564,15 +1742,15 @@ def screen_snapper():
         L("BTRFS Snapshots", "Snapshots BTRFS"),
         L(
             "Install snapper + grub-btrfs for automatic rollback snapshots?\n"
-            "(Requires BTRFS filesystem — already selected)",
-            "¿Instalar snapper + grub-btrfs para snapshots y rollback automático?\n"
-            "(Requiere BTRFS — ya seleccionado)"
+            "(Requires BTRFS filesystem - already selected)",
+            "Instalar snapper + grub-btrfs para snapshots y rollback automatico?\n"
+            "(Requiere BTRFS - ya seleccionado)"
         ),
         [
-            ("yes", L("Yes — automatic snapshots on every pacman transaction",
-                      "Sí — snapshots automáticos en cada transacción pacman")),
-            ("no",  L("No  — skip",
-                      "No  — omitir")),
+            ("yes", L("Yes - automatic snapshots on every pacman transaction",
+                      "Si - snapshots automaticos en cada transaccion pacman")),
+            ("no",  L("No  - skip",
+                      "No  - omitir")),
         ],
         default="yes" if state["snapper"] else "no"
     )
@@ -1591,15 +1769,15 @@ def screen_flatpak():
             "Install Flatpak and add the Flathub repository?\n\n"
             "Flatpak lets you install thousands of apps from Flathub\n"
             "independently of Arch packages.",
-            "¿Instalar Flatpak y añadir el repositorio Flathub?\n\n"
+            "Instalar Flatpak y anadir el repositorio Flathub?\n\n"
             "Flatpak permite instalar miles de aplicaciones de Flathub\n"
             "de forma independiente a los paquetes de Arch."
         ),
         [
-            ("yes", L("Yes — install Flatpak + add Flathub",
-                      "Sí — instalar Flatpak + añadir Flathub")),
-            ("no",  L("No  — skip",
-                      "No  — omitir")),
+            ("yes", L("Yes - install Flatpak + add Flathub",
+                      "Si - instalar Flatpak + anadir Flathub")),
+            ("no",  L("No  - skip",
+                      "No  - omitir")),
         ],
         default="yes" if state.get("flatpak") else "no"
     )
@@ -1610,13 +1788,17 @@ def screen_flatpak():
 
 def screen_review():
     microcode = detect_cpu() or L("none detected", "no detectado")
-    quick_tag = L("  [Quick Install]", "  [Instalación rápida]") if state["quick"] else ""
+    quick_tag = L("  [Quick Install]", "  [Instalacion rapida]") if state["quick"] else ""
     boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS", "BIOS")
 
+    # FIX: mostrar locale Y keymap X11 en la pantalla de revision
+    x11_layout = CONSOLE_TO_X11.get(state["keymap"], state["keymap"])
+
     lines = [
-        ("Mode",                    L("Quick", "Rápida") if state["quick"] else L("Custom", "Personalizada")),
+        ("Mode",                    L("Quick", "Rapida") if state["quick"] else L("Custom", "Personalizada")),
         ("Boot",                    boot_mode),
-        ("Language",                state["lang"]),
+        ("Installer lang",          state["lang"]),
+        ("System locale",           state.get("locale", "en_US.UTF-8")),
         ("Hostname",                state["hostname"] or "NOT SET"),
         (L("Username", "Usuario"),  state["username"] or "NOT SET"),
         ("Filesystem",              state["filesystem"]),
@@ -1626,33 +1808,34 @@ def screen_review():
         ("Disk",                    f"/dev/{state['disk']}" if state["disk"] else "NOT SET"),
         ("Swap",                    f"{state['swap']} GB"),
         ("Mirrors",                 L("reflector (auto)", "reflector (auto)") if state["mirrors"] else L("default", "por defecto")),
-        ("Keymap",                  state["keymap"]),
+        ("Keymap TTY",              state["keymap"]),
+        ("Keymap X11",              x11_layout),
         ("Timezone",                state["timezone"]),
         ("Desktop",                 state["desktop"]),
         ("GPU",                     state["gpu"]),
         ("Audio",                   "pipewire" if state["desktop"] != "None" else L("none", "ninguno")),
-        ("Flatpak",                 L("yes", "sí") if state.get("flatpak") else "no"),
-        ("yay",                     L("yes", "sí") if state["yay"] else "no"),
-        ("snapper",                 L("yes", "sí") if state.get("snapper") else "no"),
+        ("Flatpak",                 L("yes", "si") if state.get("flatpak") else "no"),
+        ("yay",                     L("yes", "si") if state["yay"] else "no"),
+        ("snapper",                 L("yes", "si") if state.get("snapper") else "no"),
     ]
 
     text    = L(f"Review your settings:{quick_tag}\n\n",
-                f"Revisa tu configuración:{quick_tag}\n\n")
+                f"Revisa tu configuracion:{quick_tag}\n\n")
     missing = []
 
     for label, val in lines:
-        text += f"  {label:<14} {val}\n"
+        text += f"  {label:<18} {val}\n"
     text += "\n"
 
     if not state["hostname"]:  missing.append("hostname")
     if not state["username"]:  missing.append("username")
     if not state["disk"]:      missing.append("disk")
-    if not state["root_pass"]: missing.append(L("root password", "contraseña root"))
+    if not state["root_pass"]: missing.append(L("root password", "contrasena root"))
 
     if missing:
         text += L(f"MISSING: {', '.join(missing)}\n\nGo back to fix before continuing.",
-                  f"FALTA: {', '.join(missing)}\n\nVuelve atrás para corregirlo.")
-        msgbox(L("Review — Incomplete", "Revisión — Incompleto"), text)
+                  f"FALTA: {', '.join(missing)}\n\nVuelve atras para corregirlo.")
+        msgbox(L("Review - Incomplete", "Revision - Incompleto"), text)
         return False
 
     text += L("All settings look good.", "Todo listo.")
@@ -1660,19 +1843,11 @@ def screen_review():
         L("Review & Confirm", "Revisar y confirmar"),
         text + L(
             f"\n\nWARNING: THIS WILL ERASE /dev/{state['disk']}.\n\nProceed?",
-            f"\n\nADVERTENCIA: SE BORRARÁ /dev/{state['disk']}.\n\n¿Proceder?"
+            f"\n\nADVERTENCIA: SE BORRARA /dev/{state['disk']}.\n\nProceder?"
         )
     )
 
 class InstallScreen:
-    """
-    Renderizador de pantalla de instalación sin dialog.
-    Muestra una barra de progreso con ANSI.
-
-    Escribe 'debug' (sin Enter)  → vista de log en vivo
-    Escribe 'exit'  (sin Enter)  → vuelve a la barra de progreso
-    """
-
     _RST  = "\033[0m"
     _BOLD = "\033[1m"
     _DIM  = "\033[2m"
@@ -1680,9 +1855,8 @@ class InstallScreen:
     _SHOW = "\033[?25h"
     _CLS  = "\033[2J\033[H"
 
-    # colores
-    _BG_BLUE  = "\033[44m\033[97m"   # blanco sobre azul
-    _BG_DARK  = "\033[100m"          # gris oscuro (barra vacía)
+    _BG_BLUE  = "\033[44m\033[97m"
+    _BG_DARK  = "\033[100m"
     _FG_CYAN  = "\033[96m"
     _FG_YEL   = "\033[93m"
     _FG_RED   = "\033[91m"
@@ -1692,16 +1866,15 @@ class InstallScreen:
     def __init__(self, title, version):
         self._title        = title
         self._version      = version
-        self._mode         = "progress"   # "progress" | "debug"
-        self._prev_mode    = "progress"   # para detectar cambios de modo
+        self._mode         = "progress"
+        self._prev_mode    = "progress"
         self._pct          = 0.0
-        self._stage        = L("Preparing…", "Preparando…")
-        self._lines        = []           # ring-buffer de log
+        self._stage        = L("Preparing...", "Preparando...")
+        self._lines        = []
         self._lock         = threading.Lock()
         self._running      = False
         self._keybuf       = ""
         self._old_tty      = None
-
 
     def start(self):
         self._running = True
@@ -1729,12 +1902,10 @@ class InstallScreen:
             self._stage = stage
 
     def feed(self, line):
-        """Añade una línea al buffer de log (llamado desde el hilo tailer)."""
         with self._lock:
             self._lines.append(line)
             if len(self._lines) > 2000:
                 self._lines = self._lines[-1000:]
-
 
     def _size(self):
         sz = shutil.get_terminal_size((80, 24))
@@ -1749,8 +1920,7 @@ class InstallScreen:
     def _trunc(self, s, n):
         if len(s) <= n:
             return s
-        return s[:n - 1] + "…"
-
+        return s[:n - 1] + "..."
 
     def _render_loop(self):
         while self._running:
@@ -1793,11 +1963,10 @@ class InstallScreen:
         for r in range(top + 7, rows + 1):
             out.append(self._goto(r) + self._clr())
 
-        title_str = f" {self._title}  —  {self._version} "
+        title_str = f" {self._title}  -  {self._version} "
         row(top,
             self._BG_BLUE + self._BOLD + title_str.center(W) + self._RST)
         row(top + 1)
-
         row(top + 2,
             f"  {self._BOLD}{self._trunc(stage, W - 4)}{self._RST}")
         row(top + 3)
@@ -1817,14 +1986,14 @@ class InstallScreen:
 
         pct_s    = f"{pct:.0f}%"
         hdr_l    = f" DEBUG  {pct_s}  {self._trunc(stage, W - 28)}"
-        hdr_r    = "escribe 'exit' para volver "
+        hdr_r    = "write 'exit' to go back "
         gap      = max(0, W - len(hdr_l) - len(hdr_r))
         hdr      = (self._BG_BLUE + self._BOLD +
                     hdr_l + " " * gap + hdr_r + self._RST)
         out.append(self._goto(1) + self._clr() + hdr)
 
         out.append(self._goto(2) + self._clr() +
-                   self._FG_CYAN + "─" * W + self._RST)
+                   self._FG_CYAN + "-" * W + self._RST)
 
         available = rows - 2
         visible   = lines[-available:] if lines else []
@@ -1843,7 +2012,6 @@ class InstallScreen:
             )
         for i in range(len(visible), available):
             out.append(self._goto(3 + i) + self._clr())
-
 
     def _key_loop(self):
         import select as _sel
@@ -1880,12 +2048,12 @@ def screen_install():
     fail_msg   = [""]
     done_event = threading.Event()
     _pct       = [0.0]
-    _stage     = [L("Preparing…", "Preparando…")]
+    _stage     = [L("Preparing...", "Preparando...")]
 
     def _tailer():
         try:
             with open(LOG_FILE, "r", errors="replace") as f:
-                f.seek(0, 2)                    # empieza desde el final
+                f.seek(0, 2)
                 while not stop_tail.is_set():
                     line = f.readline()
                     if line:
@@ -1922,27 +2090,27 @@ def screen_install():
 
     if failed[0]:
         msgbox(
-            L("Installation Failed", "Instalación fallida"),
+            L("Installation Failed", "Instalacion fallida"),
             L(f"Installation failed.\n\n{fail_msg[0]}\n\nCheck {LOG_FILE} for details.",
-              f"La instalación falló.\n\n{fail_msg[0]}\n\nRevisa {LOG_FILE} para detalles.")
+              f"La instalacion fallo.\n\n{fail_msg[0]}\n\nRevisa {LOG_FILE} para detalles.")
         )
         return False
     return True
 
 def screen_finish():
     ok = yesno(
-        L("Installation Complete!", "¡Instalación completa!"),
+        L("Installation Complete!", "Instalacion completa!"),
         L("Arch Linux has been installed successfully.\n\n"
           "Remove the installation media. Reboot now?",
           "Arch Linux se ha instalado correctamente.\n\n"
-          "Extrae el medio de instalación. ¿Reiniciar ahora?")
+          "Extrae el medio de instalacion. Reiniciar ahora?")
     )
     if ok:
         dlg_titled(
             L("Rebooting", "Reiniciando"),
             "--infobox",
-            L("Unmounting filesystems and rebooting…",
-              "Desmontando sistemas de archivos y reiniciando…"),
+            L("Unmounting filesystems and rebooting...",
+              "Desmontando sistemas de archivos y reiniciando..."),
             "5", "50"
         )
         subprocess.run("umount -R /mnt", shell=True)
@@ -1957,33 +2125,38 @@ def main():
     quick = screen_mode()
 
     if quick:
+        # FIX: locale y keymap disponibles tambien en modo rapido
         steps = [
-            (L("Disk",      "Disco"),       screen_disk,      True),
-            (L("Identity",  "Identidad"),   screen_identity,  True),
-            (L("Passwords", "Contraseñas"), screen_passwords, True),
-            (L("Review",    "Revisión"),    screen_review,    True),
-            (L("Install",   "Instalar"),    screen_install,   False),
-            (L("Finish",    "Finalizar"),   screen_finish,    False),
+            (L("Locale",    "Idioma sistema"), screen_locale,    True),
+            (L("Keymap",    "Teclado"),        screen_keymap,    True),
+            (L("Disk",      "Disco"),          screen_disk,      True),
+            (L("Identity",  "Identidad"),      screen_identity,  True),
+            (L("Passwords", "Contrasenas"),    screen_passwords, True),
+            (L("Review",    "Revision"),       screen_review,    True),
+            (L("Install",   "Instalar"),       screen_install,   False),
+            (L("Finish",    "Finalizar"),      screen_finish,    False),
         ]
     else:
         steps = [
-            (L("Disk",        "Disco"),            screen_disk,        True),
-            (L("Filesystem",  "Sistema archivos"), screen_filesystem,  True),
-            (L("Kernel",      "Kernel"),           screen_kernel,      True),
-            (L("Bootloader",  "Bootloader"),       screen_bootloader,  True),
-            (L("Mirrors",     "Mirrors"),          screen_mirrors,     True),
-            (L("Identity",    "Identidad"),        screen_identity,    True),
-            (L("Passwords",   "Contraseñas"),      screen_passwords,   True),
-            (L("Keymap",      "Teclado"),          screen_keymap,      True),
-            (L("Timezone",    "Zona horaria"),     screen_timezone,    True),
-            (L("Desktop",     "Escritorio"),       screen_desktop,     True),
-            ("GPU",                                screen_gpu,         True),
-            (L("yay",         "yay"),              screen_yay,         True),
-            (L("Flatpak",     "Flatpak"),          screen_flatpak,     True),
-            (L("Snapshots",   "Snapshots"),        screen_snapper,     True),
-            (L("Review",      "Revisión"),         screen_review,      True),
-            (L("Install",     "Instalar"),         screen_install,     False),
-            (L("Finish",      "Finalizar"),        screen_finish,      False),
+            # FIX: locale va primero para que la sugerencia de keymap sea util
+            (L("Locale",      "Idioma sistema"),    screen_locale,      True),
+            (L("Disk",        "Disco"),             screen_disk,        True),
+            (L("Filesystem",  "Sistema archivos"),  screen_filesystem,  True),
+            (L("Kernel",      "Kernel"),            screen_kernel,      True),
+            (L("Bootloader",  "Bootloader"),        screen_bootloader,  True),
+            (L("Mirrors",     "Mirrors"),           screen_mirrors,     True),
+            (L("Identity",    "Identidad"),         screen_identity,    True),
+            (L("Passwords",   "Contrasenas"),       screen_passwords,   True),
+            (L("Keymap",      "Teclado"),           screen_keymap,      True),
+            (L("Timezone",    "Zona horaria"),      screen_timezone,    True),
+            (L("Desktop",     "Escritorio"),        screen_desktop,     True),
+            ("GPU",                                 screen_gpu,         True),
+            (L("yay",         "yay"),               screen_yay,         True),
+            (L("Flatpak",     "Flatpak"),           screen_flatpak,     True),
+            (L("Snapshots",   "Snapshots"),         screen_snapper,     True),
+            (L("Review",      "Revision"),          screen_review,      True),
+            (L("Install",     "Instalar"),          screen_install,     False),
+            (L("Finish",      "Finalizar"),         screen_finish,      False),
         ]
 
     idx = 0
@@ -1993,7 +2166,7 @@ def main():
         if result is False and can_go_back:
             if idx == 0:
                 if yesno(L("Exit", "Salir"),
-                         L("Exit the installer?", "¿Salir del instalador?")):
+                         L("Exit the installer?", "Salir del instalador?")):
                     sys.exit(0)
             else:
                 idx -= 1
@@ -2007,7 +2180,7 @@ def bootstrap():
         sys.exit(1)
 
     if not shutil.which("dialog"):
-        print("[*] dialog not found — installing via pacman...")
+        print("[*] dialog not found - installing via pacman...")
         rc = subprocess.call(
             "pacman -Sy --noconfirm dialog",
             shell=True, executable="/bin/bash"
