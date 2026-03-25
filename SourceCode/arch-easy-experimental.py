@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-VERSION  = "V1.1.4"
+VERSION  = "V1.1.3"
 LOG_FILE = "/tmp/arch_install.log"
 TITLE    = "Arch Linux Installer"
 
