@@ -1562,10 +1562,10 @@ def screen_mirrors():
         default=default
     )
     if result is None:
-        return False
+        return BACK
     state["mirrors"] = (result == "yes")
     return True
-
+    
 def screen_locale():
     default = state.get("locale") or (
         "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
@@ -2319,7 +2319,8 @@ def screen_finish():
 
 def main():
     screen_welcome()
-    if not screen_language():
+    lang_result = screen_language()
+    if lang_result is BACK:
         sys.exit(0)
     screen_network()
     quick = screen_mode()
@@ -2363,7 +2364,6 @@ def main():
     while idx < len(steps):
         name, fn, can_go_back = steps[idx]
         result = fn()
-        # Si la instalación falla, salir inmediatamente
         if fn is screen_install and not result:
             sys.exit(1)
         if result is BACK and can_go_back:
@@ -2375,7 +2375,7 @@ def main():
                 idx -= 1
         else:
             idx += 1
-
+            
 def bootstrap():
     if os.geteuid() != 0:
         print("This installer must be run as root.")
