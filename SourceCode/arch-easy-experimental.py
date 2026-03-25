@@ -1,6 +1,3 @@
-#omg bro why this fails....
-
-
 import subprocess
 import sys
 import os
@@ -14,7 +11,6 @@ from datetime import datetime
 VERSION  = "V1.1.3"
 LOG_FILE = "/tmp/arch_install.log"
 TITLE    = "Arch Linux Installer"
-BACK     = object()
 
 state = {
     "lang":       "en",
@@ -28,17 +24,14 @@ state = {
     "gpu":        "None",
     "keymap":     "us",
     "timezone":   "UTC",
-    "locale":     "",
     "filesystem": "ext4",
     "kernel":     "linux",
-    "shell":      "bash",
     "mirrors":    True,
     "quick":      False,
     "yay":        False,
     "snapper":    False,
     "bootloader": "grub",
     "flatpak":    False,
-    "extras":     False,
 }
 
 DESKTOP_PKGS = {
@@ -73,44 +66,10 @@ DESKTOP_DM = {
     "LXQt":       "sddm",
 }
 
-EXTRA_PKGS = (
-    "htop btop wget curl rsync p7zip unzip zip tree which "
-    "man-db neofetch bat fd ripgrep lsof strace iotop usbutils"
-)
-
-SHELL_PKGS = {
-    "bash": [],
-    "zsh":  ["zsh", "zsh-completions", "zsh-autosuggestions", "zsh-syntax-highlighting"],
-    "fish": ["fish"],
-}
-
-LOCALE_OPTIONS = [
-    ("en_US.UTF-8", "English (United States)"),
-    ("es_ES.UTF-8", "Espanol (Espana)"),
-    ("es_MX.UTF-8", "Espanol (Mexico)"),
-    ("pt_BR.UTF-8", "Portugues (Brasil)"),
-    ("pt_PT.UTF-8", "Portugues (Portugal)"),
-    ("fr_FR.UTF-8", "Francais (France)"),
-    ("de_DE.UTF-8", "Deutsch (Deutschland)"),
-    ("it_IT.UTF-8", "Italiano (Italia)"),
-    ("ru_RU.UTF-8", "Russkiy (Rossiya)"),
-    ("ja_JP.UTF-8", "Nihongo (Nihon)"),
-    ("zh_CN.UTF-8", "Zhongwen (Jianti)"),
-    ("ko_KR.UTF-8", "Hangugeo (Hanguk)"),
-    ("pl_PL.UTF-8", "Polski (Polska)"),
-    ("nl_NL.UTF-8", "Nederlands (Nederland)"),
-    ("tr_TR.UTF-8", "Turkce (Turkiye)"),
-    ("ar_EG.UTF-8", "Arabiya (Misr)"),
-]
 
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
 
-def _nav():
-    return L(
-        "\n\\Z6 Tab/Arrow\\Zn: move   \\Z6Space\\Zn: select   \\Z6Enter\\Zn: confirm   \\Z6Cancel/Esc\\Zn: go back",
-        "\n\\Z6 Tab/Flecha\\Zn: mover   \\Z6Espacio\\Zn: elegir   \\Z6Enter\\Zn: confirmar   \\Z6Cancelar/Esc\\Zn: volver",
-    )
 
 def nowtag():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -122,12 +81,16 @@ def write_log(line):
     except Exception:
         pass
 
+
 def _flush_stdin():
+    """Drena cualquier tecla pendiente en stdin para que no se cuele en el
+    siguiente diálogo (el Enter del 'OK' anterior dispara el OK siguiente)."""
     import termios
     try:
         termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
     except Exception:
         pass
+
 
 def dlg_titled(title, *args):
     _flush_stdin()
@@ -149,13 +112,13 @@ def yesno(title, text):
     return rc == 0
 
 def inputbox(title, text, init=""):
-    rc, val = dlg_titled(title, "--inputbox", text, "0", "64", init)
+    rc, val = dlg_titled(title, "--inputbox", text, "0", "60", init)
     if rc != 0:
         return None
     return val
 
 def passwordbox(title, text):
-    rc, val = dlg_titled(title, "--insecure", "--passwordbox", text, "0", "64")
+    rc, val = dlg_titled(title, "--insecure", "--passwordbox", text, "0", "60")
     if rc != 0:
         return None
     return val
@@ -165,7 +128,7 @@ def menu(title, text, items):
     for tag, desc in items:
         flat.extend([tag, desc])
     height = min(len(items) + 12, 40)
-    rc, val = dlg_titled(title, "--menu", text, str(height), "78", str(len(items)), *flat)
+    rc, val = dlg_titled(title, "--menu", text, str(height), "76", str(len(items)), *flat)
     if rc != 0:
         return None
     return val
@@ -176,7 +139,7 @@ def radiolist(title, text, items, default=None):
         status = "on" if tag == default else "off"
         flat.extend([tag, desc, status])
     height = min(len(items) + 12, 40)
-    rc, val = dlg_titled(title, "--radiolist", text, str(height), "78", str(len(items)), *flat)
+    rc, val = dlg_titled(title, "--radiolist", text, str(height), "76", str(len(items)), *flat)
     if rc != 0:
         return None
     return val
@@ -201,11 +164,13 @@ def gauge_update(proc, pct, message):
     except Exception:
         pass
 
+
 def validate_name(n):
     return bool(re.match(r"^[a-zA-Z0-9_-]{1,32}$", n or ""))
 
 def validate_swap(s):
     return bool(re.match(r"^\d+$", s or "")) and 1 <= int(s) <= 128
+
 
 def list_disks():
     try:
@@ -242,9 +207,11 @@ def detect_gpu():
         ).lower()
     except Exception:
         return "None"
+
     has_nvidia = "nvidia" in out
     has_amd    = "amd" in out or "radeon" in out
     has_intel  = "intel" in out
+
     if has_intel and has_nvidia:
         return "Intel+NVIDIA"
     if has_intel and has_amd:
@@ -274,9 +241,9 @@ def is_uefi():
 def is_ssd(disk_path):
     disk_name = os.path.basename(disk_path)
     if disk_name.startswith("nvme") or disk_name.startswith("mmcblk"):
-        block = re.sub(r"p\d+$", "", disk_name)
+        block = re.sub(r"p\d+$", "", disk_name)   # nvme0n1p1 → nvme0n1
     else:
-        block = re.sub(r"\d+$", "", disk_name)
+        block = re.sub(r"\d+$", "", disk_name)     # sda1 → sda
     rotational = f"/sys/block/{block}/queue/rotational"
     try:
         with open(rotational) as f:
@@ -299,7 +266,15 @@ def suggest_swap_gb():
         pass
     return 8
 
+
+
+# BUG FIX: helper to settle partition table after sgdisk operations
+# Without this NVMe drives freeze because the kernel
+# hasn't updated its partition map before mkfs tries to open the new nodes
+#gosh this took so long to fix.
+
 def _settle_partitions(disk_path, log_fn=None):
+    """Force kernel to re-read partition table and wait for udev."""
     for cmd in (
         f"partprobe {disk_path}",
         "udevadm settle --timeout=10",
@@ -309,6 +284,7 @@ def _settle_partitions(disk_path, log_fn=None):
         if log_fn:
             log_fn(f"[settle] {cmd}  rc={rc}")
     time.sleep(1)
+
 
 def _wifi_interfaces():
     try:
@@ -323,12 +299,8 @@ def screen_wifi_connect():
         msgbox(
             L("WiFi", "WiFi"),
             L(
-                "No wireless interfaces found.\n\n"
-                "Make sure your WiFi adapter is recognized by the live system.\n"
-                "You can check with:  ip link",
-                "No se encontraron interfaces inalámbricas.\n\n"
-                "Verifica que tu adaptador WiFi sea reconocido.\n"
-                "Puedes comprobar con:  ip link"
+                "No wireless interfaces found.\n\nMake sure your WiFi adapter is recognized.",
+                "No se encontraron interfaces inalámbricas.\n\nVerifica que tu adaptador WiFi sea reconocido."
             )
         )
         return None
@@ -338,9 +310,8 @@ def screen_wifi_connect():
     dlg_titled(
         L("Scanning…", "Escaneando…"),
         "--infobox",
-        L(f"Scanning for networks on {iface}…\nThis takes about 10 seconds.",
-          f"Buscando redes en {iface}…\nEsto tarda unos 10 segundos."),
-        "5", "52"
+        L(f"Scanning for networks on {iface}…", f"Buscando redes en {iface}…"),
+        "5", "50"
     )
     subprocess.call(
         f"iwctl station {shlex.quote(iface)} scan",
@@ -379,12 +350,10 @@ def screen_wifi_connect():
         ssid = radiolist(
             L("WiFi Networks", "Redes WiFi"),
             L(
-                f"Interface: \\Zb{iface}\\Zn\n"
-                "Select a network — Cancel to go back.\n"
-                "(Open networks do not require a password.)",
-                f"Interfaz: \\Zb{iface}\\Zn\n"
-                "Selecciona una red — Cancelar para volver.\n"
-                "(Las redes abiertas no requieren contraseña.)"
+                f"Interface: {iface}\n"
+                "Select a network (Cancel = go back):",
+                f"Interfaz: {iface}\n"
+                "Selecciona una red (Cancelar = volver):"
             ),
             [(s, s) for s in ssids]
         )
@@ -392,12 +361,12 @@ def screen_wifi_connect():
         ssid = inputbox(
             L("WiFi — SSID", "WiFi — SSID"),
             L(
-                f"Interface: {iface}  (no networks found automatically)\n\n"
-                "Type the network name (SSID) exactly as it appears,\n"
-                "or Cancel to go back:",
-                f"Interfaz: {iface}  (no se encontraron redes)\n\n"
-                "Escribe el nombre exacto de la red (SSID),\n"
-                "o Cancelar para volver:"
+                f"Interface: {iface}\n"
+                "No networks found automatically.\n"
+                "Enter network name (SSID) or Cancel to go back:",
+                f"Interfaz: {iface}\n"
+                "No se encontraron redes automáticamente.\n"
+                "Ingresa el nombre de la red (SSID) o Cancelar para volver:"
             )
         )
 
@@ -407,12 +376,8 @@ def screen_wifi_connect():
     passphrase = passwordbox(
         L("WiFi Password", "Contraseña WiFi"),
         L(
-            f"Password for:  \"{ssid}\"\n\n"
-            "Leave blank for open (public) networks.\n"
-            "Cancel to go back.",
-            f"Contraseña de:  \"{ssid}\"\n\n"
-            "Deja en blanco si es una red abierta.\n"
-            "Cancelar para volver."
+            f"Password for '{ssid}'\n(leave blank for open networks, Cancel to go back):",
+            f"Contraseña de '{ssid}'\n(vacío si es abierta, Cancelar para volver):"
         )
     )
     if passphrase is None:
@@ -422,7 +387,7 @@ def screen_wifi_connect():
         L("Connecting…", "Conectando…"),
         "--infobox",
         L(f"Connecting to '{ssid}'…", f"Conectando a '{ssid}'…"),
-        "5", "52"
+        "5", "50"
     )
 
     if passphrase:
@@ -437,27 +402,29 @@ def screen_wifi_connect():
     time.sleep(5)
 
     ok = _check_connectivity()
+
     if not ok:
         msgbox(
-            L("Connection Failed", "Conexión fallida"),
+            L("WiFi Failed", "WiFi fallido"),
             L(
-                f"Could not connect to \"{ssid}\".\n\n"
-                "Possible reasons:\n"
-                "  • Wrong password\n"
-                "  • Network out of range\n"
-                "  • DHCP not responding\n\n"
-                "Press OK to try again.",
-                f"No se pudo conectar a \"{ssid}\".\n\n"
+                f"Could not connect to '{ssid}'.\n\n"
+                "Possible causes:\n"
+                "  - Wrong password\n"
+                "  - Network out of range\n"
+                "  - DHCP not responding\n\n"
+                "Press OK to go back and try again.",
+                f"No se pudo conectar a '{ssid}'.\n\n"
                 "Posibles causas:\n"
-                "  • Contraseña incorrecta\n"
-                "  • Red fuera de alcance\n"
-                "  • DHCP sin respuesta\n\n"
-                "Presiona OK para intentarlo de nuevo."
+                "  - Contraseña incorrecta\n"
+                "  - Red fuera de alcance\n"
+                "  - DHCP sin respuesta\n\n"
+                "Presiona OK para volver e intentarlo de nuevo."
             )
         )
         return False
 
     return True
+
 
 def _check_connectivity():
     for cmd in (
@@ -475,21 +442,19 @@ def screen_network():
         choice = menu(
             L("Network Connection", "Conexión de red"),
             L(
-                "An active internet connection is \\Zbrequired\\Zn for installation.\n"
-                "Packages will be downloaded from the Arch mirrors.\n\n"
-                "How are you connected?",
-                "Se necesita conexión a internet \\Zbrequerida\\Zn para instalar.\n"
-                "Los paquetes se descargan de los mirrors de Arch.\n\n"
-                "¿Cómo estás conectado?"
+                "An active internet connection is required for installation.\n\n"
+                "How are you connected to the internet?",
+                "Se necesita conexión a internet para la instalación.\n\n"
+                "¿Cómo estás conectado a internet?"
             ),
             [
                 ("wired", L(
-                    "Wired Ethernet    — cable already plugged in",
-                    "Cable Ethernet    — cable ya conectado"
+                    "Wired (Ethernet)  — cable already plugged in",
+                    "Cable (Ethernet)  — cable ya conectado"
                 )),
                 ("wifi",  L(
                     "WiFi              — connect to a wireless network",
-                    "WiFi              — conectar a red inalámbrica"
+                    "WiFi              — conectar a una red inalámbrica"
                 )),
             ]
         )
@@ -509,27 +474,23 @@ def screen_network():
             if _check_connectivity():
                 msgbox(
                     L("Connected!", "¡Conectado!"),
-                    L(
-                        "\\Z2✔\\Zn  Wired connection detected — ready to continue.",
-                        "\\Z2✔\\Zn  Conexión por cable detectada — listo para continuar."
-                    )
+                    L("Wired connection detected. Ready to continue.",
+                      "Conexión por cable detectada. Listo para continuar.")
                 )
                 return
             msgbox(
-                L("No connection", "Sin conexión"),
+                L("No connection detected", "Sin conexión detectada"),
                 L(
-                    "\\Z1✘\\Zn  Could not reach archlinux.org.\n\n"
+                    "Could not reach archlinux.org over the wired connection.\n\n"
                     "Check that:\n"
-                    "  • The cable is firmly plugged in\n"
-                    "  • Your router or switch is powered on\n"
-                    "  • DHCP is available on your network\n\n"
-                    "Press OK to go back.",
-                    "\\Z1✘\\Zn  No se pudo alcanzar archlinux.org.\n\n"
+                    "  - The cable is securely plugged in\n"
+                    "  - Your router/switch is on\n\n"
+                    "Press OK to go back and choose again.",
+                    "No se pudo alcanzar archlinux.org por cable.\n\n"
                     "Verifica que:\n"
-                    "  • El cable esté bien conectado\n"
-                    "  • Tu router o switch esté encendido\n"
-                    "  • El DHCP esté disponible en tu red\n\n"
-                    "Presiona OK para volver."
+                    "  - El cable esté bien conectado\n"
+                    "  - Tu router/switch esté encendido\n\n"
+                    "Presiona OK para volver y elegir de nuevo."
                 )
             )
             continue
@@ -539,30 +500,32 @@ def screen_network():
             if result is True:
                 msgbox(
                     L("Connected!", "¡Conectado!"),
-                    L(
-                        "\\Z2✔\\Zn  WiFi connected — ready to continue.",
-                        "\\Z2✔\\Zn  WiFi conectado — listo para continuar."
-                    )
+                    L("WiFi connected successfully. Ready to continue.",
+                      "WiFi conectado correctamente. Listo para continuar.")
                 )
                 return
 
 def ensure_network():
     if _check_connectivity():
         return True
+
     for tool in ("dhcpcd", "dhclient"):
         if shutil.which(tool):
             run_simple(f"{tool} >/dev/null 2>&1", ignore_error=True)
             time.sleep(3)
             if _check_connectivity():
                 return True
+
     if shutil.which("iwctl") and _wifi_interfaces():
         if yesno(
-            L("No network", "Sin red"),
+            L("No network detected", "Sin red detectada"),
             L("No wired connection found.\nConnect via WiFi?",
               "No se detectó conexión cableada.\n¿Conectar por WiFi?")
         ):
             return screen_wifi_connect()
+
     return False
+
 
 _PAT_INSTALL  = re.compile(r"\((\d+)/(\d+)\)")
 _PAT_DOWNLOAD = re.compile(
@@ -609,6 +572,7 @@ def run_simple(cmd, ignore_error=False):
     if r != 0 and not ignore_error:
         write_log(f"ERROR (rc={r}): {cmd}")
     return r
+
 
 class InstallBackend:
     def __init__(self, on_progress, on_stage, on_done):
@@ -701,6 +665,7 @@ class InstallBackend:
             on_line=self._log, ignore_error=True
         )
 
+  
     def _settle(self, disk_path):
         _settle_partitions(disk_path, log_fn=self._log)
 
@@ -725,7 +690,7 @@ class InstallBackend:
         self._run_critical(f"mount -o {opts},subvol=@home {p3} /mnt/home", "mount @home")
         self._run_critical(f"mount -o {opts},subvol=@var  {p3} /mnt/var",  "mount @var")
         self._run_critical(
-            f"mount -o {opts},subvol=@snapshots {p3} /mnt/.snapshots", "mount @snapshots"
+            f"mount -o {opts},subvol=@snapshots {p3} /mnt/.snapshots",     "mount @snapshots"
         )
 
     def _install_grub(self, disk_path):
@@ -743,6 +708,8 @@ class InstallBackend:
         self._chroot_critical("grub-mkconfig -o /boot/grub/grub.cfg", "grub-mkconfig")
 
     def _install_systemd_boot(self, root_dev):
+        # BUG FIX 2: run bootctl from within chroot so it uses the installed
+        # systemd version and writes to the correct EFI paths consistently.
         self._chroot_critical("bootctl install", "bootctl install")
 
         fs        = state["filesystem"]
@@ -770,6 +737,7 @@ class InstallBackend:
         with open("/mnt/boot/loader/loader.conf", "w") as f:
             f.write(loader_conf)
 
+        # BUG FIX 3: microcode must come BEFORE the main initramfs line.
         ucode_line = f"initrd  /{microcode}.img\n" if microcode else ""
         arch_conf = (
             f"title   Arch Linux\n"
@@ -800,37 +768,45 @@ class InstallBackend:
         if gpu == "NVIDIA":
             _do(f"{nvidia_pkg} nvidia-utils nvidia-settings", "NVIDIA")
             self._configure_nvidia_modeset()
+
         elif gpu == "AMD":
             _do("mesa vulkan-radeon libva-mesa-driver", "AMD")
+
         elif gpu == "Intel":
             _do("mesa vulkan-intel intel-media-driver", "Intel")
+
         elif gpu == "Intel+NVIDIA":
             self._stage(L("Installing Intel+NVIDIA (hybrid) drivers…",
                           "Instalando drivers Intel+NVIDIA (hybrid)…"))
             self._pacman(
                 "arch-chroot /mnt pacman -S --noconfirm "
                 "mesa vulkan-intel intel-media-driver",
-                start_pct, start_pct + (end_pct - start_pct) * 0.4, ignore_error=True
+                start_pct, start_pct + (end_pct - start_pct) * 0.4,
+                ignore_error=True
             )
             self._pacman(
                 f"arch-chroot /mnt pacman -S --noconfirm "
                 f"{nvidia_pkg} nvidia-utils nvidia-settings nvidia-prime",
-                start_pct + (end_pct - start_pct) * 0.4, end_pct, ignore_error=True
+                start_pct + (end_pct - start_pct) * 0.4, end_pct,
+                ignore_error=True
             )
             self._configure_nvidia_modeset()
+
         elif gpu == "Intel+AMD":
             _do("mesa vulkan-intel intel-media-driver vulkan-radeon libva-mesa-driver",
                 "Intel+AMD")
+
         else:
             self._pct(end_pct)
 
     def _configure_nvidia_modeset(self):
+        modprobe_conf = "options nvidia_drm modeset=1\n"
         self._chroot(
-            "mkdir -p /etc/modprobe.d && "
-            "printf 'options nvidia_drm modeset=1\\n' > /etc/modprobe.d/nvidia.conf",
+            f"mkdir -p /etc/modprobe.d && "
+            f"echo {shlex.quote(modprobe_conf)} > /etc/modprobe.d/nvidia.conf",
             ignore_error=True
         )
-        write_log("nvidia_drm modeset=1 written to /etc/modprobe.d/nvidia.conf")
+        write_log("nvidia_drm modeset=1 configured in /etc/modprobe.d/nvidia.conf")
 
     def _configure_mkinitcpio(self):
         self._chroot_critical("mkinitcpio -P", "mkinitcpio")
@@ -840,27 +816,10 @@ class InstallBackend:
             self._chroot(
                 "grep -q 'rootflags=subvol=@' /etc/default/grub || "
                 "sed -i "
-                r"""'s|GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"|GRUB_CMDLINE_LINUX_DEFAULT="\1 rootflags=subvol=@"|'"""
-                " /etc/default/grub",
+                "'s|GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 rootflags=subvol=@\"|' "
+                "/etc/default/grub",
                 ignore_error=True
             )
-
-    def _install_shell(self, uname):
-        shell = state.get("shell", "bash")
-        if shell == "bash":
-            return
-        pkgs = " ".join(SHELL_PKGS[shell])
-        self._stage(L(f"Installing {shell}…", f"Instalando {shell}…"))
-        self._pacman(
-            f"arch-chroot /mnt pacman -S --noconfirm {pkgs}",
-            67, 69, ignore_error=True
-        )
-        shell_bin = f"/usr/bin/{shell}"
-        self._chroot(
-            f"chsh -s {shell_bin} {shlex.quote(uname)}",
-            ignore_error=True
-        )
-        write_log(f"Default shell for {uname} set to {shell_bin}")
 
     def _install_flatpak(self, uname):
         self._stage(L("Installing Flatpak + Flathub…", "Instalando Flatpak + Flathub…"))
@@ -876,6 +835,7 @@ class InstallBackend:
         )
         write_log("Flatpak + Flathub configured.")
 
+
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
         p1, p2, p3 = partition_paths_for(disk_path)
@@ -885,9 +845,7 @@ class InstallBackend:
         uefi       = is_uefi()
         bootloader = state.get("bootloader", "grub")
         uname      = state["username"]
-        locale     = state.get("locale") or (
-            "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
-        )
+
 
         if bootloader == "systemd-boot" and not uefi:
             write_log("systemd-boot requested but BIOS detected — falling back to GRUB")
@@ -919,11 +877,12 @@ class InstallBackend:
                 )
             self._pct(5)
 
+
             self._stage(L("Wiping disk…", "Borrando disco…"))
             self._gradual(7)
             run_stream(f"wipefs -a {disk_path}", on_line=self._log, ignore_error=True)
             self._run_critical(f"sgdisk -Z {disk_path}", "sgdisk -Z")
-            self._settle(disk_path)
+            self._settle(disk_path)          # <── NEW: let kernel see the wipe
             self._pct(8)
 
             self._stage(L("Creating partitions…", "Creando particiones…"))
@@ -935,7 +894,7 @@ class InstallBackend:
                 f"sgdisk -n2:0:+{state['swap']}G -t2:8200 {disk_path}", "sgdisk swap"
             )
             self._run_critical(f"sgdisk -n3:0:0 -t3:8300 {disk_path}", "sgdisk root")
-            self._settle(disk_path)
+            self._settle(disk_path)          # <── NEW: wait for p1/p2/p3 nodes
             self._pct(12)
 
             self._stage(L("Formatting partitions…", "Formateando particiones…"))
@@ -952,7 +911,7 @@ class InstallBackend:
             self._pct(16)
 
             if uefi:
-                self._stage(L("Mounting EFI partition…", "Montando partición EFI…"))
+                self._stage(L("Mounting EFI…", "Montando EFI…"))
                 if bootloader == "systemd-boot":
                     self._run_critical("mkdir -p /mnt/boot",    "mkdir /mnt/boot")
                     self._run_critical(f"mount {p1} /mnt/boot", "mount ESP /mnt/boot")
@@ -999,19 +958,19 @@ class InstallBackend:
 
             self._stage(L("Configuring locale & timezone…",
                           "Configurando locale y zona horaria…"))
+            locale      = "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
             locale_line = f"{locale} UTF-8"
             self._chroot("sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen")
             if locale != "en_US.UTF-8":
-                escaped = locale.replace(".", "\\.").replace("-", "\\-")
                 self._chroot(
-                    f"sed -i 's/^#{escaped} UTF-8/{locale} UTF-8/' /etc/locale.gen",
+                    f"sed -i 's/^#{locale_line}/{locale_line}/' /etc/locale.gen",
                     ignore_error=True
                 )
             self._chroot_critical("locale-gen", "locale-gen")
             self._chroot(f"echo 'LANG={locale}' > /etc/locale.conf")
             self._chroot(f"ln -sf /usr/share/zoneinfo/{state['timezone']} /etc/localtime")
             self._chroot("hwclock --systohc")
-            keymap_val = state["keymap"]
+            keymap_val = state['keymap']
             self._chroot(f"echo 'KEYMAP={keymap_val}' > /etc/vconsole.conf")
             self._pct(59)
 
@@ -1028,15 +987,12 @@ class InstallBackend:
                 "sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/"
                 "%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers"
             )
-            self._pct(65)
+            self._pct(63)
 
             self._stage(L("Setting passwords…", "Estableciendo contraseñas…"))
             self._chroot_passwd("root", state["root_pass"])
             self._chroot_passwd(uname, state["user_pass"])
-            self._pct(67)
-
-            self._install_shell(uname)
-            self._pct(69)
+            self._pct(68)
 
             self._stage(L("Enabling NetworkManager…", "Habilitando NetworkManager…"))
             self._chroot("systemctl enable NetworkManager")
@@ -1081,7 +1037,7 @@ class InstallBackend:
                 self._stage(L("Installing GRUB bootloader…", "Instalando GRUB…"))
                 self._configure_grub_cmdline()
                 self._install_grub(disk_path)
-            self._pct(96)
+            self._pct(97)
 
             if state.get("snapper") and fs == "btrfs":
                 self._stage(L("Setting up snapper (BTRFS snapshots)…",
@@ -1089,7 +1045,7 @@ class InstallBackend:
                 self._pacman(
                     "arch-chroot /mnt pacman -S --noconfirm "
                     "snapper snap-pac grub-btrfs inotify-tools",
-                    96, 97, ignore_error=True
+                    97, 98, ignore_error=True
                 )
                 self._chroot("snapper -c root create-config /")
                 self._chroot("umount /.snapshots", ignore_error=True)
@@ -1117,18 +1073,8 @@ class InstallBackend:
                 )
                 self._chroot("rm -f /etc/sudoers.d/99_nopasswd_tmp")
 
-            if state.get("extras"):
-                self._stage(L("Installing extra utilities…", "Instalando utilidades extra…"))
-                self._pacman(
-                    f"arch-chroot /mnt pacman -S --noconfirm {EXTRA_PKGS}",
-                    98, 99, ignore_error=True
-                )
-
             if state.get("flatpak") and desktop != "None":
                 self._install_flatpak(uname)
-
-            write_log(f"Copying install log to /mnt/root/arch_install.log")
-            run_simple(f"cp {LOG_FILE} /mnt/root/arch_install.log", ignore_error=True)
 
             self._pct(100)
             self._stage(L("Installation complete!", "¡Instalación completa!"))
@@ -1141,28 +1087,18 @@ class InstallBackend:
             self._log(f"FATAL: {e}")
             self.on_done(False, str(e))
 
-def screen_welcome():
-    boot_mode = "\\Z2UEFI\\Zn" if is_uefi() else "\\Z3BIOS (Legacy)\\Zn"
-    cpu_info  = detect_cpu() or L("unknown CPU", "CPU desconocida")
-    gpu_info  = detect_gpu()
 
+def screen_welcome():
+    boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS (Legacy)", "BIOS (Legacy)")
     text = (
         "\\Zb\\Z4Welcome to the Arch Linux Installer\\Zn\n\n"
-        f"  Version  {VERSION}        Boot mode  {boot_mode}\n"
-        f"  CPU      {cpu_info}       GPU  {gpu_info}\n\n"
-        "\\Zb\\Z1 ⚠ WARNING \\Zn  The selected disk will be \\ZbCOMPLETELY ERASED\\Zn.\n"
-        "  Back up any data you want to keep before continuing.\n\n"
-        "\\ZbBefore you start, make sure you have:\\Zn\n"
-        "  • An active internet connection (cable or WiFi)\n"
-        "  • At least 20 GB of free disk space\n"
-        "  • A hostname and username in mind\n\n"
-        "Use \\ZbTab\\Zn and \\ZbArrows\\Zn to navigate, \\ZbEnter\\Zn to confirm.\n"
+        f"Version: {VERSION}    Boot mode: \\Zb{boot_mode}\\Zn\n\n"
+        "\\Zb\\Z1WARNING:\\Zn  This installer will ERASE and install Arch Linux "
+        "to the selected disk.\n\n"
+        "Use \\ZbTab\\Zn and \\ZbArrow keys\\Zn to navigate.\n"
         "Press OK to begin."
     )
-    dlg_titled(
-        L("Welcome — Arch Linux Installer", "Bienvenido — Arch Linux Installer"),
-        "--msgbox", text, "18", "64"
-    )
+    dlg_titled("Welcome", "--msgbox", text, "16", "60")
 
 def screen_language():
     result = menu(
@@ -1172,32 +1108,23 @@ def screen_language():
     )
     if result:
         state["lang"] = result
-        return True
-    return BACK
+
 def screen_mode():
     result = menu(
         L("Install Mode", "Modo de instalación"),
         L(
-            "\\ZbQuick Install\\Zn sets sensible defaults and skips configuration screens.\n"
-            "  → BTRFS + KDE Plasma + linux kernel + pipewire + yay + snapper\n\n"
-            "\\ZbCustom Install\\Zn lets you choose filesystem, kernel, desktop, shell,\n"
-            "  GPU drivers, bootloader, locale, extras, and more.\n\n"
-            "Both modes ask for disk, hostname, username and password.",
-            "\\ZbInstalación rápida\\Zn aplica valores por defecto y omite pantallas de config.\n"
-            "  → BTRFS + KDE Plasma + kernel linux + pipewire + yay + snapper\n\n"
-            "\\ZbInstalación personalizada\\Zn permite elegir filesystem, kernel, escritorio,\n"
-            "  shell, drivers GPU, bootloader, locale, extras y más.\n\n"
-            "Ambos modos piden disco, hostname, usuario y contraseña."
+            "Quick Install  —  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
+            "Custom Install —  configure everything step by step",
+            "Instalación rápida  —  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
+            "Instalación personalizada — configura todo paso a paso"
         ),
         [
-            ("quick",  L("Quick Install   — sane defaults, ready fast",
-                         "Instalación rápida   — valores por defecto, lista rápido")),
-            ("custom", L("Custom Install  — full control over every option",
-                         "Instalación personalizada  — control total")),
+            ("quick",  L("Quick Install   (sane defaults, installs yay + snapper)",
+                         "Instalación rápida   (valores por defecto, instala yay + snapper)")),
+            ("custom", L("Custom Install  (full control)",
+                         "Instalación personalizada  (control total)")),
         ]
     )
-    if result is None:
-        return None
     if result == "quick":
         state["quick"]      = True
         state["filesystem"] = "btrfs"
@@ -1209,69 +1136,39 @@ def screen_mode():
         state["snapper"]    = True
         state["bootloader"] = "grub"
         state["swap"]       = str(suggest_swap_gb())
-        state["shell"]      = "bash"
-        state["extras"]     = False
-        state["locale"]     = "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
-        return True
-    else:
-        state["quick"] = False
-        return False
+    return result == "quick"
 
 def screen_identity():
     while True:
         hn = inputbox(
-            L("Hostname", "Nombre del equipo"),
-            L(
-                "The \\Zbhostname\\Zn identifies your machine on the network.\n\n"
-                "Rules: letters, digits, hyphens and underscores only.\n"
-                "Max 32 characters. Example:  my-arch-pc\n\n"
-                "Enter hostname:",
-                "El \\Zbhostname\\Zn identifica tu equipo en la red.\n\n"
-                "Reglas: solo letras, dígitos, guiones y guiones bajos.\n"
-                "Máximo 32 caracteres. Ejemplo:  mi-arch-pc\n\n"
-                "Ingresa el hostname:"
-            ),
+            L("System Identity", "Identidad del sistema"),
+            L("Enter hostname (letters, digits, -, _ — max 32 chars):",
+              "Ingresa el nombre del equipo (letras, dígitos, -, _ — max 32):"),
             state.get("hostname", "")
         )
         if hn is None:
-            return BACK
+            return False
         if not validate_name(hn):
             msgbox(
                 L("Invalid hostname", "Hostname inválido"),
-                L(
-                    "Only letters, digits, hyphens and underscores are allowed.\n"
-                    "Max 32 characters.",
-                    "Solo letras, dígitos, guiones y guiones bajos.\n"
-                    "Máximo 32 caracteres."
-                )
+                L("Only letters, digits, hyphens and underscores. Max 32 chars.",
+                  "Solo letras, dígitos, guiones y guiones bajos. Max 32 caracteres.")
             )
             continue
 
         un = inputbox(
-            L("Username", "Nombre de usuario"),
-            L(
-                "The \\Zbusername\\Zn is your personal login account.\n\n"
-                "Rules: letters, digits, hyphens and underscores only.\n"
-                "Max 32 characters. Example:  john\n\n"
-                "Enter username:",
-                "El \\Zbnombre de usuario\\Zn es tu cuenta de acceso personal.\n\n"
-                "Reglas: solo letras, dígitos, guiones y guiones bajos.\n"
-                "Máximo 32 caracteres. Ejemplo:  juan\n\n"
-                "Ingresa el nombre de usuario:"
-            ),
+            L("System Identity", "Identidad del sistema"),
+            L("Enter username (letters, digits, -, _ — max 32 chars):",
+              "Ingresa el nombre de usuario (letras, dígitos, -, _ — max 32):"),
             state.get("username", "")
         )
         if un is None:
-            return BACK
+            return False
         if not validate_name(un):
             msgbox(
                 L("Invalid username", "Usuario inválido"),
-                L(
-                    "Only letters, digits, hyphens and underscores are allowed.\n"
-                    "Max 32 characters.",
-                    "Solo letras, dígitos, guiones y guiones bajos.\n"
-                    "Máximo 32 caracteres."
-                )
+                L("Only letters, digits, hyphens and underscores. Max 32 chars.",
+                  "Solo letras, dígitos, guiones y guiones bajos. Max 32 caracteres.")
             )
             continue
 
@@ -1282,67 +1179,45 @@ def screen_identity():
 def screen_passwords():
     while True:
         rp1 = passwordbox(
-            L("Root Password", "Contraseña root"),
-            L(
-                "The \\Zbroot\\Zn account is the system administrator.\n\n"
-                "Choose a strong password — you will need it for system maintenance.\n\n"
-                "Enter ROOT password:",
-                "La cuenta \\Zbroot\\Zn es el administrador del sistema.\n\n"
-                "Elige una contraseña fuerte — la necesitarás para el mantenimiento.\n\n"
-                "Ingresa la contraseña de ROOT:"
-            )
+            L("Passwords", "Contraseñas"),
+            L("Enter ROOT password:", "Ingresa la contraseña de ROOT:")
         )
         if rp1 is None:
-            return BACK
+            return False
         rp2 = passwordbox(
-            L("Root Password — Confirm", "Contraseña root — Confirmar"),
+            L("Passwords", "Contraseñas"),
             L("Confirm ROOT password:", "Confirma la contraseña de ROOT:")
         )
         if rp2 is None:
-            return BACK
+            return False
         if not rp1:
-            msgbox(L("Error", "Error"), L(
-                "Root password cannot be empty.",
-                "La contraseña root no puede estar vacía."
-            ))
+            msgbox(L("Error", "Error"), L("Root password cannot be empty.",
+                                          "La contraseña root no puede estar vacía."))
             continue
         if rp1 != rp2:
-            msgbox(L("Mismatch", "No coinciden"), L(
-                "Root passwords do not match. Try again.",
-                "Las contraseñas root no coinciden. Intenta de nuevo."
-            ))
+            msgbox(L("Error", "Error"), L("Root passwords do not match.",
+                                          "Las contraseñas root no coinciden."))
             continue
 
         up1 = passwordbox(
-            L("User Password", "Contraseña de usuario"),
-            L(
-                f"Password for your user account: \\Zb{state.get('username', 'user')}\\Zn\n\n"
-                "This is what you will type to log in every day.\n\n"
-                "Enter USER password:",
-                f"Contraseña de tu cuenta: \\Zb{state.get('username', 'user')}\\Zn\n\n"
-                "Esta es la que escribirás para iniciar sesión cada día.\n\n"
-                "Ingresa la contraseña de USUARIO:"
-            )
+            L("Passwords", "Contraseñas"),
+            L("Enter USER password:", "Ingresa la contraseña de USUARIO:")
         )
         if up1 is None:
-            return BACK
+            return False
         up2 = passwordbox(
-            L("User Password — Confirm", "Contraseña usuario — Confirmar"),
+            L("Passwords", "Contraseñas"),
             L("Confirm USER password:", "Confirma la contraseña de USUARIO:")
         )
         if up2 is None:
-            return BACK
+            return False
         if not up1:
-            msgbox(L("Error", "Error"), L(
-                "User password cannot be empty.",
-                "La contraseña de usuario no puede estar vacía."
-            ))
+            msgbox(L("Error", "Error"), L("User password cannot be empty.",
+                                          "La contraseña de usuario no puede estar vacía."))
             continue
         if up1 != up2:
-            msgbox(L("Mismatch", "No coinciden"), L(
-                "User passwords do not match. Try again.",
-                "Las contraseñas de usuario no coinciden. Intenta de nuevo."
-            ))
+            msgbox(L("Error", "Error"), L("User passwords do not match.",
+                                          "Las contraseñas de usuario no coinciden."))
             continue
 
         state["root_pass"] = rp1
@@ -1354,33 +1229,26 @@ def screen_disk():
     if not disks:
         msgbox(
             L("No disks found", "Sin discos"),
-            L(
-                "No disks were detected.\n\n"
-                "Check that your storage device is properly connected.",
-                "No se detectaron discos.\n\n"
-                "Verifica que tu dispositivo de almacenamiento esté conectado."
-            )
+            L("No disks were detected. Cannot continue.",
+              "No se detectaron discos. No se puede continuar.")
         )
         sys.exit(1)
 
     try:
         lsblk_info = subprocess.check_output(
-            "lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null | head -40",
-            shell=True, text=True
+            "lsblk -f 2>/dev/null | head -40", shell=True, text=True
         )
     except Exception:
         lsblk_info = ""
 
     if lsblk_info:
         msgbox(
-            L("Current Disk Layout", "Layout actual de discos"),
+            L("Disk Overview — Read before selecting!", "Vista de discos — ¡Lee antes de elegir!"),
             L(
-                "\\ZbReview your disks before selecting one to erase.\\Zn\n\n"
-                + lsblk_info +
-                "\n\\Z1ALL DATA on the selected disk will be permanently erased.\\Zn",
-                "\\ZbRevisa tus discos antes de elegir uno para borrar.\\Zn\n\n"
-                + lsblk_info +
-                "\n\\Z1TODOS LOS DATOS del disco seleccionado se borrarán permanentemente.\\Zn"
+                "Current disk layout (lsblk -f):\n\n" + lsblk_info +
+                "\nWARNING: The disk you select will be COMPLETELY ERASED.",
+                "Layout actual de discos (lsblk -f):\n\n" + lsblk_info +
+                "\nADVERTENCIA: El disco seleccionado se BORRARÁ COMPLETAMENTE."
             )
         )
 
@@ -1388,33 +1256,30 @@ def screen_disk():
     default = f"/dev/{state['disk']}" if state["disk"] else items[0][0]
 
     result = radiolist(
-        L("Select Installation Disk", "Seleccionar disco de instalación"),
-        L(
-            "\\Z1WARNING:\\Zn ALL DATA on the selected disk will be \\ZbERASED\\Zn.\n"
-            "Make sure you pick the correct disk.\n\n"
-            "Select the target disk:" + _nav(),
-            "\\Z1ADVERTENCIA:\\Zn Se BORRARÁN TODOS LOS DATOS del disco seleccionado.\n"
-            "Asegúrate de elegir el disco correcto.\n\n"
-            "Selecciona el disco de instalación:" + _nav()
-        ),
+        L("Disk Selection", "Selección de disco"),
+        L("WARNING: ALL DATA on the selected disk will be ERASED!\n\n"
+          "Select the installation disk:",
+          "ADVERTENCIA: ¡Se borrarán todos los datos del disco seleccionado!\n\n"
+          "Selecciona el disco:"),
         items,
         default=default
     )
     if result is None:
-        return BACK
-    disk_size = next((gb for n, gb, m in disks if f"/dev/{n}" == result), "?")
+        return False
+
     if not yesno(
-        L("Confirm Erase", "Confirmar borrado"),
+        L("Confirm Disk Erase", "Confirmar borrado de disco"),
         L(
-            f"You selected:  \\Zb{result}\\Zn  ({disk_size} GB)\n\n"
-            "\\Z1ALL DATA on this disk will be permanently destroyed.\\Zn\n\n"
-            "Are you absolutely sure you want to continue?",
-            f"Seleccionaste:  \\Zb{result}\\Zn  ({disk_size} GB)\n\n"
-            "\\Z1TODOS LOS DATOS en este disco se destruirán permanentemente.\\Zn\n\n"
-            "¿Estás completamente seguro de continuar?"
+            f"You selected: {result}\n\n"
+            "ALL data on this disk will be permanently destroyed.\n\n"
+            "Are you absolutely sure?",
+            f"Seleccionaste: {result}\n\n"
+            "TODOS los datos en este disco se destruirán permanentemente.\n\n"
+            "¿Estás completamente seguro?"
         )
     ):
-        return BACK
+        return False
+
     state["disk"] = result.replace("/dev/", "")
 
     suggested = str(suggest_swap_gb())
@@ -1422,89 +1287,57 @@ def screen_disk():
         swap = inputbox(
             L("Swap Size", "Tamaño de Swap"),
             L(
-                "\\ZbSwap\\Zn is disk space used as overflow RAM.\n"
-                "It also enables hibernation if sized >= your RAM.\n\n"
-                f"Suggested for your system: \\Zb{suggested} GB\\Zn\n\n"
-                "Enter swap size in GB (1–128).\n"
-                "Press Enter to accept suggested, or Cancel to use suggested:",
-                "\\ZbSwap\\Zn es espacio en disco que actúa como RAM de desbordamiento.\n"
-                "También permite hibernación si es >= tu RAM.\n\n"
-                f"Sugerido para tu sistema: \\Zb{suggested} GB\\Zn\n\n"
-                "Ingresa el tamaño en GB (1–128).\n"
-                "Presiona Enter para aceptar el sugerido, o Cancelar para usar el sugerido:"
+                f"Suggested swap size based on your RAM: {suggested} GB\n\n"
+                "Enter swap size in GB (1-128):",
+                f"Tamaño de swap sugerido según tu RAM: {suggested} GB\n\n"
+                "Ingresa el tamaño del swap en GB (1-128):"
             ),
             state.get("swap", suggested)
         )
-        if swap is None or not swap.strip():
-            swap = suggested
+        if swap is None:
+            return False
         if validate_swap(swap.strip()):
             state["swap"] = swap.strip()
             return True
         msgbox(L("Invalid swap", "Swap inválido"),
-               L("Must be a whole number between 1 and 128.",
-                 "Debe ser un número entero entre 1 y 128."))
+               L("Swap must be a number between 1 and 128.",
+                 "El swap debe ser un número entre 1 y 128."))
 
 def screen_filesystem():
+    options = [
+        ("ext4",  L("ext4  — stable, widely supported",
+                    "ext4  — estable, amplio soporte")),
+        ("btrfs", L("btrfs — subvolumes (@, @home, @var, @snapshots) + zstd compression",
+                    "btrfs — subvolúmenes (@, @home, @var, @snapshots) + compresión zstd")),
+    ]
     result = radiolist(
         L("Filesystem", "Sistema de archivos"),
-        L(
-            "Choose the root filesystem for your installation.\n\n"
-            "\\Zbext4\\Zn  — Battle-tested, simple, very stable. Best choice if you\n"
-            "         are new to Linux or want maximum compatibility.\n\n"
-            "\\Zbbtrfs\\Zn — Modern copy-on-write filesystem with subvolumes, transparent\n"
-            "         zstd compression and snapshot support. Pairs with snapper\n"
-            "         for automatic rollback. Slightly more complex." + _nav(),
-            "Elige el sistema de archivos raíz.\n\n"
-            "\\Zbext4\\Zn  — Probado, simple, muy estable. La mejor opción si eres\n"
-            "         nuevo en Linux o quieres máxima compatibilidad.\n\n"
-            "\\Zbbtrfs\\Zn — Filesystem copy-on-write moderno con subvolúmenes, compresión\n"
-            "         zstd transparente y soporte de snapshots. Combina con snapper\n"
-            "         para rollback automático. Un poco más complejo." + _nav()
-        ),
-        [
-            ("ext4",  L("ext4  — stable, widely supported, recommended for beginners",
-                        "ext4  — estable, amplio soporte, recomendado para principiantes")),
-            ("btrfs", L("btrfs — subvolumes + zstd compression + snapshot support",
-                        "btrfs — subvolúmenes + compresión zstd + soporte de snapshots")),
-        ],
+        L("Choose the root filesystem:", "Elige el sistema de archivos raíz:"),
+        options,
         default=state["filesystem"]
     )
     if result is None:
-        return BACK
+        return False
     state["filesystem"] = result
     return True
 
 def screen_kernel():
+    options = [
+        ("linux",     L("linux     — latest stable kernel",
+                        "linux     — kernel estable más reciente")),
+        ("linux-lts", L("linux-lts — long-term support kernel",
+                        "linux-lts — kernel de soporte a largo plazo")),
+        ("linux-zen", L("linux-zen — optimized for desktop / gaming",
+                        "linux-zen — optimizado para escritorio / gaming")),
+    ]
     result = radiolist(
         L("Kernel", "Kernel"),
-        L(
-            "Choose which Linux kernel to install.\n\n"
-            "\\Zblinux\\Zn     — Latest stable kernel. Updated frequently.\n"
-            "             Good default for most hardware.\n\n"
-            "\\Zblinux-lts\\Zn — Long-Term Support kernel. Older but more stable.\n"
-            "             Good for servers or finicky hardware.\n\n"
-            "\\Zblinux-zen\\Zn — Community-patched for lower latency and better\n"
-            "             desktop responsiveness. Great for gaming." + _nav(),
-            "Elige qué kernel de Linux instalar.\n\n"
-            "\\Zblinux\\Zn     — Kernel estable más reciente. Se actualiza frecuentemente.\n"
-            "             Buena opción por defecto para la mayoría de hardware.\n\n"
-            "\\Zblinux-lts\\Zn — Kernel de Soporte a Largo Plazo. Más antiguo pero estable.\n"
-            "             Ideal para servidores o hardware problemático.\n\n"
-            "\\Zblinux-zen\\Zn — Parcheado para menor latencia y mejor respuesta\n"
-            "             en escritorio. Genial para gaming." + _nav()
-        ),
-        [
-            ("linux",     L("linux     — latest stable kernel (recommended)",
-                            "linux     — kernel estable más reciente (recomendado)")),
-            ("linux-lts", L("linux-lts — long-term support kernel",
-                            "linux-lts — kernel de soporte a largo plazo")),
-            ("linux-zen", L("linux-zen — optimized for desktop and gaming",
-                            "linux-zen — optimizado para escritorio y gaming")),
-        ],
+        L("Select the kernel to install:", "Selecciona el kernel a instalar:"),
+        options,
         default=state["kernel"]
     )
     if result is None:
-        return BACK
+        return False
     state["kernel"] = result
     return True
 
@@ -1514,78 +1347,56 @@ def screen_bootloader():
         state["bootloader"] = "grub"
         return True
 
+    options = [
+        (
+            "grub",
+            L(
+                "GRUB — stable, uefi and bios",
+                "GRUB — estable, uefi y bios",
+            ),
+        ),
+        (
+            "systemd-boot",
+            L(
+                "systemd-boot — fast, only uefi",
+                "systemd-boot — rápido, solo UEFI",
+            ),
+        ),
+    ]
     result = radiolist(
         L("Bootloader", "Gestor de arranque"),
         L(
-            "The bootloader starts the operating system.\n\n"
-            "\\ZbGRUB\\Zn         — Mature, feature-rich. Works on UEFI and BIOS.\n"
-            "               Shows a graphical boot menu. Compatible with\n"
-            "               dual-boot setups and grub-btrfs snapshots.\n\n"
-            "\\Zbsystemd-boot\\Zn — Minimal, fast. \\ZbUEFI only\\Zn. Less configuration\n"
-            "               overhead. Does not support grub-btrfs." + _nav(),
-            "El gestor de arranque inicia el sistema operativo.\n\n"
-            "\\ZbGRUB\\Zn         — Maduro, con muchas funciones. UEFI y BIOS.\n"
-            "               Muestra un menú de arranque gráfico. Compatible\n"
-            "               con dual-boot y snapshots grub-btrfs.\n\n"
-            "\\Zbsystemd-boot\\Zn — Mínimo, rápido. \\ZbSolo UEFI\\Zn. Menos configuración.\n"
-            "               No soporta grub-btrfs." + _nav()
+            "Choose a bootloader:\n\n"
+            "  GRUB         works on UEFI and BIOS legacy.\n"
+            "  systemd-boot, UEFI only.",
+            "Elige un gestor de arranque:\n\n"
+            "  GRUB         UEFI y BIOS.\n"
+            "  systemd-boot, solo UEFI.",
         ),
-        [
-            ("grub",         L("GRUB         — stable, UEFI and BIOS, dual-boot friendly",
-                               "GRUB         — estable, UEFI y BIOS, ideal para dual-boot")),
-            ("systemd-boot", L("systemd-boot — fast, UEFI only, minimal overhead",
-                               "systemd-boot — rápido, solo UEFI, mínima sobrecarga")),
-        ],
-        default=state.get("bootloader", "grub")
+        options,
+        default=state.get("bootloader", "grub"),
     )
     if result is None:
-        return BACK
+        return False
     state["bootloader"] = result
     return True
 
 def screen_mirrors():
-    default = "yes" if state["mirrors"] else "no"
     result = radiolist(
         L("Mirror Optimization", "Optimización de mirrors"),
-        L(
-            "Arch Linux downloads packages from mirror servers worldwide.\n\n"
-            "Use arrow keys to move, Space to select, Enter to confirm." + _nav(),
-            "Arch Linux descarga paquetes desde servidores mirror de todo el mundo.\n\n"
-            "Usa las flechas para moverte, Espacio para seleccionar, Enter para confirmar." + _nav()
-        ),
+        L("Use reflector to select the 10 fastest mirrors? (recommended)",
+          "¿Usar reflector para seleccionar los 10 mirrors más rápidos? (recomendado)"),
         [
-            ("yes", L("Yes — auto-select the 10 fastest mirrors (recommended)",
-                      "Sí — seleccionar los 10 mirrors más rápidos (recomendado)")),
+            ("yes", L("Yes — auto-select fastest mirrors",
+                      "Sí — seleccionar mirrors más rápidos")),
             ("no",  L("No  — keep default mirrors",
                       "No  — mantener mirrors por defecto")),
         ],
-        default=default
+        default="yes" if state["mirrors"] else "no"
     )
     if result is None:
-        return BACK
+        return False
     state["mirrors"] = (result == "yes")
-    return True
-    
-def screen_locale():
-    default = state.get("locale") or (
-        "es_ES.UTF-8" if state["lang"] == "es" else "en_US.UTF-8"
-    )
-    result = radiolist(
-        L("System Locale", "Locale del sistema"),
-        L(
-            "The \\Zblocale\\Zn sets the system language, date format, and number format.\n\n"
-            "This affects your installed system — not the installer language.\n"
-            "English (en_US) is always enabled as a fallback." + _nav(),
-            "El \\Zblocale\\Zn define el idioma del sistema, formato de fecha y números.\n\n"
-            "Esto afecta al sistema instalado — no al idioma del instalador.\n"
-            "Inglés (en_US) siempre se habilita como respaldo." + _nav()
-        ),
-        LOCALE_OPTIONS,
-        default=default
-    )
-    if result is None:
-        return BACK
-    state["locale"] = result
     return True
 
 def screen_keymap():
@@ -1598,26 +1409,18 @@ def screen_keymap():
     except Exception:
         maps = []
 
-    wanted  = ["us", "es", "uk", "fr", "de", "it", "ru", "ara", "pt-latin9", "br-abnt2",
-               "dvorak", "colemak", "la-latin1"]
+    wanted  = ["us", "es", "uk", "fr", "de", "it", "ru", "ara", "pt-latin9", "br-abnt2"]
     options = [m for m in wanted if m in maps] if maps else wanted
     items   = [(m, f"Keyboard layout: {m}") for m in options]
 
     result = radiolist(
         L("Keyboard Layout", "Distribución de teclado"),
-        L(
-            "Select the \\Zbkeyboard layout\\Zn for the console (TTY).\n\n"
-            "This affects key mapping in the virtual terminal.\n"
-            "Graphical desktop environments have their own keyboard settings." + _nav(),
-            "Selecciona la \\Zbdistribución de teclado\\Zn para la consola (TTY).\n\n"
-            "Esto afecta el mapeo de teclas en la terminal virtual.\n"
-            "Los entornos gráficos tienen su propia configuración de teclado." + _nav()
-        ),
+        L("Select your keyboard layout:", "Selecciona la distribución de tu teclado:"),
         items,
         default=state["keymap"]
     )
     if result is None:
-        return BACK
+        return False
     state["keymap"] = result
     run_simple(f"loadkeys {shlex.quote(result)}", ignore_error=True)
     return True
@@ -1641,19 +1444,12 @@ def screen_timezone():
 
     region = radiolist(
         L("Timezone — Region", "Zona horaria — Región"),
-        L(
-            "Select your \\Zbregion\\Zn first, then choose a city.\n\n"
-            "The timezone is used to set the hardware clock and display\n"
-            "correct local times." + _nav(),
-            "Selecciona tu \\Zbregión\\Zn primero, luego elige una ciudad.\n\n"
-            "La zona horaria se usa para ajustar el reloj de hardware y\n"
-            "mostrar la hora local correcta." + _nav()
-        ),
+        L("Select your region:", "Selecciona tu región:"),
         [(r, r) for r in regions],
         default=cur_region
     )
     if region is None:
-        return BACK
+        return False
     if region == "UTC":
         state["timezone"] = "UTC"
         return True
@@ -1666,51 +1462,40 @@ def screen_timezone():
     cur_city = state["timezone"].split("/", 1)[1] if "/" in state["timezone"] else ""
     city = radiolist(
         L("Timezone — City", "Zona horaria — Ciudad"),
-        L(
-            f"Region: \\Zb{region}\\Zn\n"
-            "Select your city or the nearest one:" + _nav(),
-            f"Región: \\Zb{region}\\Zn\n"
-            "Selecciona tu ciudad o la más cercana:" + _nav()
-        ),
+        L(f"Region: {region}\nSelect your city:",
+          f"Región: {region}\nSelecciona tu ciudad:"),
         cities,
         default=cur_city
     )
-    if city is None:
-        return BACK
-    state["timezone"] = f"{region}/{city}"
+    if city:
+        state["timezone"] = f"{region}/{city}"
     return True
 
 def screen_desktop():
+    options = [
+        ("KDE Plasma", L("KDE Plasma — full featured, modern",
+                         "KDE Plasma — completo, moderno")),
+        ("GNOME",      L("GNOME     — clean, Wayland-first",
+                         "GNOME     — limpio, Wayland primero")),
+        ("Cinnamon",   L("Cinnamon  — classic, Windows-like",
+                         "Cinnamon  — clásico, similar a Windows")),
+        ("XFCE",       L("XFCE      — lightweight, traditional",
+                         "XFCE      — ligero, tradicional")),
+        ("MATE",       L("MATE      — GNOME 2 fork, very stable",
+                         "MATE      — fork de GNOME 2, muy estable")),
+        ("LXQt",       L("LXQt      — minimal Qt desktop",
+                         "LXQt      — escritorio Qt minimalista")),
+        ("None",       L("None      — CLI only, no desktop",
+                         "None      — solo terminal, sin escritorio")),
+    ]
     result = radiolist(
         L("Desktop Environment", "Entorno de escritorio"),
-        L(
-            "Choose a \\Zbdesktop environment\\Zn. Each comes with a display manager,\n"
-            "a terminal emulator (alacritty or konsole), Firefox, and audio.\n\n"
-            "Select \\ZbNone\\Zn for a headless / server install." + _nav(),
-            "Elige un \\Zbentorno de escritorio\\Zn. Cada uno incluye gestor de sesión,\n"
-            "un emulador de terminal (alacritty o konsole), Firefox y audio.\n\n"
-            "Elige \\ZbNone\\Zn para una instalación headless / servidor." + _nav()
-        ),
-        [
-            ("KDE Plasma", L("KDE Plasma  — full-featured, highly customizable, modern",
-                             "KDE Plasma  — completo, muy personalizable, moderno")),
-            ("GNOME",      L("GNOME       — clean design, Wayland-first, minimal chrome",
-                             "GNOME       — diseño limpio, Wayland primero, minimalista")),
-            ("Cinnamon",   L("Cinnamon    — traditional layout, Windows-like, very familiar",
-                             "Cinnamon    — diseño tradicional, similar a Windows")),
-            ("XFCE",       L("XFCE        — lightweight, fast, traditional, low RAM usage",
-                             "XFCE        — ligero, rápido, tradicional, poco uso de RAM")),
-            ("MATE",       L("MATE        — GNOME 2 fork, stable, great for older hardware",
-                             "MATE        — fork de GNOME 2, estable, bueno para hardware viejo")),
-            ("LXQt",       L("LXQt        — minimal Qt desktop, very low resource usage",
-                             "LXQt        — escritorio Qt minimalista, muy pocos recursos")),
-            ("None",       L("None        — no desktop, CLI only (server / custom builds)",
-                             "None        — sin escritorio, solo CLI (servidor / avanzado)")),
-        ],
+        L("Choose a desktop environment:", "Elige un entorno de escritorio:"),
+        options,
         default=state["desktop"]
     )
     if result is None:
-        return BACK
+        return False
     state["desktop"] = result
     return True
 
@@ -1719,131 +1504,56 @@ def screen_gpu():
     if detected != "None" and state["gpu"] == "None":
         state["gpu"] = detected
 
-    detected_label = f"\\Z3{detected}\\Zn" if detected != "None" else L("none detected", "no detectada")
+    color_map = {
+        "NVIDIA":       "\\Z3NVIDIA\\Zn",
+        "AMD":          "\\Z2AMD\\Zn",
+        "Intel":        "\\Z6Intel\\Zn",
+        "Intel+NVIDIA": "\\Z6Intel\\Zn + \\Z3NVIDIA\\Zn (hybrid)",
+        "Intel+AMD":    "\\Z6Intel\\Zn + \\Z2AMD\\Zn (hybrid)",
+    }
+    tag  = color_map.get(detected, "none")
+    hint = L(f"Detected GPU: {tag}", f"GPU detectada: {tag}")
 
+    options = [
+        ("NVIDIA",       L("NVIDIA proprietary (nvidia/nvidia-dkms + utils)",
+                           "NVIDIA propietario (nvidia/nvidia-dkms + utils)")),
+        ("AMD",          L("AMD open-source (mesa + vulkan-radeon)",
+                           "AMD open-source (mesa + vulkan-radeon)")),
+        ("Intel",        L("Intel open-source (mesa + vulkan-intel + intel-media-driver)",
+                           "Intel open-source (mesa + vulkan-intel + intel-media-driver)")),
+        ("Intel+NVIDIA", L("Intel + NVIDIA hybrid (Mesa + proprietary NVIDIA)",
+                           "Intel + NVIDIA híbrido (Mesa + NVIDIA propietario)")),
+        ("Intel+AMD",    L("Intel + AMD hybrid (Mesa + vulkan-radeon)",
+                           "Intel + AMD híbrido (Mesa + vulkan-radeon)")),
+        ("None",         L("No additional GPU drivers", "Sin drivers adicionales de GPU")),
+    ]
     result = radiolist(
         L("GPU Drivers", "Drivers GPU"),
-        L(
-            f"Auto-detected GPU:  {detected_label}\n\n"
-            "Choose the driver package to install.\n"
-            "For \\ZbNVIDIA\\Zn, the proprietary driver gives best performance.\n"
-            "For \\ZbAMD/Intel\\Zn, open-source Mesa drivers are the standard.\n"
-            "Hybrid laptops (Intel + NVIDIA/AMD) need the combined option." + _nav(),
-            f"GPU detectada automáticamente:  {detected_label}\n\n"
-            "Elige el paquete de driver a instalar.\n"
-            "Para \\ZbNVIDIA\\Zn, el driver propietario da el mejor rendimiento.\n"
-            "Para \\ZbAMD/Intel\\Zn, los drivers open-source Mesa son el estándar.\n"
-            "Laptops híbridas (Intel + NVIDIA/AMD) necesitan la opción combinada." + _nav()
-        ),
-        [
-            ("NVIDIA",       L("NVIDIA       — proprietary driver (nvidia / nvidia-dkms)",
-                               "NVIDIA       — driver propietario (nvidia / nvidia-dkms)")),
-            ("AMD",          L("AMD          — open-source Mesa + vulkan-radeon",
-                               "AMD          — Mesa open-source + vulkan-radeon")),
-            ("Intel",        L("Intel        — open-source Mesa + vulkan-intel",
-                               "Intel        — Mesa open-source + vulkan-intel")),
-            ("Intel+NVIDIA", L("Intel+NVIDIA — hybrid laptop (Mesa + proprietary NVIDIA)",
-                               "Intel+NVIDIA — laptop híbrida (Mesa + NVIDIA propietario)")),
-            ("Intel+AMD",    L("Intel+AMD    — hybrid laptop (Mesa + vulkan-radeon)",
-                               "Intel+AMD    — laptop híbrida (Mesa + vulkan-radeon)")),
-            ("None",         L("None         — no additional GPU drivers",
-                               "None         — sin drivers adicionales de GPU")),
-        ],
+        L(f"{hint}\n\nSelect GPU driver:", f"{hint}\n\nSelecciona el driver de GPU:"),
+        options,
         default=state["gpu"]
     )
     if result is None:
-        return BACK
+        return False
     state["gpu"] = result
-    return True
-
-def screen_shell():
-    result = radiolist(
-        L("Default Shell", "Shell por defecto"),
-        L(
-            "Choose the default \\Zbcommand-line shell\\Zn for your user account.\n\n"
-            "\\Zbbash\\Zn — The classic Unix shell. Pre-installed, no extras needed.\n\n"
-            "\\Zbzsh\\Zn  — Feature-rich, with better tab completion and plugins.\n"
-            "       Installs zsh-autosuggestions and syntax highlighting.\n\n"
-            "\\Zbfish\\Zn — Friendly, beginner-oriented. Auto-suggests from history\n"
-            "       out of the box. Not POSIX-compatible." + _nav(),
-            "Elige la \\Zbshell de línea de comandos\\Zn por defecto para tu usuario.\n\n"
-            "\\Zbbash\\Zn — La shell clásica de Unix. Preinstalada, sin extras.\n\n"
-            "\\Zbzsh\\Zn  — Rica en funciones, mejor autocompletado y plugins.\n"
-            "       Instala zsh-autosuggestions y resaltado de sintaxis.\n\n"
-            "\\Zbfish\\Zn — Amigable, orientada a principiantes. Sugiere del historial\n"
-            "       automáticamente. No compatible con POSIX." + _nav()
-        ),
-        [
-            ("bash", L("bash — classic, always available, POSIX-compatible",
-                       "bash — clásica, siempre disponible, compatible con POSIX")),
-            ("zsh",  L("zsh  — powerful, great completion, popular with advanced users",
-                       "zsh  — potente, gran autocompletado, popular entre usuarios avanzados")),
-            ("fish", L("fish — friendly, beginner-friendly, beautiful prompts",
-                       "fish — amigable, ideal para principiantes, prompts bonitos")),
-        ],
-        default=state.get("shell", "bash")
-    )
-    if result is None:
-        return BACK
-    state["shell"] = result
     return True
 
 def screen_yay():
     result = radiolist(
-        L("AUR Helper — yay", "AUR Helper — yay"),
-        L(
-            "The \\ZbAUR\\Zn (Arch User Repository) contains thousands of community\n"
-            "packages not in the official repos (e.g. Discord, Spotify, VS Code).\n\n"
-            "\\Zbyay\\Zn is a popular AUR helper that wraps pacman and lets you install\n"
-            "AUR packages with the same syntax as pacman -S.\n\n"
-            "Requires an internet connection and builds packages from source." + _nav(),
-            "El \\ZbAUR\\Zn (Arch User Repository) tiene miles de paquetes comunitarios\n"
-            "no disponibles en los repos oficiales (Discord, Spotify, VS Code, etc.).\n\n"
-            "\\Zbyay\\Zn es un AUR helper popular que envuelve pacman y permite instalar\n"
-            "paquetes del AUR con la misma sintaxis que pacman -S.\n\n"
-            "Requiere internet y compila los paquetes desde el código fuente." + _nav()
-        ),
+        L("AUR Helper", "AUR Helper"),
+        L("Install yay? (AUR helper, lets you install packages from the AUR)",
+          "¿Instalar yay? (AUR helper, permite instalar paquetes del AUR)"),
         [
             ("yes", L("Yes — install yay after base setup",
-                      "Sí — instalar yay al finalizar la instalación base")),
-            ("no",  L("No  — skip (you can install it manually later)",
-                      "No  — omitir (puedes instalarlo manualmente después)")),
+                      "Sí — instalar yay al finalizar")),
+            ("no",  L("No  — skip",
+                      "No  — omitir")),
         ],
         default="yes" if state["yay"] else "no"
     )
     if result is None:
-        return BACK
+        return False
     state["yay"] = (result == "yes")
-    return True
-
-def screen_extras():
-    result = radiolist(
-        L("Extra Utilities", "Utilidades extra"),
-        L(
-            "Install a curated set of \\Zbcommon CLI utilities\\Zn:\n\n"
-            "  htop btop wget curl rsync bat fd ripgrep\n"
-            "  p7zip unzip zip tree man-db neofetch\n"
-            "  lsof strace iotop usbutils\n\n"
-            "These are useful tools you would likely install anyway.\n"
-            "Adds a few minutes to installation time." + _nav(),
-            "Instalar un conjunto de \\Zbherramientas CLI comunes\\Zn:\n\n"
-            "  htop btop wget curl rsync bat fd ripgrep\n"
-            "  p7zip unzip zip tree man-db neofetch\n"
-            "  lsof strace iotop usbutils\n\n"
-            "Son herramientas útiles que instalarías de todas formas.\n"
-            "Añade pocos minutos al tiempo de instalación." + _nav()
-        ),
-        [
-            ("yes", L("Yes — install common CLI utilities",
-                      "Sí — instalar utilidades CLI comunes")),
-            ("no",  L("No  — minimal install, add later as needed",
-                      "No  — instalación mínima, añadir después si es necesario")),
-        ],
-        default="yes" if state.get("extras") else "no"
-    )
-    if result is None:
-        return BACK
-    state["extras"] = (result == "yes")
     return True
 
 def screen_snapper():
@@ -1851,29 +1561,23 @@ def screen_snapper():
         state["snapper"] = False
         return True
     result = radiolist(
-        L("BTRFS Snapshots — snapper", "Snapshots BTRFS — snapper"),
+        L("BTRFS Snapshots", "Snapshots BTRFS"),
         L(
-            "\\Zbsnapper\\Zn automatically creates BTRFS snapshots before and after\n"
-            "every pacman transaction (installs, updates, removals).\n\n"
-            "If an update breaks something, you can roll back by booting a\n"
-            "previous snapshot from the GRUB menu (requires grub-btrfs).\n\n"
-            "Only available with BTRFS filesystem — already selected." + _nav(),
-            "\\Zbsnapper\\Zn crea snapshots BTRFS automáticamente antes y después\n"
-            "de cada transacción de pacman (instalaciones, actualizaciones, borrados).\n\n"
-            "Si una actualización rompe algo, puedes hacer rollback arrancando\n"
-            "un snapshot anterior desde el menú GRUB (requiere grub-btrfs).\n\n"
-            "Solo disponible con BTRFS — ya seleccionado." + _nav()
+            "Install snapper + grub-btrfs for automatic rollback snapshots?\n"
+            "(Requires BTRFS filesystem — already selected)",
+            "¿Instalar snapper + grub-btrfs para snapshots y rollback automático?\n"
+            "(Requiere BTRFS — ya seleccionado)"
         ),
         [
             ("yes", L("Yes — automatic snapshots on every pacman transaction",
                       "Sí — snapshots automáticos en cada transacción pacman")),
-            ("no",  L("No  — skip (you can set up snapper manually later)",
-                      "No  — omitir (puedes configurar snapper manualmente después)")),
+            ("no",  L("No  — skip",
+                      "No  — omitir")),
         ],
         default="yes" if state["snapper"] else "no"
     )
     if result is None:
-        return BACK
+        return False
     state["snapper"] = (result == "yes")
     return True
 
@@ -1882,103 +1586,93 @@ def screen_flatpak():
         state["flatpak"] = False
         return True
     result = radiolist(
-        L("Flatpak + Flathub", "Flatpak + Flathub"),
+        L("Flatpak", "Flatpak"),
         L(
-            "\\ZbFlatpak\\Zn is a universal package format that runs apps in sandboxes,\n"
-            "independent of your Arch packages.\n\n"
-            "\\ZbFlathub\\Zn is the main Flatpak repository with thousands of apps\n"
-            "including GIMP, LibreOffice, Steam, OBS Studio, and more.\n\n"
-            "Flatpak is added for your user and integrates with your desktop." + _nav(),
-            "\\ZbFlatpak\\Zn es un formato de paquete universal que ejecuta apps en\n"
-            "entornos aislados, independiente de los paquetes de Arch.\n\n"
-            "\\ZbFlathub\\Zn es el repositorio principal de Flatpak con miles de apps\n"
-            "incluyendo GIMP, LibreOffice, Steam, OBS Studio y más.\n\n"
-            "Flatpak se configura para tu usuario y se integra con el escritorio." + _nav()
+            "Install Flatpak and add the Flathub repository?\n\n"
+            "Flatpak lets you install thousands of apps from Flathub\n"
+            "independently of Arch packages.",
+            "¿Instalar Flatpak y añadir el repositorio Flathub?\n\n"
+            "Flatpak permite instalar miles de aplicaciones de Flathub\n"
+            "de forma independiente a los paquetes de Arch."
         ),
         [
-            ("yes", L("Yes — install Flatpak and add Flathub",
-                      "Sí — instalar Flatpak y añadir Flathub")),
+            ("yes", L("Yes — install Flatpak + add Flathub",
+                      "Sí — instalar Flatpak + añadir Flathub")),
             ("no",  L("No  — skip",
                       "No  — omitir")),
         ],
         default="yes" if state.get("flatpak") else "no"
     )
     if result is None:
-        return BACK
+        return False
     state["flatpak"] = (result == "yes")
     return True
-
-
 
 def screen_review():
     microcode = detect_cpu() or L("none detected", "no detectado")
     quick_tag = L("  [Quick Install]", "  [Instalación rápida]") if state["quick"] else ""
     boot_mode = L("UEFI", "UEFI") if is_uefi() else L("BIOS", "BIOS")
-    locale_val = state.get("locale") or L("(derived from language)", "(derivado del idioma)")
-    shell_val  = state.get("shell", "bash")
-    extras_val = L("yes", "sí") if state.get("extras") else "no"
 
     lines = [
-        (L("Mode",       "Modo"),         L("Quick", "Rápida") if state["quick"] else L("Custom", "Personalizada")),
-        (L("Boot mode",  "Arranque"),     boot_mode),
-        (L("Language",   "Idioma"),       state["lang"]),
-        (L("Locale",     "Locale"),       locale_val),
-        ("Hostname",                      state["hostname"] or "\\Z1NOT SET\\Zn"),
-        (L("Username",   "Usuario"),      state["username"] or "\\Z1NOT SET\\Zn"),
-        ("Filesystem",                    state["filesystem"]),
-        ("Kernel",                        state["kernel"]),
-        ("Bootloader",                    state["bootloader"]),
-        ("Microcode",                     microcode),
-        ("Disk",                          f"/dev/{state['disk']}" if state["disk"] else "\\Z1NOT SET\\Zn"),
-        ("Swap",                          f"{state['swap']} GB"),
-        ("Mirrors",                       L("reflector (auto)", "reflector (auto)") if state["mirrors"] else L("default", "por defecto")),
-        ("Keymap",                        state["keymap"]),
-        ("Timezone",                      state["timezone"]),
-        ("Shell",                         shell_val),
-        ("Desktop",                       state["desktop"]),
-        ("GPU",                           state["gpu"]),
-        ("Audio",                         "pipewire" if state["desktop"] != "None" else L("none", "ninguno")),
-        ("Extras",                        extras_val),
-        ("Flatpak",                       L("yes", "sí") if state.get("flatpak") else "no"),
-        ("yay",                           L("yes", "sí") if state["yay"] else "no"),
-        ("snapper",                       L("yes", "sí") if state.get("snapper") else "no"),
+        ("Mode",                    L("Quick", "Rápida") if state["quick"] else L("Custom", "Personalizada")),
+        ("Boot",                    boot_mode),
+        ("Language",                state["lang"]),
+        ("Hostname",                state["hostname"] or "NOT SET"),
+        (L("Username", "Usuario"),  state["username"] or "NOT SET"),
+        ("Filesystem",              state["filesystem"]),
+        ("Kernel",                  state["kernel"]),
+        ("Bootloader",              state["bootloader"]),
+        ("Microcode",               microcode),
+        ("Disk",                    f"/dev/{state['disk']}" if state["disk"] else "NOT SET"),
+        ("Swap",                    f"{state['swap']} GB"),
+        ("Mirrors",                 L("reflector (auto)", "reflector (auto)") if state["mirrors"] else L("default", "por defecto")),
+        ("Keymap",                  state["keymap"]),
+        ("Timezone",                state["timezone"]),
+        ("Desktop",                 state["desktop"]),
+        ("GPU",                     state["gpu"]),
+        ("Audio",                   "pipewire" if state["desktop"] != "None" else L("none", "ninguno")),
+        ("Flatpak",                 L("yes", "sí") if state.get("flatpak") else "no"),
+        ("yay",                     L("yes", "sí") if state["yay"] else "no"),
+        ("snapper",                 L("yes", "sí") if state.get("snapper") else "no"),
     ]
 
-    text = L(
-        f"\\ZbReview your settings:\\Zn{quick_tag}\\n\\n",
-        f"\\ZbRevisa tu configuración:\\Zn{quick_tag}\\n\\n"
-    )
+    text    = L(f"Review your settings:{quick_tag}\n\n",
+                f"Revisa tu configuración:{quick_tag}\n\n")
     missing = []
 
     for label, val in lines:
-        text += f"  {label:<14} {val}\\n"
-    text += "\\n"
+        text += f"  {label:<14} {val}\n"
+    text += "\n"
 
     if not state["hostname"]:  missing.append("hostname")
-    if not state["username"]:  missing.append(L("username", "usuario"))
-    if not state["disk"]:      missing.append(L("disk", "disco"))
+    if not state["username"]:  missing.append("username")
+    if not state["disk"]:      missing.append("disk")
     if not state["root_pass"]: missing.append(L("root password", "contraseña root"))
-    if not state["user_pass"]: missing.append(L("user password", "contraseña de usuario"))
 
     if missing:
-        text += L(
-            f"\\Z1MISSING: {', '.join(missing)}\\Zn\\n\\nGo back and fix before continuing.",
-            f"\\Z1FALTA: {', '.join(missing)}\\Zn\\n\\nVuelve atrás y corrígelo antes de continuar."
-        )
+        text += L(f"MISSING: {', '.join(missing)}\n\nGo back to fix before continuing.",
+                  f"FALTA: {', '.join(missing)}\n\nVuelve atrás para corregirlo.")
         msgbox(L("Review — Incomplete", "Revisión — Incompleto"), text)
-        return BACK
+        return False
 
-    text += L("\\Z2All settings look good.\\Zn", "\\Z2Todo listo.\\Zn")
-    return True if yesno(
+    text += L("All settings look good.", "Todo listo.")
+    return yesno(
         L("Review & Confirm", "Revisar y confirmar"),
         text + L(
-            f"\\n\\n\\Z1WARNING: /dev/{state['disk']} will be erased.\\Zn\\n\\nProceed with installation?",
-            f"\\n\\n\\Z1ADVERTENCIA: /dev/{state['disk']} será borrado.\\Zn\\n\\n¿Proceder con la instalación?"
+            f"\n\nWARNING: THIS WILL ERASE /dev/{state['disk']}.\n\nProceed?",
+            f"\n\nADVERTENCIA: SE BORRARÁ /dev/{state['disk']}.\n\n¿Proceder?"
         )
-    ) else BACK
-
+    )
 
 class InstallScreen:
+    """
+    Renderizador de pantalla de instalación sin dialog.
+    Muestra una barra de progreso con ANSI.
+
+    Escribe 'debug' (sin Enter)  → vista de log en vivo
+    Escribe 'exit'  (sin Enter)  → vuelve a la barra de progreso
+    """
+
     _RST  = "\033[0m"
     _BOLD = "\033[1m"
     _DIM  = "\033[2m"
@@ -1986,8 +1680,9 @@ class InstallScreen:
     _SHOW = "\033[?25h"
     _CLS  = "\033[2J\033[H"
 
-    _BG_BLUE  = "\033[44m\033[97m"
-    _BG_DARK  = "\033[100m"
+    # colores
+    _BG_BLUE  = "\033[44m\033[97m"   # blanco sobre azul
+    _BG_DARK  = "\033[100m"          # gris oscuro (barra vacía)
     _FG_CYAN  = "\033[96m"
     _FG_YEL   = "\033[93m"
     _FG_RED   = "\033[91m"
@@ -1997,15 +1692,16 @@ class InstallScreen:
     def __init__(self, title, version):
         self._title        = title
         self._version      = version
-        self._mode         = "progress"
-        self._prev_mode    = "progress"
+        self._mode         = "progress"   # "progress" | "debug"
+        self._prev_mode    = "progress"   # para detectar cambios de modo
         self._pct          = 0.0
         self._stage        = L("Preparing…", "Preparando…")
-        self._lines        = []
+        self._lines        = []           # ring-buffer de log
         self._lock         = threading.Lock()
         self._running      = False
         self._keybuf       = ""
         self._old_tty      = None
+
 
     def start(self):
         self._running = True
@@ -2033,10 +1729,12 @@ class InstallScreen:
             self._stage = stage
 
     def feed(self, line):
+        """Añade una línea al buffer de log (llamado desde el hilo tailer)."""
         with self._lock:
             self._lines.append(line)
             if len(self._lines) > 2000:
                 self._lines = self._lines[-1000:]
+
 
     def _size(self):
         sz = shutil.get_terminal_size((80, 24))
@@ -2052,6 +1750,7 @@ class InstallScreen:
         if len(s) <= n:
             return s
         return s[:n - 1] + "…"
+
 
     def _render_loop(self):
         while self._running:
@@ -2083,7 +1782,7 @@ class InstallScreen:
     def _draw_progress(self, out, pct, stage, rows, cols):
         W   = min(cols - 2, 74)
         lft = max(0, (cols - W) // 2)
-        top = max(1, (rows - 10) // 2)
+        top = max(1, (rows - 6) // 2)
         pad = " " * lft
 
         def row(r, txt=""):
@@ -2091,10 +1790,10 @@ class InstallScreen:
 
         for r in range(1, top):
             out.append(self._goto(r) + self._clr())
-        for r in range(top + 11, rows + 1):
+        for r in range(top + 7, rows + 1):
             out.append(self._goto(r) + self._clr())
 
-        title_str = f"  {self._title}  —  {self._version}  "
+        title_str = f" {self._title}  —  {self._version} "
         row(top,
             self._BG_BLUE + self._BOLD + title_str.center(W) + self._RST)
         row(top + 1)
@@ -2103,7 +1802,7 @@ class InstallScreen:
             f"  {self._BOLD}{self._trunc(stage, W - 4)}{self._RST}")
         row(top + 3)
 
-        bar_w  = W - 10
+        bar_w  = W - 9
         filled = int(bar_w * pct / 100)
         empty  = bar_w - filled
         bar = (self._BG_BLUE + " " * filled + self._RST +
@@ -2111,47 +1810,19 @@ class InstallScreen:
         pct_s = f"{int(pct):3d}%"
         row(top + 4, f"  [{bar}] {self._BOLD}{pct_s}{self._RST}")
         row(top + 5)
-
-        milestones = [
-            (5,  L("Network & mirrors", "Red y mirrors")),
-            (18, L("Disk setup", "Preparar disco")),
-            (52, L("Base system", "Sistema base")),
-            (71, L("Locale & users", "Locale y usuarios")),
-            (91, L("Desktop & audio", "Escritorio y audio")),
-            (96, L("Bootloader", "Bootloader")),
-            (100,L("Extras & finish", "Extras y fin")),
-        ]
-        done  = self._FG_GRN + "●" + self._RST
-        wait  = self._FG_GRAY + "○" + self._RST
-        cur   = self._FG_YEL + "◉" + self._RST
-
-        milestone_line = ""
-        for mp, ml in milestones:
-            if pct >= mp:
-                sym = done
-            elif pct >= mp - 10:
-                sym = cur
-            else:
-                sym = wait
-            milestone_line += f" {sym}{self._FG_GRAY}{self._trunc(ml, 12)}{self._RST}"
-
-        row(top + 6, milestone_line[:W + 20])
-        row(top + 7)
-        row(top + 8,
-            f"  {self._FG_GRAY}Type \\Zb'debug'\\Zn to see live log  |  '{self._trunc(LOG_FILE,30)}'  {self._RST}")
-        row(top + 9)
-        row(top + 10)
+        row(top + 6)
 
     def _draw_debug(self, out, pct, stage, lines, rows, cols):
         W = cols
 
         pct_s    = f"{pct:.0f}%"
-        hdr_l    = f" DEBUG  {pct_s}  {self._trunc(stage, W - 30)}"
-        hdr_r    = " type 'exit' to go back "
+        hdr_l    = f" DEBUG  {pct_s}  {self._trunc(stage, W - 28)}"
+        hdr_r    = "escribe 'exit' para volver "
         gap      = max(0, W - len(hdr_l) - len(hdr_r))
         hdr      = (self._BG_BLUE + self._BOLD +
                     hdr_l + " " * gap + hdr_r + self._RST)
         out.append(self._goto(1) + self._clr() + hdr)
+
         out.append(self._goto(2) + self._clr() +
                    self._FG_CYAN + "─" * W + self._RST)
 
@@ -2172,6 +1843,7 @@ class InstallScreen:
             )
         for i in range(len(visible), available):
             out.append(self._goto(3 + i) + self._clr())
+
 
     def _key_loop(self):
         import select as _sel
@@ -2195,6 +1867,7 @@ class InstallScreen:
             except Exception:
                 pass
 
+
 def screen_install():
     try:
         open(LOG_FILE, "a").close()
@@ -2212,7 +1885,7 @@ def screen_install():
     def _tailer():
         try:
             with open(LOG_FILE, "r", errors="replace") as f:
-                f.seek(0, 2)
+                f.seek(0, 2)                    # empieza desde el final
                 while not stop_tail.is_set():
                     line = f.readline()
                     if line:
@@ -2231,7 +1904,7 @@ def screen_install():
         screen.update(_pct[0], msg)
 
     def on_done(success, reason):
-        failed[0]   = not success
+        failed[0]  = not success
         fail_msg[0] = reason
         done_event.set()
 
@@ -2250,64 +1923,23 @@ def screen_install():
     if failed[0]:
         msgbox(
             L("Installation Failed", "Instalación fallida"),
-            L(
-                "\\Z1Installation failed.\\Zn\n\n"
-                f"{fail_msg[0]}\n\n"
-                f"The full log is saved at:\n  {LOG_FILE}\n"
-                "  /root/arch_install.log  (on the new system, if partially complete)\n\n"
-                "Common causes:\n"
-                "  • Network dropped during pacstrap\n"
-                "  • Disk write error\n"
-                "  • Package signature failure (try refreshing keyring)",
-                "\\Z1La instalación falló.\\Zn\n\n"
-                f"{fail_msg[0]}\n\n"
-                f"El log completo está en:\n  {LOG_FILE}\n"
-                "  /root/arch_install.log  (en el nuevo sistema, si está parcialmente completo)\n\n"
-                "Causas comunes:\n"
-                "  • La red se cayó durante pacstrap\n"
-                "  • Error de escritura en disco\n"
-                "  • Fallo de firma de paquete (prueba refrescar el keyring)"
-            )
+            L(f"Installation failed.\n\n{fail_msg[0]}\n\nCheck {LOG_FILE} for details.",
+              f"La instalación falló.\n\n{fail_msg[0]}\n\nRevisa {LOG_FILE} para detalles.")
         )
         return False
     return True
 
 def screen_finish():
-    uname = state.get("username", "user")
-    disk  = f"/dev/{state['disk']}" if state["disk"] else "?"
-    de    = state["desktop"]
-    shell = state.get("shell", "bash")
-
     ok = yesno(
         L("Installation Complete!", "¡Instalación completa!"),
-        L(
-            "\\Z2✔  Arch Linux installed successfully!\\Zn\n\n"
-            "─── Your system ─────────────────────────\n"
-            f"  User      {uname}  (in wheel group — sudo enabled)\n"
-            f"  Shell     {shell}\n"
-            f"  Desktop   {de}\n"
-            f"  Disk      {disk}\n"
-            "─────────────────────────────────────────\n\n"
-            "\\ZbNext steps after rebooting:\\Zn\n"
-            "  • Log in as your user, then run  sudo pacman -Syu\n"
-            "  • The install log is at  /root/arch_install.log\n\n"
-            "Remove the installation media, then press Yes to reboot.",
-            "\\Z2✔  ¡Arch Linux instalado correctamente!\\Zn\n\n"
-            "─── Tu sistema ──────────────────────────\n"
-            f"  Usuario   {uname}  (en grupo wheel — sudo habilitado)\n"
-            f"  Shell     {shell}\n"
-            f"  Escritorio {de}\n"
-            f"  Disco     {disk}\n"
-            "─────────────────────────────────────────\n\n"
-            "\\ZbPróximos pasos al reiniciar:\\Zn\n"
-            "  • Inicia sesión con tu usuario, luego ejecuta  sudo pacman -Syu\n"
-            "  • El log de instalación está en  /root/arch_install.log\n\n"
-            "Extrae el medio de instalación y presiona Sí para reiniciar."
-        )
+        L("Arch Linux has been installed successfully.\n\n"
+          "Remove the installation media. Reboot now?",
+          "Arch Linux se ha instalado correctamente.\n\n"
+          "Extrae el medio de instalación. ¿Reiniciar ahora?")
     )
     if ok:
         dlg_titled(
-            L("Rebooting…", "Reiniciando…"),
+            L("Rebooting", "Reiniciando"),
             "--infobox",
             L("Unmounting filesystems and rebooting…",
               "Desmontando sistemas de archivos y reiniciando…"),
@@ -2317,15 +1949,12 @@ def screen_finish():
         subprocess.run("reboot",         shell=True)
     sys.exit(0)
 
+
 def main():
     screen_welcome()
-    lang_result = screen_language()
-    if lang_result is BACK:
-        sys.exit(0)
+    screen_language()
     screen_network()
     quick = screen_mode()
-    if quick is None:
-        sys.exit(0)
 
     if quick:
         steps = [
@@ -2345,14 +1974,11 @@ def main():
             (L("Mirrors",     "Mirrors"),          screen_mirrors,     True),
             (L("Identity",    "Identidad"),        screen_identity,    True),
             (L("Passwords",   "Contraseñas"),      screen_passwords,   True),
-            (L("Shell",       "Shell"),            screen_shell,       True),
             (L("Keymap",      "Teclado"),          screen_keymap,      True),
-            (L("Locale",      "Locale"),           screen_locale,      True),
             (L("Timezone",    "Zona horaria"),     screen_timezone,    True),
             (L("Desktop",     "Escritorio"),       screen_desktop,     True),
             ("GPU",                                screen_gpu,         True),
             (L("yay",         "yay"),              screen_yay,         True),
-            (L("Extras",      "Extras"),           screen_extras,      True),
             (L("Flatpak",     "Flatpak"),          screen_flatpak,     True),
             (L("Snapshots",   "Snapshots"),        screen_snapper,     True),
             (L("Review",      "Revisión"),         screen_review,      True),
@@ -2362,11 +1988,9 @@ def main():
 
     idx = 0
     while idx < len(steps):
-        name, fn, can_go_back = steps[idx]
+        _, fn, can_go_back = steps[idx]
         result = fn()
-        if fn is screen_install and not result:
-            sys.exit(1)
-        if result is BACK and can_go_back:
+        if result is False and can_go_back:
             if idx == 0:
                 if yesno(L("Exit", "Salir"),
                          L("Exit the installer?", "¿Salir del instalador?")):
@@ -2375,11 +1999,11 @@ def main():
                 idx -= 1
         else:
             idx += 1
-            
+
 def bootstrap():
     if os.geteuid() != 0:
         print("This installer must be run as root.")
-        print("Example: sudo python arch_installer.py")
+        print("Example: sudo python arch_installer_gui.py")
         sys.exit(1)
 
     if not shutil.which("dialog"):
@@ -2391,7 +2015,7 @@ def bootstrap():
         if rc != 0:
             print("[!] Failed to install dialog. Check your network and try again.")
             sys.exit(1)
-        print("[+] dialog installed.\n")
+        print("[+] dialog installed successfully.\n")
 
     main()
 
