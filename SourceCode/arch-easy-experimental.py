@@ -1009,6 +1009,29 @@ class InstallBackend:
         )
         write_log("Flatpak + Flathub configured.")
 
+    def _add_cachyos_repo(self, target):
+        repo_block = (
+            "\n[cachyos]\n"
+            "SigLevel = Optional TrustAll\n"
+            "Server = https://mirror.cachyos.org/repo/$arch\n"
+        )
+        if target == "live":
+            conf = "/etc/pacman.conf"
+            run_stream(
+                f"grep -q '\\[cachyos\\]' {conf} || "
+                f"printf {shlex.quote(repo_block)} >> {conf}",
+                on_line=self._log, ignore_error=True
+            )
+            run_stream("pacman -Sy --noconfirm", on_line=self._log, ignore_error=True)
+            self._log("CachyOS repo added to live /etc/pacman.conf and synced.")
+        else:
+            conf = "/mnt/etc/pacman.conf"
+            run_stream(
+                f"grep -q '\\[cachyos\\]' {conf} || "
+                f"printf {shlex.quote(repo_block)} >> {conf}",
+                on_line=self._log, ignore_error=True
+            )
+            self._log("CachyOS repo added to /mnt/etc/pacman.conf for the installed system.")
 
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
@@ -1098,6 +1121,11 @@ class InstallBackend:
                     self._run_critical(f"mount {p1} /mnt/boot/efi", "mount ESP /mnt/boot/efi")
             self._pct(18)
 
+            if kernel == "linux-cachyos":
+                self._stage(L("Adding CachyOS repository...",
+                              "Añadiendo repositorio CachyOS..."))
+                self._add_cachyos_repo("live")
+
             ucode_pkg   = f" {microcode}" if microcode else ""
             extra_pkgs  = " btrfs-progs" if fs == "btrfs" else ""
             kernel_hdrs = f"{kernel}-headers"
@@ -1123,6 +1151,9 @@ class InstallBackend:
             self._stage(L("Generating fstab...", "Generando fstab..."))
             self._run_critical("genfstab -U /mnt >> /mnt/etc/fstab", "genfstab")
             self._pct(53)
+
+            if kernel == "linux-cachyos":
+                self._add_cachyos_repo("chroot")
 
             self._stage(L("Configuring hostname...", "Configurando hostname..."))
             hn = state["hostname"]
@@ -1519,12 +1550,14 @@ def screen_filesystem():
 
 def screen_kernel():
     options = [
-        ("linux",     L("linux     - latest stable kernel",
-                        "linux     - kernel estable mas reciente")),
-        ("linux-lts", L("linux-lts - long-term support kernel",
-                        "linux-lts - kernel de soporte a largo plazo")),
-        ("linux-zen", L("linux-zen - optimized for desktop / gaming",
-                        "linux-zen - optimizado para escritorio / gaming")),
+        ("linux",         L("linux         - latest stable kernel",
+                            "linux         - kernel estable mas reciente")),
+        ("linux-lts",     L("linux-lts     - long-term support kernel",
+                            "linux-lts     - kernel de soporte a largo plazo")),
+        ("linux-zen",     L("linux-zen     - optimized for desktop / gaming",
+                            "linux-zen     - optimizado para escritorio / gaming")),
+        ("linux-cachyos", L("linux-cachyos - CachyOS kernel [RECOMMENDED for max speed & performance]",
+                            "linux-cachyos - kernel CachyOS [RECOMENDADO para maxima velocidad y rendimiento]")),
     ]
     result = radiolist(
         L("Kernel", "Kernel"),
