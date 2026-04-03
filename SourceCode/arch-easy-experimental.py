@@ -812,28 +812,32 @@ class InstallBackend:
         microcode = detect_cpu()
 
         try:
-            partuuid = subprocess.check_output(
+            root_partuuid = subprocess.check_output(
                 f"blkid -s PARTUUID -o value {root_dev}",
                 shell=True, text=True
             ).strip()
         except Exception:
-            partuuid = ""
+            root_partuuid = ""
 
-        root_opt   = f"root=PARTUUID={partuuid}" if partuuid else f"root={root_dev}"
+        root_opt   = f"root=PARTUUID={root_partuuid}" if root_partuuid else f"root={root_dev}"
         extra_opts = "rootflags=subvol=@ " if fs == "btrfs" else ""
 
-        ucode_line = (
-            f"    MODULE_PATH=boot():/boot/{microcode}.img\n"
-            if microcode else ""
-        )
+        if root_partuuid:
+            kpath = f"guid({root_partuuid}):/boot/vmlinuz-{kernel}"
+            ipath = f"guid({root_partuuid}):/boot/initramfs-{kernel}.img"
+            upath = f"    MODULE_PATH=guid({root_partuuid}):/boot/{microcode}.img\n" if microcode else ""
+        else:
+            kpath = f"boot():/boot/vmlinuz-{kernel}"
+            ipath = f"boot():/boot/initramfs-{kernel}.img"
+            upath = f"    MODULE_PATH=boot():/boot/{microcode}.img\n" if microcode else ""
 
         limine_conf = (
             "TIMEOUT=5\n\n"
             ":Arch Linux\n"
             "    PROTOCOL=linux\n"
-            f"    KERNEL_PATH=boot():/boot/vmlinuz-{kernel}\n"
-            f"{ucode_line}"
-            f"    MODULE_PATH=boot():/boot/initramfs-{kernel}.img\n"
+            f"    KERNEL_PATH={kpath}\n"
+            f"{upath}"
+            f"    MODULE_PATH={ipath}\n"
             f"    CMDLINE={root_opt} rw quiet {extra_opts}\n"
         )
 
@@ -846,8 +850,16 @@ class InstallBackend:
             self._chroot_critical(
                 "mkdir -p /boot/efi/EFI/limine && "
                 "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/limine/",
-                "limine copy EFI"
+                "limine copy EFI/limine"
             )
+            self._chroot(
+                "mkdir -p /boot/efi/EFI/BOOT && "
+                "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI",
+                ignore_error=True
+            )
+            with open("/mnt/boot/efi/limine.conf", "w") as f:
+                f.write(limine_conf)
+            write_log("limine.conf also written to ESP /mnt/boot/efi/limine.conf")
 
             try:
                 p1 = partition_paths_for(disk_path)[0]
@@ -858,14 +870,14 @@ class InstallBackend:
             except Exception:
                 part_num = "1"
 
-            self._chroot(
-                f"efibootmgr --create "
-                f"--disk {shlex.quote(disk_path)} "
-                f"--part {part_num} "
-                f"--label 'Arch Linux Limine' "
-                f"--loader '\\\\EFI\\\\limine\\\\BOOTX64.EFI' "
-                f"--unicode",
-                ignore_error=True
+            run_stream(
+                f"efibootmgr --create"
+                f" --disk {shlex.quote(disk_path)}"
+                f" --part {part_num}"
+                f" --label 'Arch Linux Limine'"
+                r" --loader '\EFI\limine\BOOTX64.EFI'"
+                f" --unicode",
+                on_line=self._log, ignore_error=True
             )
 
             pacman_hook = (
@@ -878,7 +890,8 @@ class InstallBackend:
                 "Description = Deploying Limine after upgrade...\n"
                 "When = PostTransaction\n"
                 "Exec = /bin/sh -c "
-                "'cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/limine/'\n"
+                "'cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/limine/ && "
+                "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI'\n"
             )
             self._chroot(
                 "mkdir -p /etc/pacman.d/hooks && "
@@ -886,14 +899,14 @@ class InstallBackend:
                 "> /etc/pacman.d/hooks/limine.hook",
                 ignore_error=True
             )
-            write_log("Limine UEFI installed with efibootmgr entry and pacman hook.")
+            write_log("Limine UEFI: EFI at EFI/limine/ and EFI/BOOT/ (fallback), efibootmgr entry created.")
         else:
             self._chroot(
                 "cp /usr/share/limine/limine-bios.sys /boot/limine/",
                 ignore_error=True
             )
             rc = run_stream(
-                f"arch-chroot /mnt limine bios-install {shlex.quote(disk_path)}",
+                f"limine bios-install {shlex.quote(disk_path)}",
                 on_line=self._log
             )
             if rc != 0:
@@ -1009,32 +1022,6 @@ class InstallBackend:
         )
         write_log("Flatpak + Flathub configured.")
 
-    def _add_cachyos_repo(self, target):
-        repo_block = (
-            "\n[cachyos]\n"
-            "SigLevel = Optional TrustAll\n"
-            "Server = https://mirror.cachyos.org/repo/$arch/$repo\n"
-        )
-        if target == "live":
-            conf = "/etc/pacman.conf"
-            run_stream(
-                f"grep -q '\\[cachyos\\]' {conf} || "
-                f"printf {shlex.quote(repo_block)} >> {conf}",
-                on_line=self._log, ignore_error=True
-            )
-            rc = run_stream("pacman -Sy --noconfirm", on_line=self._log, ignore_error=True)
-            if rc != 0:
-                self._log("WARNING: pacman -Sy returned non-zero, retrying once...")
-                run_stream("pacman -Sy --noconfirm", on_line=self._log, ignore_error=True)
-            self._log("CachyOS repo added to live /etc/pacman.conf and synced.")
-        else:
-            conf = "/mnt/etc/pacman.conf"
-            run_stream(
-                f"grep -q '\\[cachyos\\]' {conf} || "
-                f"printf {shlex.quote(repo_block)} >> {conf}",
-                on_line=self._log, ignore_error=True
-            )
-            self._log("CachyOS repo added to /mnt/etc/pacman.conf for the installed system.")
 
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
@@ -1124,11 +1111,6 @@ class InstallBackend:
                     self._run_critical(f"mount {p1} /mnt/boot/efi", "mount ESP /mnt/boot/efi")
             self._pct(18)
 
-            if kernel == "linux-cachyos":
-                self._stage(L("Adding CachyOS repository...",
-                              "Añadiendo repositorio CachyOS..."))
-                self._add_cachyos_repo("live")
-
             ucode_pkg   = f" {microcode}" if microcode else ""
             extra_pkgs  = " btrfs-progs" if fs == "btrfs" else ""
             kernel_hdrs = f"{kernel}-headers"
@@ -1154,9 +1136,6 @@ class InstallBackend:
             self._stage(L("Generating fstab...", "Generando fstab..."))
             self._run_critical("genfstab -U /mnt >> /mnt/etc/fstab", "genfstab")
             self._pct(53)
-
-            if kernel == "linux-cachyos":
-                self._add_cachyos_repo("chroot")
 
             self._stage(L("Configuring hostname...", "Configurando hostname..."))
             hn = state["hostname"]
@@ -1553,14 +1532,12 @@ def screen_filesystem():
 
 def screen_kernel():
     options = [
-        ("linux",         L("linux         - latest stable kernel",
-                            "linux         - kernel estable mas reciente")),
-        ("linux-lts",     L("linux-lts     - long-term support kernel",
-                            "linux-lts     - kernel de soporte a largo plazo")),
-        ("linux-zen",     L("linux-zen     - optimized for desktop / gaming",
-                            "linux-zen     - optimizado para escritorio / gaming")),
-        ("linux-cachyos", L("linux-cachyos - CachyOS kernel [RECOMMENDED for max speed & performance]",
-                            "linux-cachyos - kernel CachyOS [RECOMENDADO para maxima velocidad y rendimiento]")),
+        ("linux",     L("linux     - latest stable kernel",
+                        "linux     - kernel estable mas reciente")),
+        ("linux-lts", L("linux-lts - long-term support kernel",
+                        "linux-lts - kernel de soporte a largo plazo")),
+        ("linux-zen", L("linux-zen - optimized for desktop / gaming",
+                        "linux-zen - optimizado para escritorio / gaming")),
     ]
     result = radiolist(
         L("Kernel", "Kernel"),
