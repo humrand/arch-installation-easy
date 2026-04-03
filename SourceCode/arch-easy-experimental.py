@@ -1013,7 +1013,7 @@ class InstallBackend:
         repo_block = (
             "\n[cachyos]\n"
             "SigLevel = Optional TrustAll\n"
-            "Server = https://mirror.cachyos.org/repo/$arch\n"
+            "Server = https://mirror.cachyos.org/repo/$arch/$repo\n"
         )
         if target == "live":
             conf = "/etc/pacman.conf"
@@ -1022,7 +1022,10 @@ class InstallBackend:
                 f"printf {shlex.quote(repo_block)} >> {conf}",
                 on_line=self._log, ignore_error=True
             )
-            run_stream("pacman -Sy --noconfirm", on_line=self._log, ignore_error=True)
+            rc = run_stream("pacman -Sy --noconfirm", on_line=self._log, ignore_error=True)
+            if rc != 0:
+                self._log("WARNING: pacman -Sy returned non-zero, retrying once...")
+                run_stream("pacman -Sy --noconfirm", on_line=self._log, ignore_error=True)
             self._log("CachyOS repo added to live /etc/pacman.conf and synced.")
         else:
             conf = "/mnt/etc/pacman.conf"
