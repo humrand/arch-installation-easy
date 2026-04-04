@@ -31,6 +31,7 @@ The ISO image is available in the releases.
 - Automatic mounting of partitions
 - Hostname configuration
 - Root password setup
+- systemd-boot grub and limine bootloader
 - User creation with sudo (wheel group)
 - NetworkManager enabled by default
 - GPU driver selection
@@ -44,6 +45,8 @@ The ISO image is available in the releases.
   - Lxqt
   - Xfce
   - mate
+  - sway
+  - hyprland
 - Desktop installation includes:
   - Necessary Xorg packages
   - Firefox and basic apps (Alacritty, Konsole, Dolphin, Kate, and Ark)
