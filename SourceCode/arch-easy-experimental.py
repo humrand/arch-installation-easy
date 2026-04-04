@@ -902,6 +902,100 @@ class InstallBackend:
                 )
             write_log("Limine BIOS installed.")
 
+    def _install_gpu_drivers(self, start_pct, end_pct):
+        gpu    = state["gpu"]
+        kernel = state["kernel"]
+
+        nvidia_pkg = "nvidia" if kernel == "linux" else "nvidia-dkms"
+
+        def _do(pkgs, label):
+            self._stage(L(f"Installing {label} drivers...", f"Instalando drivers {label}..."))
+            self._pacman(
+                f"arch-chroot /mnt pacman -S --noconfirm {pkgs}",
+                start_pct, end_pct, ignore_error=True
+            )
+
+        if gpu == "NVIDIA":
+            _do(f"{nvidia_pkg} nvidia-utils nvidia-settings", "NVIDIA")
+            self._configure_nvidia_modeset()
+
+        elif gpu == "AMD":
+            _do("mesa vulkan-radeon libva-mesa-driver", "AMD")
+
+        elif gpu == "Intel":
+            _do("mesa vulkan-intel intel-media-driver", "Intel")
+
+        elif gpu == "Intel+NVIDIA":
+            self._stage(L("Installing Intel+NVIDIA (hybrid) drivers...",
+                          "Instalando drivers Intel+NVIDIA (hybrid)..."))
+            self._pacman(
+                "arch-chroot /mnt pacman -S --noconfirm "
+                "mesa vulkan-intel intel-media-driver",
+                start_pct, start_pct + (end_pct - start_pct) * 0.4,
+                ignore_error=True
+            )
+            self._pacman(
+                f"arch-chroot /mnt pacman -S --noconfirm "
+                f"{nvidia_pkg} nvidia-utils nvidia-settings nvidia-prime",
+                start_pct + (end_pct - start_pct) * 0.4, end_pct,
+                ignore_error=True
+            )
+            self._configure_nvidia_modeset()
+
+        elif gpu == "Intel+AMD":
+            _do("mesa vulkan-intel intel-media-driver vulkan-radeon libva-mesa-driver",
+                "Intel+AMD")
+
+        else:
+            self._pct(end_pct)
+
+    def _configure_nvidia_modeset(self):
+        modprobe_conf = "options nvidia_drm modeset=1\n"
+        self._chroot(
+            f"mkdir -p /etc/modprobe.d && "
+            f"echo {shlex.quote(modprobe_conf)} > /etc/modprobe.d/nvidia.conf",
+            ignore_error=True
+        )
+        write_log("nvidia_drm modeset=1 configured in /etc/modprobe.d/nvidia.conf")
+
+    def _configure_mkinitcpio(self):
+        self._chroot_critical("mkinitcpio -P", "mkinitcpio")
+
+    def _configure_grub_cmdline(self):
+        if state["filesystem"] == "btrfs":
+            self._chroot(
+                "grep -q 'rootflags=subvol=@' /etc/default/grub || "
+                "sed -i "
+                "'s|GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 rootflags=subvol=@\"|' "
+                "/etc/default/grub",
+                ignore_error=True
+            )
+
+    def _configure_keyboard(self, keymap_val):
+        self._chroot(f"echo 'KEYMAP={keymap_val}' > /etc/vconsole.conf")
+
+        x11_layout = CONSOLE_TO_X11.get(keymap_val, keymap_val)
+
+        xorg_conf = (
+            'Section "InputClass"\n'
+            '    Identifier "system-keyboard"\n'
+            '    MatchIsKeyboard "on"\n'
+            f'    Option "XkbLayout" "{x11_layout}"\n'
+            'EndSection\n'
+        )
+        self._chroot(
+            f"mkdir -p /etc/X11/xorg.conf.d && "
+            f"printf {shlex.quote(xorg_conf)} "
+            f"> /etc/X11/xorg.conf.d/00-keyboard.conf",
+            ignore_error=True
+        )
+
+        self._chroot(
+            f"localectl --no-ask-password set-x11-keymap {shlex.quote(x11_layout)} || true",
+            ignore_error=True
+        )
+
+        write_log(f"Keyboard configured: console={keymap_val}  x11={x11_layout}")
 
     def _install_flatpak(self, uname):
         self._stage(L("Installing Flatpak + Flathub...", "Instalando Flatpak + Flathub..."))
@@ -917,6 +1011,7 @@ class InstallBackend:
         )
         write_log("Flatpak + Flathub configured.")
 
+
     def _add_cachyos_repo(self, target):
         repo_block = (
             "\n[cachyos]\n"
@@ -926,7 +1021,7 @@ class InstallBackend:
         if target == "live":
             conf = "/etc/pacman.conf"
             run_stream(
-                f"grep -q '\\[cachyos\\]' {conf} || "
+                f"grep -q \'\\[cachyos\\]\' {conf} || "
                 f"printf {shlex.quote(repo_block)} >> {conf}",
                 on_line=self._log, ignore_error=True
             )
@@ -938,12 +1033,11 @@ class InstallBackend:
         else:
             conf = "/mnt/etc/pacman.conf"
             run_stream(
-                f"grep -q '\\[cachyos\\]' {conf} || "
+                f"grep -q \'\\[cachyos\\]\' {conf} || "
                 f"printf {shlex.quote(repo_block)} >> {conf}",
                 on_line=self._log, ignore_error=True
             )
             self._log("CachyOS repo added to /mnt/etc/pacman.conf for the installed system.")
-
 
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
@@ -1462,12 +1556,12 @@ def screen_filesystem():
 
 def screen_kernel():
     options = [
-        ("linux",         L("linux         - latest stable kernel",
-                            "linux         - kernel estable mas reciente")),
-        ("linux-lts",     L("linux-lts     - long-term support kernel",
-                            "linux-lts     - kernel de soporte a largo plazo")),
-        ("linux-zen",     L("linux-zen     - optimized for desktop / gaming",
-                            "linux-zen     - optimizado para escritorio / gaming")),
+        ("linux",     L("linux     - latest stable kernel",
+                        "linux     - kernel estable mas reciente")),
+        ("linux-lts", L("linux-lts - long-term support kernel",
+                        "linux-lts - kernel de soporte a largo plazo")),
+        ("linux-zen", L("linux-zen - optimized for desktop / gaming",
+                        "linux-zen - optimizado para escritorio / gaming")),
         ("linux-cachyos", L("linux-cachyos - CachyOS kernel [RECOMMENDED for max speed & performance]",
                             "linux-cachyos - kernel CachyOS [RECOMENDADO para maxima velocidad y rendimiento]")),
     ]
@@ -1481,7 +1575,6 @@ def screen_kernel():
         return False
     state["kernel"] = result
     return True
-
 
 def screen_bootloader():
     uefi = is_uefi()
