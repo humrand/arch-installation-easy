@@ -132,100 +132,6 @@ LOCALE_TO_KEYMAP = {
     "ar_SA.UTF-8": "ara",
 }
 
-
-PREVIEW_IMAGES = {
-    "linux":         "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kernel-images/tux.png",
-    "linux-zen":     "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kernel-images/tux.png",
-    "linux-lts":     "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kernel-images/tux%20lts.png",
-    "linux-cachyos": "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kernel-images/cachyos-seeklogo.png",
-    "KDE Plasma":    "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kde.png",
-    "GNOME":         "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/gnome.png",
-    "Cinnamon":      "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/cinnamon.png",
-    "XFCE":          "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/xfce.jpg",
-    "MATE":          "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/mate.jpg",
-    "LXQt":          "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/lxqt.png",
-    "Hyprland":      "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/hyprland.png",
-    "Sway":          "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/sway.png",
-}
-
-
-def _show_preview(key, title=""):
-    url = PREVIEW_IMAGES.get(key)
-    if not url:
-        return
-
-    ext  = ".jpg" if url.lower().endswith(".jpg") else ".png"
-    dest = f"/tmp/arch_preview_{key.replace(' ', '_')}{ext}"
-
-    def _worker():
-        # Mostrar infobox de carga
-        dlg_titled(
-            L("Preview", "Vista previa"),
-            "--infobox",
-            L(f"Loading preview for: {title or key}\n\nPlease wait...",
-              f"Cargando vista previa: {title or key}\n\nPor favor espera..."),
-            "7", "50"
-        )
-
-        # Descargar imagen si no está en caché
-        if not os.path.exists(dest):
-            try:
-                import urllib.request
-                urllib.request.urlretrieve(url, dest)
-            except Exception as e:
-                write_log(f"[preview] download failed: {e}")
-                msgbox(
-                    L("Preview unavailable", "Vista previa no disponible"),
-                    L(f"Could not download preview for '{key}'.\n\nURL: {url}",
-                      f"No se pudo descargar la vista previa de '{key}'.\n\nURL: {url}")
-                )
-                return
-
-        # Intentar abrir con visores disponibles
-        viewers = ["feh", "eog", "sxiv", "imv", "display", "xdg-open"]
-        opened  = False
-        for viewer in viewers:
-            if shutil.which(viewer):
-                subprocess.Popen(
-                    [viewer, dest],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                opened = True
-                write_log(f"[preview] opened '{dest}' with {viewer}")
-                break
-
-        if not opened:
-            # Fallback: intentar instalar feh silenciosamente
-            write_log("[preview] no image viewer found, trying to install feh...")
-            rc = subprocess.call(
-                "pacman -Sy --noconfirm feh",
-                shell=True, executable="/bin/bash",
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            if rc == 0 and shutil.which("feh"):
-                subprocess.Popen(
-                    ["feh", dest],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                write_log(f"[preview] feh installed and opened '{dest}'")
-            else:
-                msgbox(
-                    L("Preview", "Vista previa"),
-                    L(
-                        f"Preview for: {title or key}\n\n"
-                        f"No image viewer found (feh, eog, sxiv, imv, display).\n\n"
-                        f"Image saved to: {dest}",
-                        f"Vista previa de: {title or key}\n\n"
-                        f"No se encontro visor de imagenes (feh, eog, sxiv, imv, display).\n\n"
-                        f"Imagen guardada en: {dest}"
-                    )
-                )
-
-    threading.Thread(target=_worker, daemon=True).start()
-
-
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
 
@@ -1684,7 +1590,6 @@ def screen_kernel():
     if result is None:
         return False
     state["kernel"] = result
-    _show_preview(result, L(f"Kernel preview: {result}", f"Vista previa kernel: {result}"))
     return True
 
 def screen_bootloader():
@@ -1952,7 +1857,6 @@ def screen_desktop():
     if result is None:
         return False
     state["desktop"] = result
-    _show_preview(result, L(f"Desktop preview: {result}", f"Vista previa escritorio: {result}"))
     return True
 
 def screen_gpu():
