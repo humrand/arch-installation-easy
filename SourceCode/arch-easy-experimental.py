@@ -153,39 +153,77 @@ def _show_preview(key, title=""):
     url = PREVIEW_IMAGES.get(key)
     if not url:
         return
-    script = """
-import sys, urllib.request, base64
-from io import BytesIO
-try:
-    import tkinter as tk
-    data = urllib.request.urlopen(URL, timeout=6).read()
-    root = tk.Tk()
-    root.title(TITLE)
-    root.resizable(False, False)
-    root.attributes('-topmost', True)
-    try:
-        from PIL import Image, ImageTk
-        img = Image.open(BytesIO(data))
-        img.thumbnail((640, 480), Image.LANCZOS)
-        tk_img = ImageTk.PhotoImage(img)
-    except ImportError:
-        tk_img = tk.PhotoImage(data=base64.b64encode(data))
-    lbl = tk.Label(root, image=tk_img, cursor='hand2')
-    lbl.pack()
-    tk.Label(root, text='Click or wait to close', fg='gray').pack(pady=4)
-    root.after(8000, root.destroy)
-    lbl.bind('<Button-1>', lambda e: root.destroy())
-    root.bind('<Key>', lambda e: root.destroy())
-    root.mainloop()
-except Exception:
-    pass
-""".replace("URL", repr(url)).replace("TITLE", repr(title or key))
-    subprocess.Popen(
-        [sys.executable, "-c", script],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
 
+    ext  = ".jpg" if url.lower().endswith(".jpg") else ".png"
+    dest = f"/tmp/arch_preview_{key.replace(' ', '_')}{ext}"
+
+    def _worker():
+        # Mostrar infobox de carga
+        dlg_titled(
+            L("Preview", "Vista previa"),
+            "--infobox",
+            L(f"Loading preview for: {title or key}\n\nPlease wait...",
+              f"Cargando vista previa: {title or key}\n\nPor favor espera..."),
+            "7", "50"
+        )
+
+        # Descargar imagen si no está en caché
+        if not os.path.exists(dest):
+            try:
+                import urllib.request
+                urllib.request.urlretrieve(url, dest)
+            except Exception as e:
+                write_log(f"[preview] download failed: {e}")
+                msgbox(
+                    L("Preview unavailable", "Vista previa no disponible"),
+                    L(f"Could not download preview for '{key}'.\n\nURL: {url}",
+                      f"No se pudo descargar la vista previa de '{key}'.\n\nURL: {url}")
+                )
+                return
+
+        # Intentar abrir con visores disponibles
+        viewers = ["feh", "eog", "sxiv", "imv", "display", "xdg-open"]
+        opened  = False
+        for viewer in viewers:
+            if shutil.which(viewer):
+                subprocess.Popen(
+                    [viewer, dest],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                opened = True
+                write_log(f"[preview] opened '{dest}' with {viewer}")
+                break
+
+        if not opened:
+            # Fallback: intentar instalar feh silenciosamente
+            write_log("[preview] no image viewer found, trying to install feh...")
+            rc = subprocess.call(
+                "pacman -Sy --noconfirm feh",
+                shell=True, executable="/bin/bash",
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            if rc == 0 and shutil.which("feh"):
+                subprocess.Popen(
+                    ["feh", dest],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                write_log(f"[preview] feh installed and opened '{dest}'")
+            else:
+                msgbox(
+                    L("Preview", "Vista previa"),
+                    L(
+                        f"Preview for: {title or key}\n\n"
+                        f"No image viewer found (feh, eog, sxiv, imv, display).\n\n"
+                        f"Image saved to: {dest}",
+                        f"Vista previa de: {title or key}\n\n"
+                        f"No se encontro visor de imagenes (feh, eog, sxiv, imv, display).\n\n"
+                        f"Imagen guardada en: {dest}"
+                    )
+                )
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def L(en, es):
