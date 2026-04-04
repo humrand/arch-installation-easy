@@ -133,6 +133,61 @@ LOCALE_TO_KEYMAP = {
 }
 
 
+PREVIEW_IMAGES = {
+    "linux":         "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kernel-images/tux.png",
+    "linux-zen":     "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kernel-images/tux.png",
+    "linux-lts":     "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kernel-images/tux%20lts.png",
+    "linux-cachyos": "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kernel-images/cachyos-seeklogo.png",
+    "KDE Plasma":    "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/kde.png",
+    "GNOME":         "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/gnome.png",
+    "Cinnamon":      "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/cinnamon.png",
+    "XFCE":          "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/xfce.jpg",
+    "MATE":          "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/mate.jpg",
+    "LXQt":          "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/lxqt.png",
+    "Hyprland":      "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/hyprland.png",
+    "Sway":          "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/images/sway.png",
+}
+
+
+def _show_preview(key, title=""):
+    url = PREVIEW_IMAGES.get(key)
+    if not url:
+        return
+    script = """
+import sys, urllib.request, base64
+from io import BytesIO
+try:
+    import tkinter as tk
+    data = urllib.request.urlopen(URL, timeout=6).read()
+    root = tk.Tk()
+    root.title(TITLE)
+    root.resizable(False, False)
+    root.attributes('-topmost', True)
+    try:
+        from PIL import Image, ImageTk
+        img = Image.open(BytesIO(data))
+        img.thumbnail((640, 480), Image.LANCZOS)
+        tk_img = ImageTk.PhotoImage(img)
+    except ImportError:
+        tk_img = tk.PhotoImage(data=base64.b64encode(data))
+    lbl = tk.Label(root, image=tk_img, cursor='hand2')
+    lbl.pack()
+    tk.Label(root, text='Click or wait to close', fg='gray').pack(pady=4)
+    root.after(8000, root.destroy)
+    lbl.bind('<Button-1>', lambda e: root.destroy())
+    root.bind('<Key>', lambda e: root.destroy())
+    root.mainloop()
+except Exception:
+    pass
+""".replace("URL", repr(url)).replace("TITLE", repr(title or key))
+    subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
 
@@ -1591,6 +1646,7 @@ def screen_kernel():
     if result is None:
         return False
     state["kernel"] = result
+    _show_preview(result, L(f"Kernel preview: {result}", f"Vista previa kernel: {result}"))
     return True
 
 def screen_bootloader():
@@ -1858,6 +1914,7 @@ def screen_desktop():
     if result is None:
         return False
     state["desktop"] = result
+    _show_preview(result, L(f"Desktop preview: {result}", f"Vista previa escritorio: {result}"))
     return True
 
 def screen_gpu():
