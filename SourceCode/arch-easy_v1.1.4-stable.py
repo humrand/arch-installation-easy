@@ -1,3 +1,4 @@
+
 import subprocess
 import sys
 import os
@@ -8,11 +9,7 @@ import threading
 import time
 from datetime import datetime
 
-# MIT LICENSE, YOU CAN USE IT BUT YOU GOTTA GIVE ME CREDITS,
-# made by humrand https://github.com/humrand/arch-anstallation-easy
-# DO NOT REMOVE THIS FROM YOUR CODE IF YOU USE IT TO
-
-VERSION  = "V1.1.3-stable"
+VERSION  = "V1.1.4"
 LOG_FILE = "/tmp/arch_install.log"
 TITLE    = "Arch Linux Installer"
 
@@ -60,6 +57,14 @@ DESKTOP_PKGS = {
     "LXQt": [
         "xorg-server lxqt sddm breeze-icons alacritty firefox",
     ],
+    "Hyprland": [
+        "hyprland waybar wofi alacritty xdg-desktop-portal-hyprland "
+        "polkit-gnome qt5-wayland qt6-wayland sddm firefox",
+    ],
+    "Sway": [
+        "sway waybar wofi alacritty xdg-desktop-portal-wlr "
+        "polkit-gnome qt5-wayland sddm firefox",
+    ],
 }
 
 DESKTOP_DM = {
@@ -69,6 +74,8 @@ DESKTOP_DM = {
     "XFCE":       "lightdm",
     "MATE":       "lightdm",
     "LXQt":       "sddm",
+    "Hyprland":   "sddm",
+    "Sway":       "sddm",
 }
 
 CONSOLE_TO_X11 = {
@@ -125,7 +132,6 @@ LOCALE_TO_KEYMAP = {
     "zh_CN.UTF-8": "us",
     "ar_SA.UTF-8": "ara",
 }
-
 
 def L(en, es):
     return en if state.get("lang", "en") == "en" else es
@@ -799,6 +805,120 @@ class InstallBackend:
 
         write_log("systemd-boot installed and configured.")
 
+    def _install_limine(self, disk_path, root_dev):
+        uefi      = is_uefi()
+        fs        = state["filesystem"]
+        kernel    = state["kernel"]
+        microcode = detect_cpu()
+
+        try:
+            root_partuuid = subprocess.check_output(
+                f"blkid -s PARTUUID -o value {root_dev}",
+                shell=True, text=True
+            ).strip()
+        except Exception:
+            root_partuuid = ""
+
+        root_opt   = f"root=PARTUUID={root_partuuid}" if root_partuuid else f"root={root_dev}"
+        extra_opts = "rootflags=subvol=@ " if fs == "btrfs" else ""
+
+        if root_partuuid:
+            kpath = f"guid({root_partuuid}):/boot/vmlinuz-{kernel}"
+            ipath = f"guid({root_partuuid}):/boot/initramfs-{kernel}.img"
+            ucode_entry = (
+                f"    module_path: guid({root_partuuid}):/boot/{microcode}.img\n"
+                if microcode else ""
+            )
+        else:
+            kpath = f"boot():/boot/vmlinuz-{kernel}"
+            ipath = f"boot():/boot/initramfs-{kernel}.img"
+            ucode_entry = (
+                f"    module_path: boot():/boot/{microcode}.img\n"
+                if microcode else ""
+            )
+
+        limine_conf = (
+            "timeout: 5\n\n"
+            "/Arch Linux\n"
+            "    protocol: linux\n"
+            f"    path: {kpath}\n"
+            f"    cmdline: {root_opt} rw quiet {extra_opts}\n"
+            f"{ucode_entry}"
+            f"    module_path: {ipath}\n"
+        )
+
+        os.makedirs("/mnt/boot/limine", exist_ok=True)
+        with open("/mnt/boot/limine.conf", "w") as f:
+            f.write(limine_conf)
+        write_log("limine.conf (new format) written to /mnt/boot/limine.conf")
+
+        if uefi:
+            self._chroot_critical(
+                "mkdir -p /boot/efi/EFI/limine && "
+                "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/limine/",
+                "limine copy EFI/limine"
+            )
+            self._chroot(
+                "mkdir -p /boot/efi/EFI/BOOT && "
+                "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI",
+                ignore_error=True
+            )
+            with open("/mnt/boot/efi/limine.conf", "w") as f:
+                f.write(limine_conf)
+            write_log("limine.conf also written to ESP root /mnt/boot/efi/limine.conf")
+
+            try:
+                p1 = partition_paths_for(disk_path)[0]
+                part_num = subprocess.check_output(
+                    f"lsblk -no PARTN {p1} 2>/dev/null",
+                    shell=True, text=True
+                ).strip() or "1"
+            except Exception:
+                part_num = "1"
+
+            run_stream(
+                f"efibootmgr --create"
+                f" --disk {shlex.quote(disk_path)}"
+                f" --part {part_num}"
+                f" --label 'Arch Linux Limine'"
+                r" --loader '\EFI\limine\BOOTX64.EFI'"
+                f" --unicode",
+                on_line=self._log, ignore_error=True
+            )
+
+            pacman_hook = (
+                "[Trigger]\n"
+                "Operation = Install\n"
+                "Operation = Upgrade\n"
+                "Type = Package\n"
+                "Target = limine\n\n"
+                "[Action]\n"
+                "Description = Deploying Limine after upgrade...\n"
+                "When = PostTransaction\n"
+                "Exec = /bin/sh -c "
+                "'cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/limine/ && "
+                "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI'\n"
+            )
+            self._chroot(
+                "mkdir -p /etc/pacman.d/hooks && "
+                f"printf {shlex.quote(pacman_hook)} "
+                "> /etc/pacman.d/hooks/limine.hook",
+                ignore_error=True
+            )
+            write_log("Limine UEFI: EFI at EFI/limine/ and EFI/BOOT/ (fallback), efibootmgr entry created.")
+        else:
+            self._chroot(
+                "cp /usr/share/limine/limine-bios.sys /boot/limine/",
+                ignore_error=True
+            )
+            rc = run_stream(
+                f"limine bios-install {shlex.quote(disk_path)}",
+                on_line=self._log
+            )
+            if rc != 0:
+                write_log(f"limine bios-install rc={rc} - check disk manually")
+            write_log("Limine BIOS installed.")
+
     def _install_gpu_drivers(self, start_pct, end_pct):
         gpu    = state["gpu"]
         kernel = state["kernel"]
@@ -887,7 +1007,6 @@ class InstallBackend:
             ignore_error=True
         )
 
-
         self._chroot(
             f"localectl --no-ask-password set-x11-keymap {shlex.quote(x11_layout)} || true",
             ignore_error=True
@@ -910,6 +1029,33 @@ class InstallBackend:
         write_log("Flatpak + Flathub configured.")
 
 
+    def _add_cachyos_repo(self, target):
+        repo_block = (
+            "\n[cachyos]\n"
+            "SigLevel = Optional TrustAll\n"
+            "Server = https://mirror.cachyos.org/repo/$arch/$repo\n"
+        )
+        if target == "live":
+            conf = "/etc/pacman.conf"
+            run_stream(
+                f"grep -q '\\[cachyos\\]' {conf} || "
+                f"printf {shlex.quote(repo_block)} >> {conf}",
+                on_line=self._log, ignore_error=True
+            )
+            rc = run_stream("pacman -Sy --noconfirm", on_line=self._log, ignore_error=True)
+            if rc != 0:
+                self._log("WARNING: pacman -Sy returned non-zero, retrying once...")
+                run_stream("pacman -Sy --noconfirm", on_line=self._log, ignore_error=True)
+            self._log("CachyOS repo added to live /etc/pacman.conf and synced.")
+        else:
+            conf = "/mnt/etc/pacman.conf"
+            run_stream(
+                f"grep -q '\\[cachyos\\]' {conf} || "
+                f"printf {shlex.quote(repo_block)} >> {conf}",
+                on_line=self._log, ignore_error=True
+            )
+            self._log("CachyOS repo added to /mnt/etc/pacman.conf for the installed system.")
+
     def run(self):
         disk_path  = f"/dev/{state['disk']}"
         p1, p2, p3 = partition_paths_for(disk_path)
@@ -927,6 +1073,9 @@ class InstallBackend:
             write_log("systemd-boot requested but BIOS detected - falling back to GRUB")
             bootloader = "grub"
             state["bootloader"] = "grub"
+
+        if bootloader == "limine" and not uefi and fs == "btrfs":
+            write_log("Limine + BIOS + BTRFS: supported from Limine v8+, proceeding.")
 
         root_dev = p3
 
@@ -995,12 +1144,19 @@ class InstallBackend:
                     self._run_critical(f"mount {p1} /mnt/boot/efi", "mount ESP /mnt/boot/efi")
             self._pct(18)
 
+            if kernel == "linux-cachyos":
+                self._stage(L("Adding CachyOS repository...",
+                              "Añadiendo repositorio CachyOS..."))
+                self._add_cachyos_repo("live")
+
             ucode_pkg   = f" {microcode}" if microcode else ""
             extra_pkgs  = " btrfs-progs" if fs == "btrfs" else ""
             kernel_hdrs = f"{kernel}-headers"
 
             if bootloader == "systemd-boot":
                 boot_pkgs = " efibootmgr"
+            elif bootloader == "limine":
+                boot_pkgs = " limine efibootmgr" if uefi else " limine"
             else:
                 efi_flag  = " efibootmgr" if uefi else ""
                 boot_pkgs = f" grub{efi_flag}"
@@ -1018,6 +1174,9 @@ class InstallBackend:
             self._stage(L("Generating fstab...", "Generando fstab..."))
             self._run_critical("genfstab -U /mnt >> /mnt/etc/fstab", "genfstab")
             self._pct(53)
+
+            if kernel == "linux-cachyos":
+                self._add_cachyos_repo("chroot")
 
             self._stage(L("Configuring hostname...", "Configurando hostname..."))
             hn = state["hostname"]
@@ -1098,6 +1257,17 @@ class InstallBackend:
                 if dm:
                     self._chroot(f"systemctl enable {dm}")
 
+                if desktop in ("Hyprland", "Sway"):
+                    self._stage(L(
+                        f"Enabling seat management for {desktop}...",
+                        f"Habilitando gestion de seat para {desktop}..."
+                    ))
+                    self._chroot(
+                        f"usermod -aG seat,input,video {shlex.quote(uname)}",
+                        ignore_error=True
+                    )
+                    write_log(f"{desktop}: user added to seat/input/video groups.")
+
                 self._stage(L("Installing audio (pipewire)...", "Instalando audio (pipewire)..."))
                 self._pacman(
                     "arch-chroot /mnt pacman -S --noconfirm "
@@ -1110,6 +1280,9 @@ class InstallBackend:
             if bootloader == "systemd-boot":
                 self._stage(L("Installing systemd-boot...", "Instalando systemd-boot..."))
                 self._install_systemd_boot(root_dev)
+            elif bootloader == "limine":
+                self._stage(L("Installing Limine bootloader...", "Instalando Limine..."))
+                self._install_limine(disk_path, root_dev)
             else:
                 self._stage(L("Installing GRUB bootloader...", "Instalando GRUB..."))
                 self._configure_grub_cmdline()
@@ -1400,12 +1573,14 @@ def screen_filesystem():
 
 def screen_kernel():
     options = [
-        ("linux",     L("linux     - latest stable kernel",
-                        "linux     - kernel estable mas reciente")),
-        ("linux-lts", L("linux-lts - long-term support kernel",
-                        "linux-lts - kernel de soporte a largo plazo")),
-        ("linux-zen", L("linux-zen - optimized for desktop / gaming",
-                        "linux-zen - optimizado para escritorio / gaming")),
+        ("linux",         L("linux         - latest stable kernel",
+                            "linux         - kernel estable mas reciente")),
+        ("linux-lts",     L("linux-lts     - long-term support kernel",
+                            "linux-lts     - kernel de soporte a largo plazo")),
+        ("linux-zen",     L("linux-zen     - optimized for desktop / gaming",
+                            "linux-zen     - optimizado para escritorio / gaming")),
+        ("linux-cachyos", L("linux-cachyos - CachyOS kernel [RECOMMENDED for max speed & performance]",
+                            "linux-cachyos - kernel CachyOS [RECOMENDADO para maxima velocidad y rendimiento]")),
     ]
     result = radiolist(
         L("Kernel", "Kernel"),
@@ -1420,35 +1595,60 @@ def screen_kernel():
 
 def screen_bootloader():
     uefi = is_uefi()
-    if not uefi:
-        state["bootloader"] = "grub"
-        return True
 
-    options = [
-        (
-            "grub",
-            L(
-                "GRUB - stable, uefi and bios",
-                "GRUB - estable, uefi y bios",
+    if not uefi:
+        options = [
+            (
+                "grub",
+                L(
+                    "GRUB         - stable, recommended for BIOS",
+                    "GRUB         - estable, recomendado para BIOS",
+                ),
             ),
-        ),
-        (
-            "systemd-boot",
-            L(
-                "systemd-boot - fast, only uefi",
-                "systemd-boot - rapido, solo UEFI",
+            (
+                "limine",
+                L(
+                    "Limine       - modern, lightweight, BIOS + UEFI",
+                    "Limine       - moderno, ligero, BIOS + UEFI",
+                ),
             ),
-        ),
-    ]
+        ]
+    else:
+        options = [
+            (
+                "grub",
+                L(
+                    "GRUB         - stable, UEFI and BIOS",
+                    "GRUB         - estable, UEFI y BIOS",
+                ),
+            ),
+            (
+                "systemd-boot",
+                L(
+                    "systemd-boot - fast, UEFI only",
+                    "systemd-boot - rapido, solo UEFI",
+                ),
+            ),
+            (
+                "limine",
+                L(
+                    "Limine       - modern, lightweight, UEFI only",
+                    "Limine       - moderno, ligero, solo UEFI",
+                ),
+            ),
+        ]
+
     result = radiolist(
         L("Bootloader", "Gestor de arranque"),
         L(
             "Choose a bootloader:\n\n"
             "  GRUB         works on UEFI and BIOS legacy.\n"
-            "  systemd-boot, UEFI only.",
+            "  systemd-boot UEFI only, minimal and fast.\n"
+            "  Limine       modern, lightweight, simple config.",
             "Elige un gestor de arranque:\n\n"
             "  GRUB         UEFI y BIOS.\n"
-            "  systemd-boot, solo UEFI.",
+            "  systemd-boot Solo UEFI, minimalista y rapido.\n"
+            "  Limine       Moderno, ligero, config sencilla.",
         ),
         options,
         default=state.get("bootloader", "grub"),
@@ -1642,6 +1842,10 @@ def screen_desktop():
                          "MATE      - fork de GNOME 2, muy estable")),
         ("LXQt",       L("LXQt      - minimal Qt desktop",
                          "LXQt      - escritorio Qt minimalista")),
+        ("Hyprland",   L("Hyprland  - tiling Wayland compositor, modern + animations",
+                         "Hyprland  - compositor Wayland tiling, moderno + animaciones")),
+        ("Sway",       L("Sway      - tiling Wayland compositor, i3-compatible",
+                         "Sway      - compositor Wayland tiling, compatible con i3")),
         ("None",       L("None      - CLI only, no desktop",
                          "None      - solo terminal, sin escritorio")),
     ]
