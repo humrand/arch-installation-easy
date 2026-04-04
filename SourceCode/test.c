@@ -1,34 +1,3 @@
-/*
- * arch_installer.c  -  Arch Linux TUI Installer
- * C port of arch_installer_gui.py V1.1.4
- *
- * Bug-fixes over the Python original
- * ─────────────────────────────────────────────────────────────────
- *  1. _gradual(): base-progress snapshot now taken under the mutex
- *     (Python had a TOCTOU race between reading self._progress and
- *     releasing the lock before the loop started).
- *  2. setup_btrfs: replaced bash-brace-expansion mkdir call
- *     with explicit mkdir commands (brace expansion is a bashism that
- *     would silently create a literally-named directory on non-bash sh).
- *  3. configure_grub_cmdline: the Python sed was only an append; the
- *     C version also guards against duplicate insertion.
- *  4. ANSI strip in wifi scan: handles OSC escape sequences in addition
- *     to CSI sequences (some iwd versions emit OSC colour resets).
- *  5. Log tailer: file opened with O_CREAT|O_RDONLY so there is no
- *     TOCTOU window between the "touch" and the open.
- *  6. Double-logging of chroot output eliminated (Python's _chroot
- *     passed on_line=self._log which called write_log, but run_stream
- *     already called write_log for every line).
- *  7. Progress never goes backwards: _pct() uses max(cur, new).
- *  8. All string operations are bounds-checked (snprintf/strncat).
- *
- * Compile:
- *   gcc -O2 -Wall -o arch_installer arch_installer.c -lpthread
- *
- * Run as root:
- *   sudo ./arch_installer
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,9 +19,6 @@
 #include <dirent.h>
 #include <signal.h>
 
-/* ══════════════════════════════════════════════════════════════════
- *  Constants
- * ══════════════════════════════════════════════════════════════════ */
 #define VERSION   "V1.1.4"
 #define LOG_FILE  "/tmp/arch_install.log"
 #define TITLE     "Arch Linux Installer"
@@ -63,9 +29,6 @@
 #define MAX_LINES  2000
 #define KEEP_LINES 1000
 
-/* ══════════════════════════════════════════════════════════════════
- *  State
- * ══════════════════════════════════════════════════════════════════ */
 typedef struct {
     char lang[8];
     char locale[32];
@@ -112,12 +75,8 @@ static State st = {
     .flatpak    = 0,
 };
 
-/* L(en, es) — bilingual string selector */
 #define L(en, es) (strcmp(st.lang,"en")==0 ? (en) : (es))
 
-/* ══════════════════════════════════════════════════════════════════
- *  Lookup tables
- * ══════════════════════════════════════════════════════════════════ */
 
 typedef struct { const char *key; const char *val; } KV;
 
@@ -148,7 +107,6 @@ static const char *kv_get(const KV *table, const char *key) {
     return NULL;
 }
 
-/* Desktop package groups */
 typedef struct {
     const char *name;
     const char *groups[4];
@@ -205,9 +163,6 @@ static const char *get_desktop_dm(const char *name) {
     return NULL;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Logging
- * ══════════════════════════════════════════════════════════════════ */
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void write_log(const char *msg) {
@@ -231,11 +186,6 @@ static void write_log_fmt(const char *fmt, ...) {
     write_log(buf);
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  String utilities
- * ══════════════════════════════════════════════════════════════════ */
-
-/* Equivalent to Python shlex.quote — wraps in ' and escapes ' */
 static void shell_quote(const char *s, char *out, size_t sz) {
     size_t i = 0;
     if (i < sz-1) out[i++] = '\'';
@@ -259,7 +209,6 @@ static void trim_nl(char *s) {
     if (lead) memmove(s, s+lead, strlen(s)-lead+1);
 }
 
-/* Strip ANSI escape sequences (CSI + OSC) — Bug-fix #4 */
 static void strip_ansi(const char *src, char *dst, size_t dsz) {
     size_t i = 0;
     while (*src && i < dsz-1) {
@@ -300,9 +249,6 @@ static int validate_swap(const char *s) {
     return v >= 1 && v <= 128;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Dynamic argument list for exec-based dialog invocation
- * ══════════════════════════════════════════════════════════════════ */
 typedef struct { char **v; int n; int cap; } DA;
 
 static DA da_new(void) {
@@ -324,7 +270,6 @@ static void da_free(DA *da) {
     free(da->v); da->v=NULL; da->n=0;
 }
 
-/* Fork+exec dialog, redirect stderr to tmpfile, return rc + captured output */
 static int da_exec(DA *da, char *out, size_t outsz) {
     char tmp[64] = "/tmp/.dlgXXXXXX";
     int tfd = mkstemp(tmp);
@@ -364,9 +309,6 @@ static void da_hdr(DA *da, const char *title) {
     da_push(da,"--title");    da_push(da,tt);
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Dialog wrappers
- * ══════════════════════════════════════════════════════════════════ */
 
 static void msgbox(const char *title, const char *text) {
     DA da = da_new();
@@ -385,7 +327,6 @@ static int yesno_dlg(const char *title, const char *text) {
     return rc == 0;
 }
 
-/* Returns 1 if OK (rc==0) and fills out; returns 0 on Cancel */
 static int inputbox_dlg(const char *title, const char *text,
                          const char *init, char *out, size_t outsz) {
     DA da = da_new();
@@ -448,9 +389,6 @@ static void infobox_dlg(const char *title, const char *text) {
     da_exec(&da,NULL,0); da_free(&da);
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Command execution
- * ══════════════════════════════════════════════════════════════════ */
 typedef void (*LineCallback)(const char *line, void *ud);
 
 static int run_simple(const char *cmd, int ignore_error) {
@@ -484,9 +422,6 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     return rc;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  System detection
- * ══════════════════════════════════════════════════════════════════ */
 
 static int is_uefi(void) {
     struct stat st2;
@@ -496,10 +431,8 @@ static int is_uefi(void) {
 static int is_ssd(const char *disk_path) {
     const char *name = strrchr(disk_path,'/');
     name = name ? name+1 : disk_path;
-    /* strip partition suffix */
     char block[64]; strncpy(block,name,sizeof(block)-1); block[63]='\0';
     if (strstr(block,"nvme") || strstr(block,"mmcblk")) {
-        /* strip trailing pN */
         char *p = block+strlen(block)-1;
         while (p>block && isdigit((unsigned char)*p)) p--;
         if (*p=='p') *p='\0';
@@ -519,7 +452,6 @@ static void detect_gpu(char *out, size_t sz) {
     FILE *fp = popen("lspci 2>/dev/null | grep -iE 'vga|3d|display'","r");
     char buf[4096]={0};
     if (fp) { fread(buf,1,sizeof(buf)-1,fp); pclose(fp); }
-    /* lowercase */
     for (char *p=buf; *p; p++) *p=tolower((unsigned char)*p);
     int nv = strstr(buf,"nvidia")!=NULL;
     int am = (strstr(buf,"amd")!=NULL)||(strstr(buf,"radeon")!=NULL);
@@ -559,9 +491,6 @@ static int suggest_swap_gb(void) {
     return 8;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Disk utilities
- * ══════════════════════════════════════════════════════════════════ */
 typedef struct { char name[64]; long long size_gb; char model[128]; } DiskInfo;
 
 static int list_disks(DiskInfo *out, int max) {
@@ -582,7 +511,6 @@ static int list_disks(DiskInfo *out, int max) {
     return n;
 }
 
-/* Returns p1, p2, p3 in the provided buffers */
 static void partition_paths(const char *disk, char *p1, char *p2, char *p3, size_t sz) {
     const char *sep = (strstr(disk,"nvme")||strstr(disk,"mmcblk")) ? "p" : "";
     snprintf(p1,sz,"%s%s1",disk,sep);
@@ -598,9 +526,6 @@ static void settle_partitions(const char *disk) {
     sleep(1);
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Network
- * ══════════════════════════════════════════════════════════════════ */
 static int wifi_interfaces(char ifaces[][64], int max) {
     int n=0;
     FILE *fp = popen("ls /sys/class/net/","r");
@@ -625,7 +550,6 @@ static int check_connectivity(void) {
     return 0;
 }
 
-/* Returns: 1=connected, 0=failed, -1=cancelled */
 static int screen_wifi_connect(void) {
     char ifaces[4][64];
     int ni = wifi_interfaces(ifaces,4);
@@ -646,7 +570,6 @@ static int screen_wifi_connect(void) {
     snprintf(scan_cmd,sizeof(scan_cmd),"iwctl station '%s' scan 2>/dev/null",iface);
     system(scan_cmd);
 
-    /* Poll up to 12 seconds for networks */
     char ssids[16][128]; int nssids=0;
     time_t deadline = time(NULL)+12;
     while (time(NULL)<deadline && nssids==0) {
@@ -656,23 +579,18 @@ static int screen_wifi_connect(void) {
         FILE *fp = popen(get_cmd,"r");
         if (!fp) continue;
         char line[512];
-        /* skip first two header lines */
         int skip=2;
         while (fgets(line,sizeof(line),fp)) {
             if (skip>0) { skip--; continue; }
             char clean[512]; strip_ansi(line,clean,sizeof(clean));
             trim_nl(clean);
-            /* strip leading "> " or spaces */
             char *p = clean;
             while (*p==' '||*p=='>'||*p=='\t') p++;
             if (!*p) continue;
-            /* skip separator lines */
             if (*p=='-'||*p=='='||*p=='*') continue;
             if (strncasecmp(p,"Network",7)==0) continue;
-            /* first word is SSID */
             char ssid[128]={0}; sscanf(p,"%127s",ssid);
             if (!ssid[0]) continue;
-            /* dedup */
             int dup=0;
             for (int i=0;i<nssids;i++) if (!strcmp(ssids[i],ssid)){dup=1;break;}
             if (!dup && nssids<15) strncpy(ssids[nssids++],ssid,127);
@@ -817,9 +735,6 @@ static int ensure_network(void) {
     return 0;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Install Backend
- * ══════════════════════════════════════════════════════════════════ */
 typedef struct {
     void (*on_progress)(double pct, void *ud);
     void (*on_stage)(const char *msg, void *ud);
@@ -829,7 +744,6 @@ typedef struct {
     pthread_mutex_t lock;
 } IB;
 
-/* Compiled once at startup */
 static regex_t g_re_install;
 static regex_t g_re_download;
 static int      g_re_ready = 0;
@@ -852,7 +766,6 @@ static void ib_pct(IB *ib, double p) {
     ib->on_progress(cur, ib->ud);
 }
 
-/* Bug-fix #1: take base snapshot under lock before the loop */
 static void ib_gradual(IB *ib, double target, int steps, double delay_sec) {
     pthread_mutex_lock(&ib->lock);
     double base = ib->progress;
@@ -868,7 +781,6 @@ static void ib_stage(IB *ib, const char *msg) {
     ib->on_stage(msg, ib->ud);
 }
 
-/* Callback state for pacman progress */
 typedef struct {
     IB    *ib;
     double start, end;
@@ -877,7 +789,6 @@ typedef struct {
 
 static void pacman_cb(const char *line, void *ud) {
     PacmanCbS *ps = ud;
-    /* (current/total) — install phase */
     regmatch_t m[3];
     if (regexec(&g_re_install, line, 3, m, 0)==0) {
         ps->download_done = 1;
@@ -891,7 +802,6 @@ static void pacman_cb(const char *line, void *ud) {
         if (tot>0) ib_pct(ps->ib, half + ((double)cur/tot)*(ps->end-half));
         return;
     }
-    /* download speed pattern */
     if (!ps->download_done && regexec(&g_re_download,line,0,NULL,0)==0) {
         double cap = ps->start + (ps->end-ps->start)*0.45;
         pthread_mutex_lock(&ps->ib->lock);
@@ -921,7 +831,6 @@ static void ib_pacman_critical(IB *ib, const char *cmd,
     }
 }
 
-/* Run a command and raise on failure (calls on_done + pthread_exit) */
 static void ib_run(IB *ib, const char *cmd, const char *label) {
     int rc = run_stream(cmd, NULL, NULL, 0);
     if (rc!=0) {
@@ -934,7 +843,6 @@ static void ib_run(IB *ib, const char *cmd, const char *label) {
     }
 }
 
-/* arch-chroot wrappers — Bug-fix #6: no double-logging */
 static int ib_chroot(IB *ib, const char *cmd, int ignore_error) {
     char q[MAX_CMD], full[MAX_CMD];
     shell_quote(cmd,q,sizeof(q));
@@ -963,7 +871,6 @@ static void ib_chroot_passwd(IB *ib, const char *user, const char *pwd) {
     run_stream(cmd,NULL,NULL,1);
 }
 
-/* BTRFS setup — Bug-fix #2: explicit mkdir instead of brace expansion */
 static void ib_setup_btrfs(IB *ib, const char *p3, const char *disk) {
     char opts[256]; strcpy(opts,"noatime,compress=zstd,space_cache=v2");
     if (is_ssd(disk)) {
@@ -979,7 +886,6 @@ static void ib_setup_btrfs(IB *ib, const char *p3, const char *disk) {
     ib_run(ib,"btrfs subvolume create /mnt/@snapshots", "btrfs subvol @snapshots");
     ib_run(ib,"umount /mnt",                            "umount btrfs");
 
-    /* Bug-fix #2: three separate mkdir calls instead of brace expansion */
     snprintf(cmd,sizeof(cmd),"mount -o %s,subvol=@ %s /mnt",opts,p3);
     ib_run(ib,cmd,"mount @");
     run_simple("mkdir -p /mnt/home",      0);
@@ -1024,14 +930,12 @@ static void ib_install_systemd_boot(IB *ib, const char *root_dev) {
     char extra[64]={0};
     if (!strcmp(st.filesystem,"btrfs")) strcpy(extra,"rootflags=subvol=@ ");
 
-    /* loader.conf */
     run_simple("mkdir -p /mnt/boot/loader",0);
     FILE *f = fopen("/mnt/boot/loader/loader.conf","w");
     if (f) {
         fprintf(f,"default arch.conf\ntimeout 4\nconsole-mode max\neditor no\n");
         fclose(f);
     }
-    /* arch.conf */
     run_simple("mkdir -p /mnt/boot/loader/entries",0);
     f = fopen("/mnt/boot/loader/entries/arch.conf","w");
     if (f) {
@@ -1097,13 +1001,11 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
             "mkdir -p /boot/efi/EFI/BOOT && "
             "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI",1);
 
-        /* Copy conf to ESP root too */
         char src[512],dst[512];
         snprintf(src,sizeof(src),"/mnt/boot/limine.conf");
         snprintf(dst,sizeof(dst),"/mnt/boot/efi/limine.conf");
         run_simple("cp /mnt/boot/limine.conf /mnt/boot/efi/limine.conf",1);
 
-        /* efibootmgr entry */
         char p1[256]; char p2[256]; char p3[256];
         char disk_dev[256]; snprintf(disk_dev,sizeof(disk_dev),"/dev/%s",st.disk);
         partition_paths(disk_dev,p1,p2,p3,sizeof(p1));
@@ -1119,7 +1021,6 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
                  disk_dev, partn);
         run_stream(cmd,NULL,NULL,1);
 
-        /* pacman hook */
         const char *hook =
             "[Trigger]\nOperation = Install\nOperation = Upgrade\n"
             "Type = Package\nTarget = limine\n\n"
@@ -1252,10 +1153,8 @@ static void ib_install_flatpak(IB *ib) {
     write_log("Flatpak + Flathub configured.");
 }
 
-/* Bug-fix #3: configure_grub_cmdline guards against duplicate insertion */
 static void ib_configure_grub_cmdline(IB *ib) {
     if (strcmp(st.filesystem,"btrfs")) return;
-    /* Only add if not already present */
     ib_chroot(ib,
         "grep -q 'rootflags=subvol=@' /etc/default/grub || "
         "sed -i 's|^\\(GRUB_CMDLINE_LINUX_DEFAULT=\"[^\"]*\\)\"|\\1 rootflags=subvol=@\"|' "
@@ -1263,7 +1162,6 @@ static void ib_configure_grub_cmdline(IB *ib) {
         1);
 }
 
-/* ─── Main install thread ─── */
 
 typedef struct {
     IB *ib;
@@ -1287,14 +1185,12 @@ static void *ib_run_thread(void *arg) {
     const char *root_dev = p3;
     char cmd[MAX_CMD];
 
-    /* Fall back grub if systemd-boot requested on BIOS */
     if (!strcmp(bl,"systemd-boot") && !uefi) {
         write_log("systemd-boot requested but BIOS detected - falling back to GRUB");
         strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
         bl = st.bootloader;
     }
 
-    /* ── 1. Network ── */
     ib_stage(ib, L("Checking network...","Verificando red..."));
     if (!ensure_network()) {
         ib->on_done(0, L("No network connection. Connect and retry.",
@@ -1312,7 +1208,6 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,5);
 
-    /* ── 2. Wipe disk ── */
     ib_stage(ib, L("Wiping disk...","Borrando disco..."));
     ib_gradual(ib,7,20,0.04);
     snprintf(cmd,sizeof(cmd),"wipefs -a %s",disk); run_stream(cmd,NULL,NULL,1);
@@ -1320,7 +1215,6 @@ static void *ib_run_thread(void *arg) {
     settle_partitions(disk);
     ib_pct(ib,8);
 
-    /* ── 3. Partition ── */
     ib_stage(ib, L("Creating partitions...","Creando particiones..."));
     if (uefi) {
         snprintf(cmd,sizeof(cmd),"sgdisk -n1:0:+1G -t1:ef00 %s",disk);
@@ -1336,7 +1230,6 @@ static void *ib_run_thread(void *arg) {
     settle_partitions(disk);
     ib_pct(ib,12);
 
-    /* ── 4. Format ── */
     ib_stage(ib, L("Formatting partitions...","Formateando particiones..."));
     if (uefi) { snprintf(cmd,sizeof(cmd),"mkfs.fat -F32 %s",p1); ib_run(ib,cmd,"mkfs.fat"); }
     snprintf(cmd,sizeof(cmd),"mkswap %s",p2); ib_run(ib,cmd,"mkswap");
@@ -1352,7 +1245,6 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,16);
 
-    /* ── 5. Mount EFI ── */
     if (uefi) {
         ib_stage(ib, L("Mounting EFI...","Montando EFI..."));
         if (!strcmp(bl,"systemd-boot")) {
@@ -1367,13 +1259,11 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,18);
 
-    /* ── 6. CachyOS repo (live) ── */
     if (!strcmp(ker,"linux-cachyos")) {
         ib_stage(ib, L("Adding CachyOS repository...","Añadiendo repositorio CachyOS..."));
         ib_add_cachyos_repo(ib,0);
     }
 
-    /* ── 7. pacstrap ── */
     char ucode_pkg[64]="", extra_pkg[32]="", boot_pkgs[128]="";
     if (microcode[0]) snprintf(ucode_pkg,sizeof(ucode_pkg)," %s",microcode);
     if (!strcmp(fs,"btrfs")) strcpy(extra_pkg," btrfs-progs");
@@ -1399,14 +1289,12 @@ static void *ib_run_thread(void *arg) {
                    "Instalando sistema base - esto puede tardar..."));
     ib_pacman_critical(ib,cmd,18,52,"pacstrap");
 
-    /* ── 8. fstab ── */
     ib_stage(ib, L("Generating fstab...","Generando fstab..."));
     ib_run(ib,"genfstab -U /mnt >> /mnt/etc/fstab","genfstab");
     ib_pct(ib,53);
 
     if (!strcmp(ker,"linux-cachyos")) ib_add_cachyos_repo(ib,1);
 
-    /* ── 9. hostname ── */
     ib_stage(ib, L("Configuring hostname...","Configurando hostname..."));
     FILE *f = fopen("/mnt/etc/hostname","w");
     if (f) { fprintf(f,"%s\n",st.hostname); fclose(f); }
@@ -1419,7 +1307,6 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,55);
 
-    /* ── 10. Locale + timezone ── */
     ib_stage(ib, L("Configuring locale & timezone...","Configurando locale y zona horaria..."));
     ib_chroot(ib,"sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen",0);
     if (strcmp(st.locale,"en_US.UTF-8")) {
@@ -1437,17 +1324,14 @@ static void *ib_run_thread(void *arg) {
     ib_chroot(ib,"hwclock --systohc",0);
     ib_pct(ib,59);
 
-    /* ── 11. Keyboard ── */
     ib_stage(ib, L("Configuring keyboard layout...","Configurando distribucion de teclado..."));
     ib_configure_keyboard(ib,st.keymap);
     ib_pct(ib,61);
 
-    /* ── 12. initramfs ── */
     ib_stage(ib, L("Generating initramfs...","Generando initramfs..."));
     ib_chroot_c(ib,"mkinitcpio -P","mkinitcpio");
     ib_pct(ib,63);
 
-    /* ── 13. User ── */
     char stage_msg[128];
     snprintf(stage_msg,sizeof(stage_msg),
              L("Creating user '%s'...","Creando usuario '%s'..."),st.username);
@@ -1459,13 +1343,11 @@ static void *ib_run_thread(void *arg) {
         "%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers",0);
     ib_pct(ib,65);
 
-    /* ── 14. Passwords ── */
     ib_stage(ib, L("Setting passwords...","Estableciendo contrasenas..."));
     ib_chroot_passwd(ib,"root",st.root_pass);
     ib_chroot_passwd(ib,st.username,st.user_pass);
     ib_pct(ib,68);
 
-    /* ── 15. Services ── */
     ib_stage(ib, L("Enabling NetworkManager...","Habilitando NetworkManager..."));
     ib_chroot(ib,"systemctl enable NetworkManager",0);
     if (is_ssd(disk)) {
@@ -1474,11 +1356,9 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,71);
 
-    /* ── 16. GPU drivers ── */
     ib_install_gpu(ib,71,77);
     ib_pct(ib,77);
 
-    /* ── 17. Desktop ── */
     const char *desktop = st.desktop;
     if (strcmp(desktop,"None")) {
         snprintf(stage_msg,sizeof(stage_msg),
@@ -1516,7 +1396,6 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,94);
 
-    /* ── 18. Bootloader ── */
     if (!strcmp(bl,"systemd-boot")) {
         ib_stage(ib, L("Installing systemd-boot...","Instalando systemd-boot..."));
         ib_install_systemd_boot(ib,root_dev);
@@ -1530,7 +1409,6 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,97);
 
-    /* ── 19. Snapper ── */
     if (st.snapper && !strcmp(fs,"btrfs")) {
         ib_stage(ib, L("Setting up snapper (BTRFS snapshots)...",
                        "Configurando snapper (snapshots BTRFS)..."));
@@ -1552,7 +1430,6 @@ static void *ib_run_thread(void *arg) {
         }
     }
 
-    /* ── 20. yay ── */
     if (st.yay) {
         ib_stage(ib, L("Installing yay (AUR helper)...","Instalando yay (AUR helper)..."));
         ib_chroot(ib,
@@ -1567,7 +1444,6 @@ static void *ib_run_thread(void *arg) {
         ib_chroot(ib,"rm -f /etc/sudoers.d/99_nopasswd_tmp",0);
     }
 
-    /* ── 21. Flatpak ── */
     if (st.flatpak && strcmp(desktop,"None"))
         ib_install_flatpak(ib);
 
@@ -1577,14 +1453,10 @@ static void *ib_run_thread(void *arg) {
     return NULL;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Install Screen (TUI)
- * ══════════════════════════════════════════════════════════════════ */
 #define IS_MODE_PROGRESS 0
 #define IS_MODE_DEBUG    1
 
 typedef struct {
-    /* protected by lock */
     double  pct;
     char    stage[512];
     char  **lines;
@@ -1594,7 +1466,6 @@ typedef struct {
     int     prev_mode;
     char    keybuf[32];
     int     running;
-    /* terminal */
     struct termios old_tty;
     int            has_tty;
     pthread_mutex_t lock;
@@ -1616,11 +1487,9 @@ static IS *g_is = NULL;
 static void is_feed(IS *is, const char *line) {
     pthread_mutex_lock(&is->lock);
     if (is->nlines >= MAX_LINES) {
-        /* Compact: keep last KEEP_LINES */
         int keep = KEEP_LINES;
         memmove(is->lines, is->lines + (is->nlines - keep),
                 keep * sizeof(char*));
-        /* Free dropped lines */
         for (int i=keep; i<is->nlines; i++) { free(is->lines[i]); is->lines[i]=NULL; }
         is->nlines = keep;
     }
@@ -1661,11 +1530,9 @@ static void is_draw_progress(IS *is, double pct, const char *stage, int rows, in
     char pad[128]={0};
     for (int i=0;i<lft&&i<(int)sizeof(pad)-1;i++) pad[i]=' ';
 
-    /* clear lines above and below box */
     for (int r=1;r<top;r++) is_writef("\033[%d;1H\033[2K",r);
     for (int r=top+7;r<=rows;r++) is_writef("\033[%d;1H\033[2K",r);
 
-    /* title bar */
     char title[128];
     snprintf(title,sizeof(title)," %s  -  %s ",TITLE,VERSION);
     int tlen=(int)strlen(title);
@@ -1685,7 +1552,6 @@ static void is_draw_progress(IS *is, double pct, const char *stage, int rows, in
 
     is_writef("\033[%d;1H\033[2K",top+3);
 
-    /* progress bar */
     int bar_w = W-9; if(bar_w<4)bar_w=4;
     int filled = (int)(bar_w * pct / 100.0);
     int empty  = bar_w - filled;
@@ -1703,7 +1569,6 @@ static void is_draw_progress(IS *is, double pct, const char *stage, int rows, in
 
 static void is_draw_debug(IS *is, double pct, const char *stage,
                             char **lines, int nlines, int rows, int cols) {
-    /* Header */
     char hdr_l[512], trunc[512];
     is_trunc(stage, trunc, cols-28);
     snprintf(hdr_l,sizeof(hdr_l)," DEBUG  %.0f%%  %s",pct,trunc);
@@ -1751,7 +1616,6 @@ static void *is_render_loop(void *arg) {
         int mode          = is->mode;
         int mode_changed  = (mode != is->prev_mode);
         is->prev_mode     = mode;
-        /* copy line pointers snapshot */
         int nlines = is->nlines;
         char **lines_snap = NULL;
         if (mode == IS_MODE_DEBUG && nlines > 0) {
@@ -1762,7 +1626,7 @@ static void *is_render_loop(void *arg) {
 
         int rows,cols; is_get_term_size(&rows,&cols);
         if (mode_changed) is_write("\033[2J\033[H");
-        is_write("\033[?25l"); /* hide cursor */
+        is_write("\033[?25l");
 
         if (mode == IS_MODE_PROGRESS)
             is_draw_progress(is, pct, stage, rows, cols);
@@ -1775,7 +1639,7 @@ static void *is_render_loop(void *arg) {
             for (int i=0;i<nlines;i++) free(lines_snap[i]);
             free(lines_snap);
         }
-        usleep(80000); /* 80ms */
+        usleep(80000);
     }
     return NULL;
 }
@@ -1799,11 +1663,9 @@ static void *is_key_loop(void *arg) {
                 if (klen < sizeof(is->keybuf)-2)
                     is->keybuf[klen]=ch[0], is->keybuf[klen+1]='\0';
                 else {
-                    /* shift buffer */
                     memmove(is->keybuf, is->keybuf+1, klen-1);
                     is->keybuf[klen-1]=ch[0]; is->keybuf[klen]='\0';
                 }
-                /* Check for "debug" or "exit" */
                 char *kb = is->keybuf;
                 if (strstr(kb,"debug")) { is->mode=IS_MODE_DEBUG; kb[0]='\0'; }
                 else if (strstr(kb,"exit")) { is->mode=IS_MODE_PROGRESS; kb[0]='\0'; }
@@ -1859,12 +1721,10 @@ static void is_stop(IS *is) {
     free(is);
 }
 
-/* ── Tailer thread (Bug-fix #5: O_CREAT + seek to end) ── */
 typedef struct { IS *is; volatile int *stop; } TailerArg;
 
 static void *tailer_thread(void *arg) {
     TailerArg *ta = arg;
-    /* Open (or create) the log file, seek to end */
     int fd = open(LOG_FILE, O_RDONLY|O_CREAT, 0644);
     if (fd<0) return NULL;
     lseek(fd, 0, SEEK_END);
@@ -1886,7 +1746,6 @@ static void *tailer_thread(void *arg) {
     return NULL;
 }
 
-/* ── Glue struct for progress/stage callbacks ── */
 typedef struct {
     IS    *is;
     double pct;
@@ -1924,11 +1783,7 @@ static void on_done_cb(int ok, const char *reason, void *ud) {
     pthread_mutex_unlock(&iss->mu);
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  screen_install
- * ══════════════════════════════════════════════════════════════════ */
 static int screen_install(void) {
-    /* ensure log file exists */
     { FILE *f=fopen(LOG_FILE,"a"); if(f) fclose(f); }
 
     IS           *is  = is_create();
@@ -1990,10 +1845,6 @@ static int screen_install(void) {
     return 1;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Setup screens
- * ══════════════════════════════════════════════════════════════════ */
-
 static void screen_welcome(void) {
     char text[1024];
     snprintf(text,sizeof(text),
@@ -2018,7 +1869,6 @@ static void screen_language(void) {
         strncpy(st.lang,out,sizeof(st.lang)-1);
 }
 
-/* Returns 1 if quick mode selected */
 static int screen_mode(void) {
     MenuItem items[2];
     strncpy(items[0].tag,"quick",255);
@@ -2120,7 +1970,6 @@ static int screen_disk(void) {
         exit(1);
     }
 
-    /* Show lsblk overview */
     char lsblk[4096]={0};
     FILE *fp = popen("lsblk -f 2>/dev/null | head -40","r");
     if (fp) { fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
@@ -2155,12 +2004,10 @@ static int screen_disk(void) {
              sel);
     if (!yesno_dlg(L("Confirm Disk Erase","Confirmar borrado de disco"),confirm_msg)) return 0;
 
-    /* strip /dev/ */
     const char *dname = sel;
     if (!strncmp(dname,"/dev/",5)) dname+=5;
     strncpy(st.disk,dname,sizeof(st.disk)-1);
 
-    /* Swap size */
     char sug[8]; snprintf(sug,sizeof(sug),"%d",suggest_swap_gb());
     while(1) {
         char swap_hdr[512];
@@ -2311,7 +2158,6 @@ static int screen_locale(void) {
     if (!ok) return 0;
     strncpy(st.locale,out,sizeof(st.locale)-1);
 
-    /* Suggest keymap */
     const char *skm = kv_get(LOCALE_TO_KEYMAP,out);
     if (skm && strcmp(skm,st.keymap)) {
         char q[512];
@@ -2335,15 +2181,12 @@ static int screen_keymap(void) {
         "sk-qwerty","ro_win","dk","no","sv-latin1",
         "fi","nl","tr_q-latin5","ja106","kr106", NULL
     };
-    /* Get available keymaps */
     char avail[8192]={0};
     FILE *fp = popen("localectl list-keymaps 2>/dev/null || true","r");
     if (fp) { fread(avail,1,sizeof(avail)-1,fp); pclose(fp); }
 
-    /* Build items from wanted, filtered by available (or all wanted if empty) */
     MenuItem items[32]; int ni=0;
     for (int i=0; wanted[i] && ni<32; i++) {
-        /* if avail is populated, check membership */
         if (avail[0]) {
             char pat[64]; snprintf(pat,sizeof(pat),"\n%s\n",wanted[i]);
             char avail2[8200]; snprintf(avail2,sizeof(avail2),"\n%s\n",avail);
@@ -2379,7 +2222,6 @@ static int screen_timezone(void) {
     FILE *fp = popen("timedatectl list-timezones 2>/dev/null || true","r");
     if (fp) { fread(zones_raw,1,sizeof(zones_raw)-1,fp); pclose(fp); }
 
-    /* Split into lines */
     char **zones=NULL; int nz=0, zc=0;
     if (zones_raw[0]) {
         char *p=zones_raw;
@@ -2402,7 +2244,6 @@ static int screen_timezone(void) {
         }
     }
 
-    /* Collect unique regions */
     char *regions[256]; int nr=0;
     for(int i=0;i<nz;i++) {
         char *sl=strchr(zones[i],'/');
@@ -2414,7 +2255,6 @@ static int screen_timezone(void) {
         if(!dup&&nr<255) regions[nr++]=strdup(reg);
     }
 
-    /* Prepend UTC */
     MenuItem *reg_items = malloc((nr+1)*sizeof(MenuItem));
     strncpy(reg_items[0].tag,"UTC",255); strncpy(reg_items[0].desc,"UTC",511);
     for(int i=0;i<nr;i++) {
@@ -2430,7 +2270,6 @@ static int screen_timezone(void) {
     if(!radiolist_dlg(L("Timezone - Region","Zona horaria - Region"),
                       L("Select your region:","Selecciona tu region:"),
                       reg_items,nr+1,cur_reg,sel_reg,sizeof(sel_reg))) {
-        /* cleanup */
         for(int i=0;i<nr;i++) free(regions[i]);
         free(reg_items);
         for(int i=0;i<nz;i++) free(zones[i]); free(zones);
@@ -2444,7 +2283,6 @@ static int screen_timezone(void) {
         return 1;
     }
 
-    /* Cities in selected region */
     MenuItem *city_items=NULL; int nc=0,cc=0;
     for(int i=0;i<nz;i++) {
         char *sl=strchr(zones[i],'/'); if(!sl) continue;
@@ -2632,7 +2470,6 @@ static int screen_review(void) {
     ROW("snapper",        st.snapper?L("yes","si"):"no");
 #undef ROW
 
-    /* Check for missing fields */
     char missing[256]={0};
     if(!st.hostname[0]) strncat(missing,"hostname, ",sizeof(missing)-strlen(missing)-1);
     if(!st.username[0]) strncat(missing,"username, ",sizeof(missing)-strlen(missing)-1);
@@ -2674,9 +2511,6 @@ static void screen_finish(void) {
     exit(0);
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  Main wizard loop
- * ══════════════════════════════════════════════════════════════════ */
 typedef struct {
     const char *name;
     int        (*fn)(void);
