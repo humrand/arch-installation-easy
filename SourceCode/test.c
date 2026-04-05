@@ -978,19 +978,28 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
     char extra[64]={0};
     if (!strcmp(st.filesystem,"btrfs")) strcpy(extra,"rootflags=subvol=@ ");
 
+    char btrfs_prefix[4] = "";
+    if (!strcmp(st.filesystem,"btrfs")) strcpy(btrfs_prefix,"/@");
+
     char kpath[512], ipath[512], ucode_line[512]={0};
     if (partuuid[0]) {
-        snprintf(kpath,sizeof(kpath),"guid(%s):/boot/vmlinuz-%s",partuuid,st.kernel);
-        snprintf(ipath,sizeof(ipath),"guid(%s):/boot/initramfs-%s.img",partuuid,st.kernel);
+        snprintf(kpath,sizeof(kpath),"guid(%s):%s/boot/vmlinuz-%s",
+                 partuuid,btrfs_prefix,st.kernel);
+        snprintf(ipath,sizeof(ipath),"guid(%s):%s/boot/initramfs-%s.img",
+                 partuuid,btrfs_prefix,st.kernel);
         if (microcode[0])
             snprintf(ucode_line,sizeof(ucode_line),
-                     "    module_path: guid(%s):/boot/%s.img\n",partuuid,microcode);
+                     "    module_path: guid(%s):%s/boot/%s.img\n",
+                     partuuid,btrfs_prefix,microcode);
     } else {
-        snprintf(kpath,sizeof(kpath),"boot():/boot/vmlinuz-%s",st.kernel);
-        snprintf(ipath,sizeof(ipath),"boot():/boot/initramfs-%s.img",st.kernel);
+        snprintf(kpath,sizeof(kpath),"boot():%s/boot/vmlinuz-%s",
+                 btrfs_prefix,st.kernel);
+        snprintf(ipath,sizeof(ipath),"boot():%s/boot/initramfs-%s.img",
+                 btrfs_prefix,st.kernel);
         if (microcode[0])
             snprintf(ucode_line,sizeof(ucode_line),
-                     "    module_path: boot():/boot/%s.img\n",microcode);
+                     "    module_path: boot():%s/boot/%s.img\n",
+                     btrfs_prefix,microcode);
     }
 
     run_simple("mkdir -p /mnt/boot/limine",0);
