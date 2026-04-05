@@ -19,7 +19,7 @@
 #include <dirent.h>
 #include <signal.h>
 
-#define VERSION   "V1.1.4"
+#define VERSION   "V1.2.0"
 #define LOG_FILE  "/tmp/arch_install.log"
 #define TITLE     "Arch Linux Installer"
 
@@ -38,41 +38,55 @@ typedef struct {
     char user_pass[256];
     char swap[8];
     char disk[64];
-    char desktop[32];
+    char desktop[32];         /* primary desktop (for DM selection)        */
+    char desktop_list[512];   /* NEW: all selected desktops, space-sep     */
     char gpu[32];
     char keymap[32];
     char timezone[128];
     char filesystem[8];
-    char kernel[32];
+    char kernel[32];          /* primary kernel (for bootloader config)    */
+    char kernel_list[512];    /* NEW: all selected kernels, space-sep      */
     char bootloader[16];
+    char extra_pkgs[2048];    /* NEW: extra packages to install            */
     int  mirrors;
     int  quick;
     int  yay;
     int  snapper;
     int  flatpak;
+    int  dualboot;            /* NEW: 0=full disk, 1=use existing part     */
+    char db_root[128];        /* NEW: dual-boot root partition path        */
+    char db_efi[128];         /* NEW: dual-boot EFI partition (not erased) */
+    char db_swap[128];        /* NEW: dual-boot swap partition (or "")     */
 } State;
 
 static State st = {
-    .lang       = "en",
-    .locale     = "en_US.UTF-8",
-    .hostname   = "",
-    .username   = "",
-    .root_pass  = "",
-    .user_pass  = "",
-    .swap       = "8",
-    .disk       = "",
-    .desktop    = "None",
-    .gpu        = "None",
-    .keymap     = "us",
-    .timezone   = "UTC",
-    .filesystem = "ext4",
-    .kernel     = "linux",
-    .bootloader = "grub",
-    .mirrors    = 1,
-    .quick      = 0,
-    .yay        = 0,
-    .snapper    = 0,
-    .flatpak    = 0,
+    .lang         = "en",
+    .locale       = "en_US.UTF-8",
+    .hostname     = "",
+    .username     = "",
+    .root_pass    = "",
+    .user_pass    = "",
+    .swap         = "8",
+    .disk         = "",
+    .desktop      = "None",
+    .desktop_list = "None",
+    .gpu          = "None",
+    .keymap       = "us",
+    .timezone     = "UTC",
+    .filesystem   = "ext4",
+    .kernel       = "linux",
+    .kernel_list  = "linux",
+    .bootloader   = "grub",
+    .extra_pkgs   = "",
+    .mirrors      = 1,
+    .quick        = 0,
+    .yay          = 0,
+    .snapper      = 0,
+    .flatpak      = 0,
+    .dualboot     = 0,
+    .db_root      = "",
+    .db_efi       = "",
+    .db_swap      = "",
 };
 
 #define L(en, es) (strcmp(st.lang,"en")==0 ? (en) : (es))
@@ -218,7 +232,7 @@ static void strip_ansi(const char *src, char *dst, size_t dsz) {
                 src++;
                 while (*src && !isalpha((unsigned char)*src)) src++;
                 if (*src) src++;
-            } else if (*src == ']') {  /* OSC: ends at BEL or ESC \ */
+            } else if (*src == ']') {
                 while (*src && *src != '\x07') {
                     if (*src == '\x1b' && *(src+1) == '\\') { src += 2; goto osc_done; }
                     src++;
@@ -233,17 +247,10 @@ static void strip_ansi(const char *src, char *dst, size_t dsz) {
     dst[i] = '\0';
 }
 
-/*
- * BUG 5 FIX: validate_name previously accepted names starting with a digit
- * or hyphen, which violates Linux username/hostname conventions.
- * The first character must now be a letter or underscore.
- */
 static int validate_name(const char *s) {
     if (!s) return 0;
     size_t len = strlen(s);
     if (len == 0 || len > 32) return 0;
-    /* First char must be letter or underscore (Linux convention).
-       Digits and hyphens as leading character are rejected. */
     if (!isalpha((unsigned char)s[0]) && s[0] != '_') return 0;
     for (const char *p = s + 1; *p; p++)
         if (!isalnum((unsigned char)*p) && *p != '_' && *p != '-') return 0;
@@ -389,6 +396,56 @@ static int radiolist_dlg(const char *title, const char *text,
     return rc == 0;
 }
 
+/* ---------------------------------------------------------------
+ * checklist_dlg  – multi-select dialog (Space toggles items).
+ * Uses --separate-output so each selected tag is on its own line
+ * without quotes, making parsing trivial.
+ *
+ * defaults[] is an array of tag strings that start pre-selected.
+ * Selected results are returned in out[0..outsz-1] (each 256 chars).
+ * Returns the number of selected items (0 is valid), or -1 on Cancel.
+ * --------------------------------------------------------------- */
+static int checklist_dlg(const char *title, const char *text,
+                          MenuItem *items, int n,
+                          const char **defaults, int ndef,
+                          char out[][256], int maxout) {
+    DA da = da_new();
+    da_hdr(&da, title);
+    da_push(&da, "--separate-output");
+    da_push(&da, "--checklist"); da_push(&da, text);
+    char h[8]; snprintf(h, sizeof(h), "%d", n>28 ? 40 : n+12);
+    char ns[8]; snprintf(ns, sizeof(ns), "%d", n);
+    da_push(&da, h); da_push(&da, "76"); da_push(&da, ns);
+    for (int i = 0; i < n; i++) {
+        da_push(&da, items[i].tag);
+        da_push(&da, items[i].desc);
+        int on = 0;
+        for (int j = 0; j < ndef; j++)
+            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0) { on=1; break; }
+        da_push(&da, on ? "on" : "off");
+    }
+    char raw[4096] = {0};
+    int rc = da_exec(&da, raw, sizeof(raw));
+    da_free(&da);
+    if (rc != 0) return -1;   /* user pressed Cancel */
+
+    /* Parse newline-separated selected tags */
+    int count = 0;
+    char *p = raw;
+    while (*p && count < maxout) {
+        char *nl = strchr(p, '\n');
+        int len = nl ? (int)(nl - p) : (int)strlen(p);
+        if (len > 0 && len < 255) {
+            strncpy(out[count], p, len);
+            out[count][len] = '\0';
+            count++;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return count;
+}
+
 static void infobox_dlg(const char *title, const char *text) {
     DA da = da_new();
     da_hdr(&da,title);
@@ -513,6 +570,44 @@ static int list_disks(DiskInfo *out, int max) {
         strncpy(out[n].name,name,sizeof(out[n].name)-1);
         out[n].size_gb = sz/(1024LL*1024*1024);
         strncpy(out[n].model,model[0]?model:"Unknown",sizeof(out[n].model)-1);
+        n++;
+    }
+    pclose(fp);
+    return n;
+}
+
+/* ---------------------------------------------------------------
+ * Partition info for dual-boot partition selection.
+ * Uses lsblk --pairs output for reliable parsing.
+ * --------------------------------------------------------------- */
+typedef struct {
+    char path[128];
+    char fstype[32];
+    char label[64];
+    long long size_mb;
+} PartEntry;
+
+static int list_all_partitions(PartEntry *out, int max) {
+    FILE *fp = popen(
+        "lsblk -b -p -n -o PATH,SIZE,FSTYPE,LABEL,TYPE --pairs 2>/dev/null", "r");
+    if (!fp) return 0;
+    int n = 0;
+    char line[512];
+    while (n < max && fgets(line, sizeof(line), fp)) {
+        char path[128]={0}, fstype[64]={0}, label[64]={0}, type[16]={0};
+        long long sz = 0;
+        char *p;
+        if ((p = strstr(line, "PATH=\"")))   sscanf(p+6,  "%127[^\"]", path);
+        if ((p = strstr(line, "SIZE=\"")))   sscanf(p+6,  "%lld",      &sz);
+        if ((p = strstr(line, "FSTYPE=\""))) sscanf(p+8,  "%63[^\"]",  fstype);
+        if ((p = strstr(line, "LABEL=\"")))  sscanf(p+7,  "%63[^\"]",  label);
+        if ((p = strstr(line, "TYPE=\"")))   sscanf(p+6,  "%15[^\"]",  type);
+        if (strcmp(type, "part") != 0) continue;
+        if (!path[0]) continue;
+        strncpy(out[n].path,   path,                     sizeof(out[n].path)-1);
+        out[n].size_mb = sz / (1024LL * 1024);
+        strncpy(out[n].fstype, fstype[0] ? fstype : "?", sizeof(out[n].fstype)-1);
+        strncpy(out[n].label,  label,                    sizeof(out[n].label)-1);
         n++;
     }
     pclose(fp);
@@ -851,12 +946,8 @@ static void ib_run(IB *ib, const char *cmd, const char *label) {
     }
 }
 
-/*
- * BUG 3 FIX: 'ib' parameter was unused – added (void)ib to silence
- * -Wunused-parameter warning cleanly.
- */
 static int ib_chroot(IB *ib, const char *cmd, int ignore_error) {
-    (void)ib; /* intentionally unused – kept for API consistency */
+    (void)ib;
     char q[MAX_CMD], full[MAX_CMD];
     shell_quote(cmd,q,sizeof(q));
     snprintf(full,sizeof(full),"arch-chroot /mnt /bin/bash -c %s",q);
@@ -912,6 +1003,83 @@ static void ib_setup_btrfs(IB *ib, const char *p3, const char *disk) {
     ib_run(ib,cmd,"mount @snapshots");
 }
 
+/* ---------------------------------------------------------------
+ * XFS  - straightforward: mkfs.xfs + mount
+ * --------------------------------------------------------------- */
+static void ib_setup_xfs(IB *ib, const char *part) {
+    char cmd[MAX_CMD];
+    snprintf(cmd, sizeof(cmd), "mkfs.xfs -f %s", part);
+    ib_run(ib, cmd, "mkfs.xfs");
+    snprintf(cmd, sizeof(cmd), "mount %s /mnt", part);
+    ib_run(ib, cmd, "mount xfs root");
+}
+
+/* ---------------------------------------------------------------
+ * ZFS  - installs archzfs repo, creates pool + datasets, exports
+ * and reimports at /mnt.  Only supports linux kernel.
+ * Forces GRUB as bootloader (most compatible with ZFS).
+ * --------------------------------------------------------------- */
+static void ib_add_archzfs_repo(int in_chroot) {
+    const char *block =
+        "\n[archzfs]\n"
+        "SigLevel = Optional TrustAll\n"
+        "Server = https://archzfs.com/$repo/$arch\n";
+    const char *conf = in_chroot ? "/mnt/etc/pacman.conf" : "/etc/pacman.conf";
+    char q[MAX_CMD], cmd[MAX_CMD];
+    shell_quote(block, q, sizeof(q));
+    snprintf(cmd, sizeof(cmd),
+             "grep -q '\\[archzfs\\]' %s || printf %%s %s >> %s",
+             conf, q, conf);
+    run_stream(cmd, NULL, NULL, 1);
+    if (!in_chroot) {
+        run_stream("pacman -Sy --noconfirm", NULL, NULL, 1);
+    }
+    write_log_fmt("archzfs repo added to %s", conf);
+}
+
+static void ib_setup_zfs(IB *ib, const char *part) {
+    char cmd[MAX_CMD];
+
+    ib_add_archzfs_repo(0);
+    run_stream("pacman -S --noconfirm zfs-utils", NULL, NULL, 1);
+
+    /* Wipe any old ZFS labels on the partition */
+    snprintf(cmd, sizeof(cmd), "zpool labelclear -f %s 2>/dev/null || true", part);
+    run_stream(cmd, NULL, NULL, 1);
+
+    /* Create pool with recommended options */
+    snprintf(cmd, sizeof(cmd),
+        "zpool create -f "
+        "-o ashift=12 "
+        "-O acltype=posixacl "
+        "-O xattr=sa "
+        "-O dnodesize=auto "
+        "-O compression=lz4 "
+        "-O normalization=formD "
+        "-O relatime=on "
+        "-O canmount=off "
+        "-O mountpoint=none "
+        "zroot %s", part);
+    ib_run(ib, cmd, "zpool create");
+
+    /* Datasets */
+    ib_run(ib, "zfs create -o canmount=off -o mountpoint=none zroot/data", "zfs create data");
+    ib_run(ib, "zfs create -o mountpoint=/ zroot/data/root",               "zfs create root");
+    ib_run(ib, "zfs create -o mountpoint=/home zroot/data/home",           "zfs create home");
+    ib_run(ib, "zfs create -o canmount=off -o mountpoint=/var zroot/data/var", "zfs create var");
+    ib_run(ib, "zfs create -o mountpoint=none zroot/data/var/lib",         "zfs create var/lib");
+    ib_run(ib, "zfs create -o mountpoint=none zroot/data/var/log",         "zfs create var/log");
+
+    /* Export and reimport at /mnt */
+    ib_run(ib, "zpool export zroot", "zpool export");
+    ib_run(ib, "zpool import -d /dev -R /mnt zroot", "zpool import");
+    ib_run(ib, "zfs mount zroot/data/root", "zfs mount root");
+    run_stream("zfs mount -a", NULL, NULL, 1);
+    run_simple("mkdir -p /mnt/home /mnt/var/log /mnt/var/lib", 0);
+
+    write_log("ZFS pool 'zroot' created and mounted at /mnt");
+}
+
 static void ib_install_grub(IB *ib, const char *disk) {
     if (is_uefi()) {
         ib_chroot_c(ib,
@@ -950,14 +1118,30 @@ static void ib_install_systemd_boot(IB *ib, const char *root_dev) {
         fclose(f);
     }
     run_simple("mkdir -p /mnt/boot/loader/entries",0);
-    f = fopen("/mnt/boot/loader/entries/arch.conf","w");
-    if (f) {
-        fprintf(f,"title   Arch Linux\n");
-        fprintf(f,"linux   /vmlinuz-%s\n",st.kernel);
-        if (microcode[0]) fprintf(f,"initrd  /%s.img\n",microcode);
-        fprintf(f,"initrd  /initramfs-%s.img\n",st.kernel);
-        fprintf(f,"options %s rw quiet %s\n",root_opt,extra);
-        fclose(f);
+
+    /* Write one entry per installed kernel */
+    char klist[512]; strncpy(klist, st.kernel_list, sizeof(klist)-1);
+    char *tok = strtok(klist, " ");
+    int kid = 0;
+    while (tok) {
+        char fname[64];
+        snprintf(fname, sizeof(fname), "/mnt/boot/loader/entries/%s",
+                 kid == 0 ? "arch.conf" : tok);
+        if (kid > 0) {
+            char tmp[80]; snprintf(tmp,sizeof(tmp),"/mnt/boot/loader/entries/arch-%s.conf",tok);
+            strncpy(fname, tmp, sizeof(fname)-1);
+        }
+        f = fopen(fname, "w");
+        if (f) {
+            fprintf(f,"title   Arch Linux (%s)\n", tok);
+            fprintf(f,"linux   /vmlinuz-%s\n", tok);
+            if (microcode[0]) fprintf(f,"initrd  /%s.img\n", microcode);
+            fprintf(f,"initrd  /initramfs-%s.img\n", tok);
+            fprintf(f,"options %s rw quiet %s\n", root_opt, extra);
+            fclose(f);
+        }
+        tok = strtok(NULL, " ");
+        kid++;
     }
     write_log("systemd-boot installed and configured.");
 }
@@ -981,36 +1165,39 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
     char btrfs_prefix[4] = "";
     if (!strcmp(st.filesystem,"btrfs")) strcpy(btrfs_prefix,"/@");
 
-    char kpath[512], ipath[512], ucode_line[512]={0};
-    if (partuuid[0]) {
-        snprintf(kpath,sizeof(kpath),"guid(%s):%s/boot/vmlinuz-%s",
-                 partuuid,btrfs_prefix,st.kernel);
-        snprintf(ipath,sizeof(ipath),"guid(%s):%s/boot/initramfs-%s.img",
-                 partuuid,btrfs_prefix,st.kernel);
-        if (microcode[0])
-            snprintf(ucode_line,sizeof(ucode_line),
-                     "    module_path: guid(%s):%s/boot/%s.img\n",
-                     partuuid,btrfs_prefix,microcode);
-    } else {
-        snprintf(kpath,sizeof(kpath),"boot():%s/boot/vmlinuz-%s",
-                 btrfs_prefix,st.kernel);
-        snprintf(ipath,sizeof(ipath),"boot():%s/boot/initramfs-%s.img",
-                 btrfs_prefix,st.kernel);
-        if (microcode[0])
-            snprintf(ucode_line,sizeof(ucode_line),
-                     "    module_path: boot():%s/boot/%s.img\n",
-                     btrfs_prefix,microcode);
-    }
-
     run_simple("mkdir -p /mnt/boot/limine",0);
-    fp = fopen("/mnt/boot/limine.conf","w");
-    if (fp) {
-        fprintf(fp,"timeout: 5\n\n/Arch Linux\n    protocol: linux\n");
-        fprintf(fp,"    path: %s\n",kpath);
-        fprintf(fp,"    cmdline: %s rw quiet %s\n",root_opt,extra);
-        if (ucode_line[0]) fputs(ucode_line,fp);
-        fprintf(fp,"    module_path: %s\n",ipath);
-        fclose(fp);
+    FILE *f = fopen("/mnt/boot/limine.conf","w");
+    if (f) {
+        fprintf(f,"timeout: 5\n\n");
+        /* One entry per kernel */
+        char klist[512]; strncpy(klist, st.kernel_list, sizeof(klist)-1);
+        char *tok = strtok(klist, " ");
+        while (tok) {
+            char kpath[512], ipath[512], ucode_line[512]={0};
+            if (partuuid[0]) {
+                snprintf(kpath,sizeof(kpath),"guid(%s):%s/boot/vmlinuz-%s",
+                         partuuid,btrfs_prefix,tok);
+                snprintf(ipath,sizeof(ipath),"guid(%s):%s/boot/initramfs-%s.img",
+                         partuuid,btrfs_prefix,tok);
+                if (microcode[0])
+                    snprintf(ucode_line,sizeof(ucode_line),
+                             "    module_path: guid(%s):%s/boot/%s.img\n",
+                             partuuid,btrfs_prefix,microcode);
+            } else {
+                snprintf(kpath,sizeof(kpath),"boot():%s/boot/vmlinuz-%s",btrfs_prefix,tok);
+                snprintf(ipath,sizeof(ipath),"boot():%s/boot/initramfs-%s.img",btrfs_prefix,tok);
+                if (microcode[0])
+                    snprintf(ucode_line,sizeof(ucode_line),
+                             "    module_path: boot():%s/boot/%s.img\n",btrfs_prefix,microcode);
+            }
+            fprintf(f,"/Arch Linux (%s)\n    protocol: linux\n",tok);
+            fprintf(f,"    path: %s\n", kpath);
+            fprintf(f,"    cmdline: %s rw quiet %s\n", root_opt, extra);
+            if (ucode_line[0]) fputs(ucode_line, f);
+            fprintf(f,"    module_path: %s\n\n", ipath);
+            tok = strtok(NULL, " ");
+        }
+        fclose(f);
     }
     write_log("limine.conf written to /mnt/boot/limine.conf");
 
@@ -1023,11 +1210,6 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
             "mkdir -p /boot/efi/EFI/BOOT && "
             "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI",1);
 
-        /*
-         * BUG 2 FIX: 'src' and 'dst' char arrays were declared, filled with
-         * snprintf, and then never referenced – the copy used hardcoded string
-         * literals instead.  Removed the dead variables entirely.
-         */
         run_simple("cp /mnt/boot/limine.conf /mnt/boot/efi/limine.conf",1);
 
         char p1[256]; char p2[256]; char p3[256];
@@ -1197,17 +1379,48 @@ static void *ib_run_thread(void *arg) {
 
     compile_regexes();
 
-    char disk[256]; snprintf(disk,sizeof(disk),"/dev/%s",st.disk);
+    /* ---- resolve primary kernel (first token of kernel_list) ---- */
+    char pkernel[64]; strncpy(pkernel, st.kernel_list, sizeof(pkernel)-1);
+    { char *sp = strchr(pkernel,' '); if(sp) *sp='\0'; }
+    strncpy(st.kernel, pkernel, sizeof(st.kernel)-1);
+
+    /* ---- resolve primary desktop ---- */
+    char pdesktop[64]; strncpy(pdesktop, st.desktop_list, sizeof(pdesktop)-1);
+    { char *sp = strchr(pdesktop,' '); if(sp) *sp='\0'; }
+    strncpy(st.desktop, pdesktop, sizeof(st.desktop)-1);
+
+    /* ---- device paths ---- */
+    char disk[256];
+    if (st.dualboot) {
+        /* For dual boot the "disk" for the bootloader is the parent device */
+        strncpy(disk, st.db_root, sizeof(disk)-1);
+        /* strip trailing digit(s) / partition suffix to get parent disk */
+        char *end = disk + strlen(disk) - 1;
+        if (strstr(disk,"nvme") || strstr(disk,"mmcblk")) {
+            while (end > disk && isdigit((unsigned char)*end)) end--;
+            if (*end == 'p') *end = '\0';
+        } else {
+            while (end > disk && isdigit((unsigned char)*end)) *end-- = '\0';
+        }
+    } else {
+        snprintf(disk, sizeof(disk), "/dev/%s", st.disk);
+    }
+
     char p1[256],p2[256],p3[256];
-    partition_paths(disk,p1,p2,p3,sizeof(p1));
+    if (!st.dualboot) partition_paths(disk,p1,p2,p3,sizeof(p1));
 
     char microcode[32]; detect_cpu(microcode,sizeof(microcode));
     int  uefi       = is_uefi();
     const char *bl  = st.bootloader;
     const char *fs  = st.filesystem;
-    const char *ker = st.kernel;
-    const char *root_dev = p3;
-    char cmd[MAX_CMD];
+    const char *ker = st.kernel;         /* primary kernel */
+    const char *root_dev = st.dualboot ? st.db_root : p3;
+
+    /* ZFS forces GRUB */
+    if (!strcmp(fs,"zfs")) {
+        strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
+        bl = st.bootloader;
+    }
 
     if (!strcmp(bl,"systemd-boot") && !uefi) {
         write_log("systemd-boot requested but BIOS detected - falling back to GRUB");
@@ -1232,67 +1445,128 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,5);
 
-    ib_stage(ib, L("Wiping disk...","Borrando disco..."));
-    ib_gradual(ib,7,20,0.04);
-    snprintf(cmd,sizeof(cmd),"wipefs -a %s",disk); run_stream(cmd,NULL,NULL,1);
-    snprintf(cmd,sizeof(cmd),"sgdisk -Z %s",disk); ib_run(ib,cmd,"sgdisk -Z");
-    settle_partitions(disk);
-    ib_pct(ib,8);
+    /* ================================================================
+     * DISK SETUP  –  full install vs dual boot
+     * ============================================================== */
+    if (!st.dualboot) {
+        /* ---- Full disk install (original behaviour) ---- */
+        ib_stage(ib, L("Wiping disk...","Borrando disco..."));
+        ib_gradual(ib,7,20,0.04);
+        char cmd[MAX_CMD];
+        snprintf(cmd,sizeof(cmd),"wipefs -a %s",disk); run_stream(cmd,NULL,NULL,1);
+        snprintf(cmd,sizeof(cmd),"sgdisk -Z %s",disk); ib_run(ib,cmd,"sgdisk -Z");
+        settle_partitions(disk);
+        ib_pct(ib,8);
 
-    ib_stage(ib, L("Creating partitions...","Creando particiones..."));
-    if (uefi) {
-        snprintf(cmd,sizeof(cmd),"sgdisk -n1:0:+1G -t1:ef00 %s",disk);
-        ib_run(ib,cmd,"sgdisk EFI");
-    } else {
-        snprintf(cmd,sizeof(cmd),"sgdisk -n1:0:+1M -t1:ef02 %s",disk);
-        ib_run(ib,cmd,"sgdisk BIOS boot");
-    }
-    snprintf(cmd,sizeof(cmd),"sgdisk -n2:0:+%sG -t2:8200 %s",st.swap,disk);
-    ib_run(ib,cmd,"sgdisk swap");
-    snprintf(cmd,sizeof(cmd),"sgdisk -n3:0:0 -t3:8300 %s",disk);
-    ib_run(ib,cmd,"sgdisk root");
-    settle_partitions(disk);
-    ib_pct(ib,12);
-
-    ib_stage(ib, L("Formatting partitions...","Formateando particiones..."));
-    if (uefi) { snprintf(cmd,sizeof(cmd),"mkfs.fat -F32 %s",p1); ib_run(ib,cmd,"mkfs.fat"); }
-    snprintf(cmd,sizeof(cmd),"mkswap %s",p2); ib_run(ib,cmd,"mkswap");
-    snprintf(cmd,sizeof(cmd),"swapon %s",p2); run_stream(cmd,NULL,NULL,1);
-
-    if (!strcmp(fs,"btrfs")) {
-        ib_setup_btrfs(ib,root_dev,disk);
-    } else {
-        snprintf(cmd,sizeof(cmd),"mkfs.ext4 -F %s",root_dev);
-        ib_run(ib,cmd,"mkfs.ext4");
-        snprintf(cmd,sizeof(cmd),"mount %s /mnt",root_dev);
-        ib_run(ib,cmd,"mount root");
-    }
-    ib_pct(ib,16);
-
-    if (uefi) {
-        ib_stage(ib, L("Mounting EFI...","Montando EFI..."));
-        if (!strcmp(bl,"systemd-boot")) {
-            ib_run(ib,"mkdir -p /mnt/boot","mkdir /mnt/boot");
-            snprintf(cmd,sizeof(cmd),"mount %s /mnt/boot",p1);
-            ib_run(ib,cmd,"mount ESP /mnt/boot");
+        ib_stage(ib, L("Creating partitions...","Creando particiones..."));
+        if (uefi) {
+            snprintf(cmd,sizeof(cmd),"sgdisk -n1:0:+1G -t1:ef00 %s",disk);
+            ib_run(ib,cmd,"sgdisk EFI");
         } else {
-            ib_run(ib,"mkdir -p /mnt/boot/efi","mkdir /mnt/boot/efi");
-            snprintf(cmd,sizeof(cmd),"mount %s /mnt/boot/efi",p1);
-            ib_run(ib,cmd,"mount ESP /mnt/boot/efi");
+            snprintf(cmd,sizeof(cmd),"sgdisk -n1:0:+1M -t1:ef02 %s",disk);
+            ib_run(ib,cmd,"sgdisk BIOS boot");
+        }
+        snprintf(cmd,sizeof(cmd),"sgdisk -n2:0:+%sG -t2:8200 %s",st.swap,disk);
+        ib_run(ib,cmd,"sgdisk swap");
+        snprintf(cmd,sizeof(cmd),"sgdisk -n3:0:0 -t3:8300 %s",disk);
+        ib_run(ib,cmd,"sgdisk root");
+        settle_partitions(disk);
+        ib_pct(ib,12);
+
+        ib_stage(ib, L("Formatting partitions...","Formateando particiones..."));
+        if (uefi) { snprintf(cmd,sizeof(cmd),"mkfs.fat -F32 %s",p1); ib_run(ib,cmd,"mkfs.fat"); }
+        snprintf(cmd,sizeof(cmd),"mkswap %s",p2); ib_run(ib,cmd,"mkswap");
+        snprintf(cmd,sizeof(cmd),"swapon %s",p2); run_stream(cmd,NULL,NULL,1);
+
+        if (!strcmp(fs,"btrfs"))     ib_setup_btrfs(ib, root_dev, disk);
+        else if (!strcmp(fs,"xfs"))  ib_setup_xfs(ib, root_dev);
+        else if (!strcmp(fs,"zfs"))  ib_setup_zfs(ib, root_dev);
+        else {
+            snprintf(cmd,sizeof(cmd),"mkfs.ext4 -F %s",root_dev);
+            ib_run(ib,cmd,"mkfs.ext4");
+            snprintf(cmd,sizeof(cmd),"mount %s /mnt",root_dev);
+            ib_run(ib,cmd,"mount root");
+        }
+        ib_pct(ib,16);
+
+        if (uefi) {
+            ib_stage(ib, L("Mounting EFI...","Montando EFI..."));
+            if (!strcmp(bl,"systemd-boot")) {
+                ib_run(ib,"mkdir -p /mnt/boot","mkdir /mnt/boot");
+                snprintf(cmd,sizeof(cmd),"mount %s /mnt/boot",p1);
+                ib_run(ib,cmd,"mount ESP /mnt/boot");
+            } else {
+                ib_run(ib,"mkdir -p /mnt/boot/efi","mkdir /mnt/boot/efi");
+                snprintf(cmd,sizeof(cmd),"mount %s /mnt/boot/efi",p1);
+                ib_run(ib,cmd,"mount ESP /mnt/boot/efi");
+            }
+        }
+
+    } else {
+        /* ---- Dual-boot: use existing partition ---- */
+        char cmd[MAX_CMD];
+        ib_stage(ib, L("Formatting root partition (dual-boot)...",
+                       "Formateando particion raiz (dual-boot)..."));
+        ib_gradual(ib,10,15,0.04);
+
+        if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, st.db_root);
+        else if (!strcmp(fs,"xfs")) ib_setup_xfs(ib, st.db_root);
+        else if (!strcmp(fs,"zfs")) ib_setup_zfs(ib, st.db_root);
+        else {
+            snprintf(cmd,sizeof(cmd),"mkfs.ext4 -F %s", st.db_root);
+            ib_run(ib, cmd, "mkfs.ext4 dual-boot");
+            snprintf(cmd,sizeof(cmd),"mount %s /mnt", st.db_root);
+            ib_run(ib, cmd, "mount root dual-boot");
+        }
+
+        /* Swap */
+        if (st.db_swap[0]) {
+            snprintf(cmd,sizeof(cmd),"swapon %s", st.db_swap);
+            run_stream(cmd, NULL, NULL, 1);
+            write_log_fmt("Swap enabled: %s", st.db_swap);
+        }
+
+        /* EFI – do NOT format, just mount */
+        if (uefi && st.db_efi[0]) {
+            ib_stage(ib, L("Mounting existing EFI partition...",
+                           "Montando particion EFI existente..."));
+            if (!strcmp(bl,"systemd-boot")) {
+                run_simple("mkdir -p /mnt/boot", 0);
+                snprintf(cmd,sizeof(cmd),"mount %s /mnt/boot", st.db_efi);
+                ib_run(ib, cmd, "mount EFI /mnt/boot dual-boot");
+            } else {
+                run_simple("mkdir -p /mnt/boot/efi", 0);
+                snprintf(cmd,sizeof(cmd),"mount %s /mnt/boot/efi", st.db_efi);
+                ib_run(ib, cmd, "mount EFI /mnt/boot/efi dual-boot");
+            }
         }
     }
     ib_pct(ib,18);
 
-    if (!strcmp(ker,"linux-cachyos")) {
-        ib_stage(ib, L("Adding CachyOS repository...","Añadiendo repositorio CachyOS..."));
-        ib_add_cachyos_repo(ib,0);
+    /* ================================================================
+     * Build kernel package list from kernel_list
+     * ============================================================== */
+    char kpkgs[1024]={0};
+    char kheaders[1024]={0};
+    {
+        char klist_tmp[512]; strncpy(klist_tmp, st.kernel_list, sizeof(klist_tmp)-1);
+        char *tok = strtok(klist_tmp, " ");
+        while (tok) {
+            if (kpkgs[0]) strncat(kpkgs," ",sizeof(kpkgs)-strlen(kpkgs)-1);
+            strncat(kpkgs, tok, sizeof(kpkgs)-strlen(kpkgs)-1);
+            char hdr[64]; snprintf(hdr,sizeof(hdr)," %s-headers",tok);
+            strncat(kheaders, hdr, sizeof(kheaders)-strlen(kheaders)-1);
+            /* For CachyOS kernels add their special repo */
+            if (!strcmp(tok,"linux-cachyos")) ib_add_cachyos_repo(ib,0);
+            tok = strtok(NULL," ");
+        }
     }
 
-    char ucode_pkg[64]="", extra_pkg[32]="", boot_pkgs[128]="";
+    char ucode_pkg[64]="", extra_pkg[64]="", boot_pkgs[128]="";
     if (microcode[0]) snprintf(ucode_pkg,sizeof(ucode_pkg)," %s",microcode);
     if (!strcmp(fs,"btrfs")) strcpy(extra_pkg," btrfs-progs");
-
-    char kernel_hdrs[64]; snprintf(kernel_hdrs,sizeof(kernel_hdrs),"%s-headers",ker);
+    if (!strcmp(fs,"xfs"))   strcpy(extra_pkg," xfsprogs");
+    if (!strcmp(fs,"zfs"))   strcpy(extra_pkg," zfs-utils");
 
     if (!strcmp(bl,"systemd-boot")) {
         strcpy(boot_pkgs," efibootmgr");
@@ -1302,22 +1576,50 @@ static void *ib_run_thread(void *arg) {
         snprintf(boot_pkgs,sizeof(boot_pkgs)," grub%s",uefi?" efibootmgr":"");
     }
 
+    char cmd[MAX_CMD];
     snprintf(cmd,sizeof(cmd),
              "pacstrap -K /mnt "
-             "base %s linux-firmware %s sof-firmware "
+             "base %s linux-firmware%s sof-firmware "
              "base-devel%s vim nano networkmanager git "
              "sudo bash-completion%s%s",
-             ker, kernel_hdrs, boot_pkgs, extra_pkg, ucode_pkg);
+             kpkgs, kheaders, boot_pkgs, extra_pkg, ucode_pkg);
 
     ib_stage(ib, L("Installing base system - this may take a while...",
                    "Instalando sistema base - esto puede tardar..."));
     ib_pacman_critical(ib,cmd,18,52,"pacstrap");
 
-    ib_stage(ib, L("Generating fstab...","Generando fstab..."));
-    ib_run(ib,"genfstab -U /mnt >> /mnt/etc/fstab","genfstab");
-    ib_pct(ib,53);
+    /* Add CachyOS repo inside chroot if needed */
+    {
+        char klist_tmp[512]; strncpy(klist_tmp, st.kernel_list, sizeof(klist_tmp)-1);
+        char *tok = strtok(klist_tmp, " ");
+        while (tok) {
+            if (!strcmp(tok,"linux-cachyos")) { ib_add_cachyos_repo(ib,1); break; }
+            tok = strtok(NULL," ");
+        }
+    }
+    /* Add archzfs repo inside chroot if ZFS */
+    if (!strcmp(fs,"zfs")) {
+        ib_add_archzfs_repo(1);
+        ib_chroot(ib, "pacman -Sy --noconfirm zfs-utils", 1);
+        /* Enable ZFS services */
+        ib_chroot(ib, "systemctl enable zfs-import-cache zfs-import.target zfs-mount zfs.target", 1);
+        /* Add ZFS hook to mkinitcpio */
+        ib_chroot(ib,
+            "sed -i 's/^HOOKS=.*$/HOOKS=(base udev autodetect modconf block zfs filesystems keyboard fsck)/' "
+            "/etc/mkinitcpio.conf", 1);
+        /* Create hostid for ZFS */
+        ib_chroot(ib, "zgenhostid", 1);
+    }
 
-    if (!strcmp(ker,"linux-cachyos")) ib_add_cachyos_repo(ib,1);
+    ib_stage(ib, L("Generating fstab...","Generando fstab..."));
+    if (!strcmp(fs,"zfs")) {
+        /* ZFS manages its own mounts; minimal fstab */
+        FILE *fstab = fopen("/mnt/etc/fstab","a");
+        if (fstab) { fprintf(fstab,"# ZFS managed\n"); fclose(fstab); }
+    } else {
+        ib_run(ib,"genfstab -U /mnt >> /mnt/etc/fstab","genfstab");
+    }
+    ib_pct(ib,53);
 
     ib_stage(ib, L("Configuring hostname...","Configurando hostname..."));
     FILE *f = fopen("/mnt/etc/hostname","w");
@@ -1383,43 +1685,80 @@ static void *ib_run_thread(void *arg) {
     ib_install_gpu(ib,71,77);
     ib_pct(ib,77);
 
-    const char *desktop = st.desktop;
-    if (strcmp(desktop,"None")) {
-        snprintf(stage_msg,sizeof(stage_msg),
-                 L("Installing %s...","Instalando %s..."),desktop);
-        ib_stage(ib,stage_msg);
+    /* ================================================================
+     * Desktop Environments  –  install all selected
+     * ============================================================== */
+    {
+        char dlist[512]; strncpy(dlist, st.desktop_list, sizeof(dlist)-1);
+        char *dtok = strtok(dlist, " ");
+        int any_desktop = 0;
+        int dm_enabled  = 0;
+        double de_start = 77.0, de_end = 91.0;
+        /* Count non-None desktops for progress division */
+        int de_count = 0;
+        {
+            char tmp2[512]; strncpy(tmp2, st.desktop_list, sizeof(tmp2)-1);
+            char *t2 = strtok(tmp2, " ");
+            while (t2) { if (strcmp(t2,"None")) de_count++; t2 = strtok(NULL," "); }
+        }
+        if (de_count == 0) de_count = 1;
+        double de_step = (de_end - de_start) / de_count;
+        int de_idx = 0;
 
-        const DesktopDef *dd = get_desktop_def(desktop);
-        if (dd) {
-            int ng = dd->ngroups;
-            double step = 14.0 / (ng>0?ng:1);
-            for (int i=0;i<ng;i++) {
-                double s=77+i*step, e=77+(i+1)*step;
-                snprintf(cmd,sizeof(cmd),
-                         "arch-chroot /mnt pacman -S --noconfirm %s",dd->groups[i]);
-                ib_pacman(ib,cmd,s,e,1);
+        while (dtok) {
+            if (strcmp(dtok,"None") != 0) {
+                any_desktop = 1;
+                snprintf(stage_msg,sizeof(stage_msg),
+                         L("Installing %s...","Instalando %s..."),dtok);
+                ib_stage(ib, stage_msg);
+
+                const DesktopDef *dd = get_desktop_def(dtok);
+                if (dd) {
+                    double gs = de_start + de_idx * de_step;
+                    double ge = gs + de_step;
+                    int ng = dd->ngroups;
+                    double gstep = (ge - gs) / (ng > 0 ? ng : 1);
+                    for (int i = 0; i < ng; i++) {
+                        snprintf(cmd,sizeof(cmd),
+                                 "arch-chroot /mnt pacman -S --noconfirm %s",dd->groups[i]);
+                        ib_pacman(ib, cmd, gs + i*gstep, gs + (i+1)*gstep, 1);
+                    }
+                }
+                /* Enable DM of the first desktop only */
+                const char *dm = get_desktop_dm(dtok);
+                if (dm && !dm_enabled) {
+                    snprintf(cmd,sizeof(cmd),"systemctl enable %s",dm);
+                    ib_chroot(ib,cmd,0);
+                    dm_enabled = 1;
+                }
+                /* Seat groups for Wayland compositors */
+                if (!strcmp(dtok,"Hyprland")||!strcmp(dtok,"Sway")) {
+                    snprintf(stage_msg,sizeof(stage_msg),
+                             L("Enabling seat management for %s...",
+                               "Habilitando seat para %s..."),dtok);
+                    ib_stage(ib, stage_msg);
+                    snprintf(cmd,sizeof(cmd),"usermod -aG seat,input,video %s",st.username);
+                    ib_chroot(ib,cmd,1);
+                }
+                de_idx++;
             }
+            dtok = strtok(NULL, " ");
         }
-        const char *dm = get_desktop_dm(desktop);
-        if (dm) {
-            snprintf(cmd,sizeof(cmd),"systemctl enable %s",dm);
-            ib_chroot(ib,cmd,0);
+
+        /* Audio – install once if any desktop is selected */
+        if (any_desktop) {
+            ib_stage(ib, L("Installing audio (pipewire)...","Instalando audio (pipewire)..."));
+            ib_pacman(ib,
+                      "arch-chroot /mnt pacman -S --noconfirm "
+                      "pipewire pipewire-pulse wireplumber",
+                      91, 94, 1);
         }
-        if (!strcmp(desktop,"Hyprland")||!strcmp(desktop,"Sway")) {
-            snprintf(stage_msg,sizeof(stage_msg),
-                     L("Enabling seat management for %s...","Habilitando seat para %s..."),desktop);
-            ib_stage(ib,stage_msg);
-            snprintf(cmd,sizeof(cmd),"usermod -aG seat,input,video %s",st.username);
-            ib_chroot(ib,cmd,1);
-        }
-        ib_stage(ib, L("Installing audio (pipewire)...","Instalando audio (pipewire)..."));
-        ib_pacman(ib,
-                  "arch-chroot /mnt pacman -S --noconfirm "
-                  "pipewire pipewire-pulse wireplumber",
-                  91,94,1);
     }
     ib_pct(ib,94);
 
+    /* ================================================================
+     * Bootloader
+     * ============================================================== */
     if (!strcmp(bl,"systemd-boot")) {
         ib_stage(ib, L("Installing systemd-boot...","Instalando systemd-boot..."));
         ib_install_systemd_boot(ib,root_dev);
@@ -1433,6 +1772,9 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,97);
 
+    /* ================================================================
+     * Optional extras
+     * ============================================================== */
     if (st.snapper && !strcmp(fs,"btrfs")) {
         ib_stage(ib, L("Setting up snapper (BTRFS snapshots)...",
                        "Configurando snapper (snapshots BTRFS)..."));
@@ -1468,8 +1810,19 @@ static void *ib_run_thread(void *arg) {
         ib_chroot(ib,"rm -f /etc/sudoers.d/99_nopasswd_tmp",0);
     }
 
-    if (st.flatpak && strcmp(desktop,"None"))
+    if (st.flatpak && strcmp(st.desktop,"None"))
         ib_install_flatpak(ib);
+
+    /* ================================================================
+     * Extra user-selected packages
+     * ============================================================== */
+    if (st.extra_pkgs[0]) {
+        ib_stage(ib, L("Installing extra packages...","Instalando paquetes adicionales..."));
+        snprintf(cmd,sizeof(cmd),
+                 "arch-chroot /mnt pacman -S --noconfirm %s", st.extra_pkgs);
+        ib_pacman(ib, cmd, 98, 99, 1);
+        write_log_fmt("Extra packages installed: %s", st.extra_pkgs);
+    }
 
     ib_pct(ib,100);
     ib_stage(ib, L("Installation complete!","Instalacion completa!"));
@@ -1497,9 +1850,7 @@ typedef struct {
     pthread_t       key_tid;
 } IS;
 
-static void is_write(const char *s) {
-    write(STDOUT_FILENO, s, strlen(s));
-}
+static void is_write(const char *s) { write(STDOUT_FILENO, s, strlen(s)); }
 static void is_writef(const char *fmt, ...) {
     char buf[1024]; va_list ap; va_start(ap,fmt);
     vsnprintf(buf,sizeof(buf),fmt,ap); va_end(ap);
@@ -1508,28 +1859,12 @@ static void is_writef(const char *fmt, ...) {
 
 static IS *g_is = NULL;
 
-/*
- * BUG 1 FIX: Double-free / use-after-free in log buffer trim.
- *
- * Original code:
- *   memmove(lines, lines + (nlines-keep), keep * sizeof(char*));
- *   for (i=keep; i<nlines; i++) free(lines[i]);   // ← freed the KEPT pointers!
- *
- * After memmove, lines[0..keep-1] and lines[keep..nlines-1] BOTH point to
- * the same heap strings (the ones we just moved into the front).  Freeing
- * the tail therefore freed strings still referenced by the front half,
- * leaving dangling pointers.
- *
- * Fix: free the OLD front entries BEFORE memmove, then move the survivors.
- */
 static void is_feed(IS *is, const char *line) {
     pthread_mutex_lock(&is->lock);
     if (is->nlines >= MAX_LINES) {
         int keep    = KEEP_LINES;
-        int discard = is->nlines - keep;          /* number of old entries to drop  */
-        /* 1. Free the oldest 'discard' entries. */
+        int discard = is->nlines - keep;
         for (int i = 0; i < discard; i++) { free(is->lines[i]); is->lines[i] = NULL; }
-        /* 2. Slide the surviving entries to the front. */
         memmove(is->lines, is->lines + discard, keep * sizeof(char*));
         is->nlines = keep;
     }
@@ -1550,9 +1885,9 @@ static void is_update(IS *is, double pct, const char *stage) {
 
 static void is_get_term_size(int *rows, int *cols) {
     struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)==0 && ws.ws_row>0) {
-        *rows = ws.ws_row; *cols = ws.ws_col;
-    } else { *rows=24; *cols=80; }
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)==0 && ws.ws_row>0)
+        { *rows = ws.ws_row; *cols = ws.ws_col; }
+    else { *rows=24; *cols=80; }
 }
 
 static void is_trunc(const char *s, char *out, int n) {
@@ -1583,13 +1918,11 @@ static void is_draw_progress(IS *is, double pct, const char *stage, int rows, in
     while((int)strlen(title_padded)<W)
         strncat(title_padded," ",sizeof(title_padded)-strlen(title_padded)-1);
     is_writef("\033[%d;1H\033[2K%s\033[44m\033[97m\033[1m%s\033[0m",top,pad,title_padded);
-
     is_writef("\033[%d;1H\033[2K",top+1);
 
     char trunc_stage[512];
     is_trunc(stage, trunc_stage, W-4);
     is_writef("\033[%d;1H\033[2K%s  \033[1m%s\033[0m",top+2,pad,trunc_stage);
-
     is_writef("\033[%d;1H\033[2K",top+3);
 
     int bar_w = W-9; if(bar_w<4)bar_w=4;
@@ -1602,7 +1935,6 @@ static void is_draw_progress(IS *is, double pct, const char *stage, int rows, in
     for(int i=0;i<empty;i++) strncat(bar," ",sizeof(bar)-strlen(bar)-1);
     strncat(bar,"\033[0m",sizeof(bar)-strlen(bar)-1);
     is_writef("\033[%d;1H\033[2K%s  [%s] \033[1m%3d%%\033[0m",top+4,pad,bar,(int)pct);
-
     is_writef("\033[%d;1H\033[2K",top+5);
     is_writef("\033[%d;1H\033[2K",top+6);
 }
@@ -1618,11 +1950,9 @@ static void is_draw_debug(IS *is, double pct, const char *stage,
     is_writef("\033[1;1H\033[2K\033[44m\033[97m\033[1m%s",hdr_l);
     for(int i=0;i<gap;i++) is_write(" ");
     is_writef("%s\033[0m",hdr_r);
-
     is_writef("\033[2;1H\033[2K\033[96m");
     for(int i=0;i<cols;i++) is_write("-");
     is_write("\033[0m");
-
     int available = rows-2;
     int start = nlines-available; if(start<0)start=0;
     for (int i=0;i<available;i++) {
@@ -1651,11 +1981,11 @@ static void *is_render_loop(void *arg) {
         if (!running) break;
 
         pthread_mutex_lock(&is->lock);
-        double pct        = is->pct;
-        char stage[512];  strncpy(stage,is->stage,511); stage[511]='\0';
-        int mode          = is->mode;
-        int mode_changed  = (mode != is->prev_mode);
-        is->prev_mode     = mode;
+        double pct = is->pct;
+        char stage[512]; strncpy(stage,is->stage,511); stage[511]='\0';
+        int mode = is->mode;
+        int mode_changed = (mode != is->prev_mode);
+        is->prev_mode = mode;
         int nlines = is->nlines;
         char **lines_snap = NULL;
         if (mode == IS_MODE_DEBUG && nlines > 0) {
@@ -1674,7 +2004,6 @@ static void *is_render_loop(void *arg) {
             is_draw_debug(is, pct, stage, lines_snap, nlines, rows, cols);
 
         fflush(stdout);
-
         if (lines_snap) {
             for (int i=0;i<nlines;i++) free(lines_snap[i]);
             free(lines_snap);
@@ -1691,7 +2020,6 @@ static void *is_key_loop(void *arg) {
         int running = is->running;
         pthread_mutex_unlock(&is->lock);
         if (!running) break;
-
         fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO,&fds);
         struct timeval tv = {0, 50000};
         if (select(STDIN_FILENO+1,&fds,NULL,NULL,&tv) > 0) {
@@ -1731,7 +2059,6 @@ static void is_start(IS *is) {
     pthread_mutex_lock(&is->lock);
     is->running = 1;
     pthread_mutex_unlock(&is->lock);
-
     if (isatty(STDIN_FILENO)) {
         struct termios raw;
         tcgetattr(STDIN_FILENO, &is->old_tty);
@@ -1763,20 +2090,13 @@ static void is_stop(IS *is) {
 
 typedef struct { IS *is; volatile int *stop; } TailerArg;
 
-/*
- * BUG 4 FIX: O_RDONLY|O_CREAT is undefined behaviour on POSIX
- * (O_CREAT requires O_WRONLY or O_RDWR).  The log file is always
- * created by screen_install() with fopen("a") before this thread
- * starts, so O_CREAT is simply unnecessary – use O_RDONLY alone.
- */
 static void *tailer_thread(void *arg) {
     TailerArg *ta = arg;
-    int fd = open(LOG_FILE, O_RDONLY); /* file is guaranteed to exist at this point */
+    int fd = open(LOG_FILE, O_RDONLY);
     if (fd<0) return NULL;
     lseek(fd, 0, SEEK_END);
     FILE *f = fdopen(fd,"r");
     if (!f) { close(fd); return NULL; }
-
     char line[4096];
     while (!*ta->stop) {
         if (fgets(line,sizeof(line),f)) {
@@ -1863,7 +2183,6 @@ static int screen_install(void) {
     pthread_t install_tid;
     pthread_create(&install_tid, NULL, ib_run_thread, ra);
 
-    /* Wait for completion */
     pthread_mutex_lock(&iss.mu);
     while (!iss.done) pthread_cond_wait(&iss.cv, &iss.mu);
     pthread_mutex_unlock(&iss.mu);
@@ -1891,6 +2210,10 @@ static int screen_install(void) {
     return 1;
 }
 
+/* ============================================================
+ * SCREEN FUNCTIONS
+ * ============================================================ */
+
 static void screen_welcome(void) {
     char text[1024];
     snprintf(text,sizeof(text),
@@ -1899,6 +2222,7 @@ static void screen_welcome(void) {
         "\\Zb\\Z1WARNING:\\Zn  This installer will ERASE and install Arch Linux "
         "to the selected disk.\n\n"
         "Use \\ZbTab\\Zn and \\ZbArrow keys\\Zn to navigate.\n"
+        "\\ZbSpace\\Zn toggles items in multi-select screens.\n"
         "Press OK to begin.",
         VERSION, is_uefi()?"UEFI":"BIOS (Legacy)");
     msgbox("Welcome", text);
@@ -1933,9 +2257,12 @@ static int screen_mode(void) {
                "Instalacion personalizada - configura todo paso a paso"),
              items,2,out,sizeof(out));
     if (!strcmp(out,"quick")) {
-        st.quick=1; strncpy(st.filesystem,"btrfs",sizeof(st.filesystem)-1);
+        st.quick=1;
+        strncpy(st.filesystem,"btrfs",sizeof(st.filesystem)-1);
         strncpy(st.kernel,"linux",sizeof(st.kernel)-1);
+        strncpy(st.kernel_list,"linux",sizeof(st.kernel_list)-1);
         strncpy(st.desktop,"KDE Plasma",sizeof(st.desktop)-1);
+        strncpy(st.desktop_list,"KDE Plasma",sizeof(st.desktop_list)-1);
         st.mirrors=1; detect_gpu(st.gpu,sizeof(st.gpu));
         st.yay=1; st.snapper=1;
         strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
@@ -1986,10 +2313,9 @@ static int screen_passwords(void) {
                              L("Confirm ROOT password:","Confirma la contrasena de ROOT:"),
                              rp2,sizeof(rp2))) return 0;
         if (!rp1[0]) { msgbox(L("Error","Error"),L("Root password cannot be empty.",
-                                                     "La contrasena root no puede estar vacia.")); continue; }
+                                                    "La contrasena root no puede estar vacia.")); continue; }
         if (strcmp(rp1,rp2)) { msgbox(L("Error","Error"),L("Root passwords do not match.",
-                                                             "Las contrasenas root no coinciden.")); continue; }
-
+                                                            "Las contrasenas root no coinciden.")); continue; }
         char up1[256]={0},up2[256]={0};
         if (!passwordbox_dlg(L("Passwords","Contrasenas"),
                              L("Enter USER password:","Ingresa la contrasena de USUARIO:"),
@@ -1998,112 +2324,372 @@ static int screen_passwords(void) {
                              L("Confirm USER password:","Confirma la contrasena de USUARIO:"),
                              up2,sizeof(up2))) return 0;
         if (!up1[0]) { msgbox(L("Error","Error"),L("User password cannot be empty.",
-                                                     "La contrasena de usuario no puede estar vacia.")); continue; }
+                                                    "La contrasena de usuario no puede estar vacia.")); continue; }
         if (strcmp(up1,up2)) { msgbox(L("Error","Error"),L("User passwords do not match.",
-                                                             "Las contrasenas de usuario no coinciden.")); continue; }
+                                                            "Las contrasenas de usuario no coinciden.")); continue; }
         strncpy(st.root_pass,rp1,sizeof(st.root_pass)-1);
         strncpy(st.user_pass,up1,sizeof(st.user_pass)-1);
         return 1;
     }
 }
 
+/* ---------------------------------------------------------------
+ * screen_disk  – select disk (full install) OR pick partition
+ *                (dual-boot).  After full-disk selection also
+ *                prompts for swap size.
+ * --------------------------------------------------------------- */
 static int screen_disk(void) {
-    DiskInfo disks[32]; int nd = list_disks(disks,32);
-    if (nd==0) {
-        msgbox(L("No disks found","Sin discos"),
-               L("No disks were detected. Cannot continue.",
-                 "No se detectaron discos. No se puede continuar."));
-        exit(1);
+    /* Ask full vs dual-boot FIRST */
+    {
+        MenuItem mode_items[2];
+        strncpy(mode_items[0].tag,"full",255);
+        snprintf(mode_items[0].desc,511,"%s",
+            L("Full Install   - erase entire disk (recommended for new installs)",
+              "Instalacion completa - borrar todo el disco (recomendado para instalaciones nuevas)"));
+        strncpy(mode_items[1].tag,"dual",255);
+        snprintf(mode_items[1].desc,511,"%s",
+            L("Dual Boot      - install alongside existing OS (Windows / Linux)",
+              "Dual Boot      - instalar junto a un OS existente (Windows / Linux)"));
+        char mode_out[16]={0};
+        if (!radiolist_dlg(
+                L("Install Type","Tipo de instalacion"),
+                L("How do you want to install Arch Linux?\n\n"
+                  "DUAL BOOT: You will manually select which partition to use.\n"
+                  "           Your existing OS and other partitions are kept.\n\n"
+                  "FULL INSTALL: The selected disk is completely erased.",
+                  "Como quieres instalar Arch Linux?\n\n"
+                  "DUAL BOOT: Seleccionaras manualmente la particion a usar.\n"
+                  "           Tu OS existente y otras particiones se conservan.\n\n"
+                  "INSTALACION COMPLETA: El disco seleccionado se borra completamente."),
+                mode_items, 2,
+                st.dualboot ? "dual" : "full",
+                mode_out, sizeof(mode_out)))
+            return 0;
+        st.dualboot = !strcmp(mode_out,"dual");
     }
 
-    char lsblk[4096]={0};
-    FILE *fp = popen("lsblk -f 2>/dev/null | head -40","r");
-    if (fp) { fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
-    if (lsblk[0]) {
-        char txt[MAX_OUT];
-        snprintf(txt,sizeof(txt),
-                 L("Current disk layout (lsblk -f):\n\n%s\nWARNING: Selected disk will be ERASED.",
-                   "Layout actual de discos (lsblk -f):\n\n%s\nADVERTENCIA: El disco seleccionado se BORRARA."),
-                 lsblk);
-        msgbox(L("Disk Overview - Read before selecting!","Vista de discos - Lee antes de elegir!"),txt);
+    if (!st.dualboot) {
+        /* ---- Full disk install path (original) ---- */
+        DiskInfo disks[32]; int nd = list_disks(disks,32);
+        if (nd==0) {
+            msgbox(L("No disks found","Sin discos"),
+                   L("No disks were detected. Cannot continue.",
+                     "No se detectaron discos. No se puede continuar."));
+            exit(1);
+        }
+
+        char lsblk[4096]={0};
+        FILE *fp = popen("lsblk -f 2>/dev/null | head -40","r");
+        if (fp) { fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
+        if (lsblk[0]) {
+            char txt[MAX_OUT];
+            snprintf(txt,sizeof(txt),
+                     L("Current disk layout (lsblk -f):\n\n%s\nWARNING: Selected disk will be ERASED.",
+                       "Layout actual de discos (lsblk -f):\n\n%s\nADVERTENCIA: El disco seleccionado se BORRARA."),
+                     lsblk);
+            msgbox(L("Disk Overview - Read before selecting!","Vista de discos - Lee antes de elegir!"),txt);
+        }
+
+        MenuItem items[32];
+        char cur_dev[128]="";
+        if (st.disk[0]) snprintf(cur_dev,sizeof(cur_dev),"/dev/%s",st.disk);
+        for (int i=0;i<nd;i++) {
+            snprintf(items[i].tag,256,"/dev/%s",disks[i].name);
+            snprintf(items[i].desc,512,"%lld GB  -  %s",disks[i].size_gb,disks[i].model);
+        }
+
+        char sel[128]={0};
+        if (!radiolist_dlg(
+                L("Disk Selection","Seleccion de disco"),
+                L("WARNING: ALL DATA on the selected disk will be ERASED!\n\nSelect the installation disk:",
+                  "ADVERTENCIA: Se borraran todos los datos del disco seleccionado!\n\nSelecciona el disco:"),
+                items,nd, cur_dev[0]?cur_dev:items[0].tag, sel, sizeof(sel))) return 0;
+
+        char confirm_msg[512];
+        snprintf(confirm_msg,sizeof(confirm_msg),
+                 L("You selected: %s\n\nALL data will be permanently destroyed.\n\nAre you absolutely sure?",
+                   "Seleccionaste: %s\n\nTODOS los datos se destruiran permanentemente.\n\nEstas completamente seguro?"),
+                 sel);
+        if (!yesno_dlg(L("Confirm Disk Erase","Confirmar borrado de disco"),confirm_msg)) return 0;
+
+        const char *dname = sel;
+        if (!strncmp(dname,"/dev/",5)) dname+=5;
+        strncpy(st.disk,dname,sizeof(st.disk)-1);
+
+        /* Swap size */
+        char sug[8]; snprintf(sug,sizeof(sug),"%d",suggest_swap_gb());
+        while(1) {
+            char swap_hdr[512];
+            snprintf(swap_hdr,sizeof(swap_hdr),
+                     L("Suggested swap: %s GB\n\nEnter swap size in GB (1-128):",
+                       "Swap sugerido: %s GB\n\nIngresa el tamano del swap en GB (1-128):"),
+                     sug);
+            char sw[16]={0};
+            if (!inputbox_dlg(L("Swap Size","Tamano de Swap"),swap_hdr,
+                              st.swap[0]?st.swap:sug, sw, sizeof(sw))) return 0;
+            trim_nl(sw);
+            if (validate_swap(sw)) { strncpy(st.swap,sw,sizeof(st.swap)-1); return 1; }
+            msgbox(L("Invalid swap","Swap invalido"),
+                   L("Swap must be a number between 1 and 128.",
+                     "El swap debe ser un numero entre 1 y 128."));
+        }
+
+    } else {
+        /* ---- Dual boot path: show all partitions ---- */
+        PartEntry parts[64];
+        int np = list_all_partitions(parts, 64);
+        if (np == 0) {
+            msgbox(L("No partitions found","Sin particiones"),
+                   L("No existing partitions were found.\n\nUse full-install mode or create partitions with a tool like GParted first.",
+                     "No se encontraron particiones existentes.\n\nUsa el modo de instalacion completa o crea particiones con GParted primero."));
+            st.dualboot = 0;
+            return 0;
+        }
+
+        /* Show lsblk overview */
+        {
+            char lsblk[4096]={0};
+            FILE *fp = popen("lsblk 2>/dev/null | head -50","r");
+            if (fp) { fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
+            char txt[MAX_OUT];
+            snprintf(txt,sizeof(txt),
+                     L("Current partition layout:\n\n%s\n\n"
+                       "Select the partition where Arch Linux will be installed.\n"
+                       "WARNING: that partition WILL BE FORMATTED.",
+                       "Esquema de particiones actual:\n\n%s\n\n"
+                       "Selecciona la particion donde se instalara Arch Linux.\n"
+                       "ADVERTENCIA: esa particion sera FORMATEADA."),
+                     lsblk);
+            msgbox(L("Dual Boot - Partition Overview","Dual Boot - Vista de particiones"), txt);
+        }
+
+        /* Select root partition */
+        MenuItem *part_items = malloc(np * sizeof(MenuItem));
+        for (int i = 0; i < np; i++) {
+            strncpy(part_items[i].tag, parts[i].path, 255);
+            snprintf(part_items[i].desc, 511, "%lld MB  [%s]  %s",
+                     parts[i].size_mb, parts[i].fstype,
+                     parts[i].label[0] ? parts[i].label : "");
+        }
+        char sel_root[128]={0};
+        int ok = radiolist_dlg(
+            L("Dual Boot - Root Partition","Dual Boot - Particion raiz"),
+            L("Select the partition for Arch Linux root (/).\n"
+              "This partition WILL BE ERASED AND FORMATTED.\n\n"
+              "Choose a free/empty partition, NOT your Windows partition!",
+              "Selecciona la particion para la raiz (/) de Arch Linux.\n"
+              "Esta particion SE BORRARA Y FORMATEARA.\n\n"
+              "Elige una particion libre/vacia, NO la particion de Windows!"),
+            part_items, np,
+            st.db_root[0] ? st.db_root : part_items[0].tag,
+            sel_root, sizeof(sel_root));
+        free(part_items);
+        if (!ok || !sel_root[0]) return 0;
+
+        /* Confirmation */
+        char conf_msg[256];
+        snprintf(conf_msg, sizeof(conf_msg),
+                 L("CONFIRM: %s will be ERASED and formatted.\n\nProceed?",
+                   "CONFIRMAR: %s sera BORRADA y formateada.\n\nProceder?"),
+                 sel_root);
+        if (!yesno_dlg(L("Confirm Format","Confirmar formateo"), conf_msg)) return 0;
+        strncpy(st.db_root, sel_root, sizeof(st.db_root)-1);
+
+        /* Select EFI partition (UEFI only) */
+        if (is_uefi()) {
+            PartEntry parts2[64]; int np2 = list_all_partitions(parts2, 64);
+            MenuItem *efi_items = malloc((np2+1) * sizeof(MenuItem));
+            strncpy(efi_items[0].tag, "none", 255);
+            snprintf(efi_items[0].desc, 511, "%s",
+                     L("None / Auto-detect","Ninguna / Autodetectar"));
+            int ni2 = 1;
+            for (int i = 0; i < np2; i++) {
+                if (!strcmp(parts2[i].path, st.db_root)) continue;
+                strncpy(efi_items[ni2].tag, parts2[i].path, 255);
+                snprintf(efi_items[ni2].desc, 511, "%lld MB  [%s]  %s",
+                         parts2[i].size_mb, parts2[i].fstype,
+                         parts2[i].label[0] ? parts2[i].label : "");
+                ni2++;
+            }
+            char sel_efi[128]={0};
+            radiolist_dlg(
+                L("Dual Boot - EFI Partition","Dual Boot - Particion EFI"),
+                L("Select the existing EFI System Partition (ESP).\n"
+                  "This is usually a small FAT32 partition (~100-500 MB).\n"
+                  "It will NOT be formatted - existing boot entries are preserved.",
+                  "Selecciona la particion EFI del sistema (ESP) existente.\n"
+                  "Suele ser una particion FAT32 pequena (~100-500 MB).\n"
+                  "NO se formateara - las entradas de arranque existentes se conservan."),
+                efi_items, ni2,
+                st.db_efi[0] ? st.db_efi : "none",
+                sel_efi, sizeof(sel_efi));
+            free(efi_items);
+            if (strcmp(sel_efi,"none") != 0)
+                strncpy(st.db_efi, sel_efi, sizeof(st.db_efi)-1);
+            else {
+                /* Try to auto-detect the ESP */
+                FILE *fp2 = popen(
+                    "lsblk -b -p -n -o PATH,FSTYPE,PARTTYPE --pairs 2>/dev/null | "
+                    "grep -i 'PARTTYPE=\"c12a7328' | head -1", "r");
+                if (fp2) {
+                    char line[256]={0}; fgets(line,sizeof(line),fp2); pclose(fp2);
+                    char *pp = strstr(line,"PATH=\"");
+                    if (pp) { sscanf(pp+6,"%127[^\"]",st.db_efi); }
+                }
+            }
+        }
+
+        /* Select swap partition (optional) */
+        {
+            PartEntry parts3[64]; int np3 = list_all_partitions(parts3, 64);
+            MenuItem *sw_items = malloc((np3+1) * sizeof(MenuItem));
+            strncpy(sw_items[0].tag, "none", 255);
+            snprintf(sw_items[0].desc, 511, "%s", L("None - no swap partition","Ninguno - sin swap"));
+            int ni3 = 1;
+            for (int i = 0; i < np3; i++) {
+                if (!strcmp(parts3[i].path, st.db_root)) continue;
+                if (!strcmp(parts3[i].path, st.db_efi))  continue;
+                strncpy(sw_items[ni3].tag, parts3[i].path, 255);
+                snprintf(sw_items[ni3].desc, 511, "%lld MB  [%s]  %s",
+                         parts3[i].size_mb, parts3[i].fstype,
+                         parts3[i].label[0] ? parts3[i].label : "");
+                ni3++;
+            }
+            char sel_swap[128]={0};
+            radiolist_dlg(
+                L("Dual Boot - Swap Partition","Dual Boot - Particion swap"),
+                L("Select an existing swap partition (optional).\n"
+                  "Choose 'None' to skip swap.",
+                  "Selecciona una particion swap existente (opcional).\n"
+                  "Elige 'Ninguno' para omitir el swap."),
+                sw_items, ni3,
+                st.db_swap[0] ? st.db_swap : "none",
+                sel_swap, sizeof(sel_swap));
+            free(sw_items);
+            if (strcmp(sel_swap,"none") != 0)
+                strncpy(st.db_swap, sel_swap, sizeof(st.db_swap)-1);
+            else
+                st.db_swap[0] = '\0';
+        }
+
+        return 1;
     }
-
-    MenuItem items[32];
-    char cur_dev[128]="";
-    if (st.disk[0]) snprintf(cur_dev,sizeof(cur_dev),"/dev/%s",st.disk);
-    for (int i=0;i<nd;i++) {
-        snprintf(items[i].tag,256,"/dev/%s",disks[i].name);
-        snprintf(items[i].desc,512,"%lld GB  -  %s",disks[i].size_gb,disks[i].model);
-    }
-
-    char sel[128]={0};
-    if (!radiolist_dlg(
-            L("Disk Selection","Seleccion de disco"),
-            L("WARNING: ALL DATA on the selected disk will be ERASED!\n\nSelect the installation disk:",
-              "ADVERTENCIA: Se borraran todos los datos del disco seleccionado!\n\nSelecciona el disco:"),
-            items,nd, cur_dev[0]?cur_dev:items[0].tag, sel, sizeof(sel))) return 0;
-
-    char confirm_msg[512];
-    snprintf(confirm_msg,sizeof(confirm_msg),
-             L("You selected: %s\n\nALL data will be permanently destroyed.\n\nAre you absolutely sure?",
-               "Seleccionaste: %s\n\nTODOS los datos se destruiran permanentemente.\n\nEstas completamente seguro?"),
-             sel);
-    if (!yesno_dlg(L("Confirm Disk Erase","Confirmar borrado de disco"),confirm_msg)) return 0;
-
-    const char *dname = sel;
-    if (!strncmp(dname,"/dev/",5)) dname+=5;
-    strncpy(st.disk,dname,sizeof(st.disk)-1);
-
-    char sug[8]; snprintf(sug,sizeof(sug),"%d",suggest_swap_gb());
-    while(1) {
-        char swap_hdr[512];
-        snprintf(swap_hdr,sizeof(swap_hdr),
-                 L("Suggested swap size based on your RAM: %s GB\n\nEnter swap size in GB (1-128):",
-                   "Tamano de swap sugerido segun tu RAM: %s GB\n\nIngresa el tamano del swap en GB (1-128):"),
-                 sug);
-        char sw[16]={0};
-        if (!inputbox_dlg(L("Swap Size","Tamano de Swap"),swap_hdr,
-                          st.swap[0]?st.swap:sug, sw, sizeof(sw))) return 0;
-        trim_nl(sw);
-        if (validate_swap(sw)) { strncpy(st.swap,sw,sizeof(st.swap)-1); return 1; }
-        msgbox(L("Invalid swap","Swap invalido"),
-               L("Swap must be a number between 1 and 128.",
-                 "El swap debe ser un numero entre 1 y 128."));
-    }
-}
-
-static int screen_filesystem(void) {
-    MenuItem items[2];
-    strncpy(items[0].tag,"ext4",255);
-    snprintf(items[0].desc,511,"%s",L("ext4  - stable, widely supported",
-                                       "ext4  - estable, amplio soporte"));
-    strncpy(items[1].tag,"btrfs",255);
-    snprintf(items[1].desc,511,"%s",L("btrfs - subvolumes (@,@home,@var,@snapshots) + zstd compression",
-                                       "btrfs - subvolumenes (@,@home,@var,@snapshots) + compresion zstd"));
-    char out[16]={0};
-    if (!radiolist_dlg(L("Filesystem","Sistema de archivos"),
-                       L("Choose the root filesystem:","Elige el sistema de archivos raiz:"),
-                       items,2,st.filesystem,out,sizeof(out))) return 0;
-    strncpy(st.filesystem,out,sizeof(st.filesystem)-1);
     return 1;
 }
 
-static int screen_kernel(void) {
+static int screen_filesystem(void) {
     MenuItem items[4];
+    strncpy(items[0].tag,"ext4",255);
+    snprintf(items[0].desc,511,"%s",L(
+        "ext4   - stable, widely supported, proven",
+        "ext4   - estable, amplio soporte, probado"));
+    strncpy(items[1].tag,"btrfs",255);
+    snprintf(items[1].desc,511,"%s",L(
+        "btrfs  - subvolumes + zstd compression + snapshots",
+        "btrfs  - subvolumenes + compresion zstd + snapshots"));
+    strncpy(items[2].tag,"xfs",255);
+    snprintf(items[2].desc,511,"%s",L(
+        "xfs    - high-performance, great for large files",
+        "xfs    - alto rendimiento, ideal para archivos grandes"));
+    strncpy(items[3].tag,"zfs",255);
+    snprintf(items[3].desc,511,"%s",L(
+        "zfs    - [EXPERIMENTAL] copy-on-write, checksums, snapshots (archzfs repo)",
+        "zfs    - [EXPERIMENTAL] copy-on-write, checksums, snapshots (repo archzfs)"));
+
+    char out[16]={0};
+    if (!radiolist_dlg(L("Filesystem","Sistema de archivos"),
+                       L("Choose the root filesystem:\n\n"
+                         "  ext4   - best general-purpose choice.\n"
+                         "  btrfs  - modern features, recommended with snapper.\n"
+                         "  xfs    - excellent for large files and servers.\n"
+                         "  zfs    - advanced but requires archzfs repo.",
+                         "Elige el sistema de archivos raiz:\n\n"
+                         "  ext4   - mejor opcion general.\n"
+                         "  btrfs  - funciones modernas, recomendado con snapper.\n"
+                         "  xfs    - excelente para archivos grandes y servidores.\n"
+                         "  zfs    - avanzado, requiere repo archzfs."),
+                       items, 4, st.filesystem, out, sizeof(out))) return 0;
+
+    /* ZFS: warn and force GRUB + linux kernel */
+    if (!strcmp(out,"zfs")) {
+        msgbox(L("ZFS - Important Notes","ZFS - Notas importantes"),
+               L("ZFS on Arch Linux:\n\n"
+                 "  - Requires the archzfs repository (added automatically).\n"
+                 "  - Only tested with the 'linux' kernel.\n"
+                 "  - GRUB will be used as bootloader (forced).\n"
+                 "  - ZFS is experimental in this installer.\n\n"
+                 "If you see ZFS-related errors, check the log.",
+                 "ZFS en Arch Linux:\n\n"
+                 "  - Requiere el repositorio archzfs (se agrega automaticamente).\n"
+                 "  - Solo probado con el kernel 'linux'.\n"
+                 "  - Se usara GRUB como bootloader (forzado).\n"
+                 "  - ZFS es experimental en este instalador.\n\n"
+                 "Si hay errores de ZFS, revisa el log."));
+        strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
+    }
+    strncpy(st.filesystem, out, sizeof(st.filesystem)-1);
+    return 1;
+}
+
+/* ---------------------------------------------------------------
+ * screen_kernel  – multi-select checklist.
+ * Space bar toggles. First selected becomes primary kernel.
+ * --------------------------------------------------------------- */
+static int screen_kernel(void) {
+    MenuItem items[5];
     strncpy(items[0].tag,"linux",255);
-    snprintf(items[0].desc,511,"%s",L("linux         - latest stable kernel","linux         - kernel estable mas reciente"));
+    snprintf(items[0].desc,511,"%s",L(
+        "linux         - latest stable kernel",
+        "linux         - kernel estable mas reciente"));
     strncpy(items[1].tag,"linux-lts",255);
-    snprintf(items[1].desc,511,"%s",L("linux-lts     - long-term support kernel","linux-lts     - kernel de soporte a largo plazo"));
+    snprintf(items[1].desc,511,"%s",L(
+        "linux-lts     - long-term support kernel",
+        "linux-lts     - kernel de soporte a largo plazo"));
     strncpy(items[2].tag,"linux-zen",255);
-    snprintf(items[2].desc,511,"%s",L("linux-zen     - optimized for desktop / gaming","linux-zen     - optimizado para escritorio / gaming"));
-    strncpy(items[3].tag,"linux-cachyos",255);
-    snprintf(items[3].desc,511,"%s",L("linux-cachyos - CachyOS kernel [RECOMMENDED for max speed]",
-                                       "linux-cachyos - kernel CachyOS [RECOMENDADO para maxima velocidad]"));
-    char out[32]={0};
-    if (!radiolist_dlg(L("Kernel","Kernel"),
-                       L("Select the kernel to install:","Selecciona el kernel a instalar:"),
-                       items,4,st.kernel,out,sizeof(out))) return 0;
-    strncpy(st.kernel,out,sizeof(st.kernel)-1);
+    snprintf(items[2].desc,511,"%s",L(
+        "linux-zen     - optimized for desktop / gaming",
+        "linux-zen     - optimizado para escritorio / gaming"));
+    strncpy(items[3].tag,"linux-hardened",255);
+    snprintf(items[3].desc,511,"%s",L(
+        "linux-hardened- security-hardened kernel",
+        "linux-hardened- kernel endurecido para seguridad"));
+    strncpy(items[4].tag,"linux-cachyos",255);
+    snprintf(items[4].desc,511,"%s",L(
+        "linux-cachyos - CachyOS kernel (max speed, needs cachyos repo)",
+        "linux-cachyos - kernel CachyOS (maxima velocidad, requiere repo cachyos)"));
+
+    /* Build defaults from current kernel_list */
+    char kl_copy[512]; strncpy(kl_copy, st.kernel_list, sizeof(kl_copy)-1);
+    const char *defs[8]={0}; int ndefs=0;
+    char *tok = strtok(kl_copy, " ");
+    while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL," "); }
+
+    char sel[8][256]; int nsel = -1;
+    while (nsel < 1) {
+        nsel = checklist_dlg(
+            L("Kernel Selection","Seleccion de Kernel"),
+            L("Select one or more kernels to install.\n"
+              "Use SPACE to toggle. The first selected kernel is used for bootloader config.\n"
+              "Having linux + linux-lts gives you a fallback option.",
+              "Selecciona uno o mas kernels para instalar.\n"
+              "Usa ESPACIO para activar/desactivar. El primer kernel seleccionado se usa en el bootloader.\n"
+              "Tener linux + linux-lts te da una opcion de respaldo."),
+            items, 5, defs, ndefs, sel, 8);
+        if (nsel < 0) return 0;         /* Cancel */
+        if (nsel == 0) {
+            msgbox(L("No kernel selected","Sin kernel seleccionado"),
+                   L("You must select at least one kernel.",
+                     "Debes seleccionar al menos un kernel."));
+        }
+    }
+
+    /* Build kernel_list and primary kernel */
+    st.kernel_list[0] = '\0';
+    for (int i = 0; i < nsel; i++) {
+        if (i) strncat(st.kernel_list, " ", sizeof(st.kernel_list)-strlen(st.kernel_list)-1);
+        strncat(st.kernel_list, sel[i], sizeof(st.kernel_list)-strlen(st.kernel_list)-1);
+    }
+    strncpy(st.kernel, sel[0], sizeof(st.kernel)-1);
     return 1;
 }
 
@@ -2193,12 +2779,8 @@ static int screen_locale(void) {
     char out[32]={0};
     int ok = radiolist_dlg(
         L("System Locale","Idioma del sistema instalado"),
-        L("Choose the locale for the INSTALLED SYSTEM.\n"
-          "This is INDEPENDENT of the installer UI language.\n\n"
-          "Controls: system language, date/number formats, etc.",
-          "Elige el locale para el SISTEMA INSTALADO.\n"
-          "Es INDEPENDIENTE del idioma de este instalador.\n\n"
-          "Controla: idioma del sistema, formatos de fecha/numeros, etc."),
+        L("Choose the locale for the INSTALLED SYSTEM.",
+          "Elige el locale para el SISTEMA INSTALADO."),
         items, n, st.locale, out, sizeof(out));
     free(items);
     if (!ok) return 0;
@@ -2292,8 +2874,7 @@ static int screen_timezone(void) {
 
     char *regions[256]; int nr=0;
     for(int i=0;i<nz;i++) {
-        char *sl=strchr(zones[i],'/');
-        if(!sl) continue;
+        char *sl=strchr(zones[i],'/'); if(!sl) continue;
         char reg[64]; int rlen=sl-zones[i]; if(rlen>63)rlen=63;
         strncpy(reg,zones[i],rlen); reg[rlen]='\0';
         int dup=0;
@@ -2309,8 +2890,11 @@ static int screen_timezone(void) {
     }
 
     char cur_reg[64]="UTC";
-    if(strchr(st.timezone,'/')) { char *sl=strchr(st.timezone,'/');
-        int l=sl-st.timezone; if(l>63)l=63; strncpy(cur_reg,st.timezone,l); cur_reg[l]='\0'; }
+    if(strchr(st.timezone,'/')) {
+        char *sl=strchr(st.timezone,'/');
+        int l=sl-st.timezone; if(l>63)l=63;
+        strncpy(cur_reg,st.timezone,l); cur_reg[l]='\0';
+    }
 
     char sel_reg[64]={0};
     if(!radiolist_dlg(L("Timezone - Region","Zona horaria - Region"),
@@ -2341,8 +2925,10 @@ static int screen_timezone(void) {
     }
     for(int i=0;i<nz;i++) free(zones[i]); free(zones);
 
-    if(nc==0) { if(city_items)free(city_items);
-        strncpy(st.timezone,sel_reg,sizeof(st.timezone)-1); return 1; }
+    if(nc==0) {
+        if(city_items)free(city_items);
+        strncpy(st.timezone,sel_reg,sizeof(st.timezone)-1); return 1;
+    }
 
     char cur_city[64]="";
     char *sl=strchr(st.timezone,'/');
@@ -2359,6 +2945,10 @@ static int screen_timezone(void) {
     return 1;
 }
 
+/* ---------------------------------------------------------------
+ * screen_desktop  – multi-select checklist.
+ * Multiple DEs can be installed; the DM of the first is enabled.
+ * --------------------------------------------------------------- */
 static int screen_desktop(void) {
     const char *desktops[][2] = {
         {"KDE Plasma",L("KDE Plasma - full featured, modern","KDE Plasma - completo, moderno")},
@@ -2367,26 +2957,63 @@ static int screen_desktop(void) {
         {"XFCE",      L("XFCE      - lightweight, traditional","XFCE      - ligero, tradicional")},
         {"MATE",      L("MATE      - GNOME 2 fork, very stable","MATE      - fork de GNOME 2, muy estable")},
         {"LXQt",      L("LXQt      - minimal Qt desktop","LXQt      - escritorio Qt minimalista")},
-        {"Hyprland",  L("Hyprland  - tiling Wayland compositor, modern + animations",
-                        "Hyprland  - compositor Wayland tiling, moderno + animaciones")},
+        {"Hyprland",  L("Hyprland  - tiling Wayland compositor + animations",
+                        "Hyprland  - compositor Wayland tiling + animaciones")},
         {"Sway",      L("Sway      - tiling Wayland compositor, i3-compatible",
                         "Sway      - compositor Wayland tiling, compatible con i3")},
         {"None",      L("None      - CLI only, no desktop","None      - solo terminal, sin escritorio")},
         {NULL,NULL}
     };
     int n=0; while(desktops[n][0]) n++;
-    MenuItem *items=malloc(n*sizeof(MenuItem));
+    MenuItem *items = malloc(n*sizeof(MenuItem));
     for(int i=0;i<n;i++) {
         strncpy(items[i].tag,desktops[i][0],255);
         strncpy(items[i].desc,desktops[i][1],511);
     }
-    char out[32]={0};
-    int ok=radiolist_dlg(L("Desktop Environment","Entorno de escritorio"),
-                          L("Choose a desktop environment:","Elige un entorno de escritorio:"),
-                          items,n,st.desktop,out,sizeof(out));
+
+    /* Build defaults from current desktop_list */
+    char dl_copy[512]; strncpy(dl_copy, st.desktop_list, sizeof(dl_copy)-1);
+    const char *defs[8]={0}; int ndefs=0;
+    char *tok = strtok(dl_copy," ");
+    while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL," "); }
+
+    char sel[8][256]; int nsel = -1;
+    while (nsel < 1) {
+        nsel = checklist_dlg(
+            L("Desktop Environment","Entorno de escritorio"),
+            L("Select one or more desktop environments to install.\n"
+              "Use SPACE to toggle. The DM of the first selected DE will be enabled.\n"
+              "Select 'None' if you want a CLI-only install.",
+              "Selecciona uno o mas entornos de escritorio.\n"
+              "Usa ESPACIO para activar/desactivar. El DM del primer DE se habilitara.\n"
+              "Selecciona 'None' para una instalacion solo de terminal."),
+            items, n, defs, ndefs, sel, 8);
+        if (nsel < 0) { free(items); return 0; }
+        if (nsel == 0) {
+            msgbox(L("No selection","Sin seleccion"),
+                   L("Select at least one option (or 'None' for CLI).",
+                     "Selecciona al menos una opcion (o 'None' para solo terminal)."));
+        }
+    }
     free(items);
-    if(!ok) return 0;
-    strncpy(st.desktop,out,sizeof(st.desktop)-1);
+
+    /* If "None" is in list alongside real DEs, remove None */
+    char cleaned[8][256]; int nc=0;
+    int has_non_none = 0;
+    for(int i=0;i<nsel;i++) if(strcmp(sel[i],"None")) has_non_none=1;
+    for(int i=0;i<nsel;i++) {
+        if(has_non_none && !strcmp(sel[i],"None")) continue;
+        strncpy(cleaned[nc++], sel[i], 255);
+    }
+    if (nc == 0) { strncpy(cleaned[0],"None",255); nc=1; }
+
+    /* Build desktop_list and primary desktop */
+    st.desktop_list[0] = '\0';
+    for (int i=0;i<nc;i++) {
+        if(i) strncat(st.desktop_list," ",sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
+        strncat(st.desktop_list, cleaned[i], sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
+    }
+    strncpy(st.desktop, cleaned[0], sizeof(st.desktop)-1);
     return 1;
 }
 
@@ -2399,11 +3026,11 @@ static int screen_gpu(void) {
     snprintf(hint,sizeof(hint),L("Detected GPU: %s","GPU detectada: %s"),detected);
 
     const char *gpus[][2]={
-        {"NVIDIA",      L("NVIDIA proprietary (nvidia/nvidia-dkms + utils)","NVIDIA propietario (nvidia/nvidia-dkms + utils)")},
+        {"NVIDIA",      L("NVIDIA proprietary (nvidia/nvidia-dkms + utils)","NVIDIA propietario")},
         {"AMD",         L("AMD open-source (mesa + vulkan-radeon)","AMD open-source (mesa + vulkan-radeon)")},
-        {"Intel",       L("Intel open-source (mesa + vulkan-intel + intel-media-driver)","Intel open-source (mesa + vulkan-intel + intel-media-driver)")},
-        {"Intel+NVIDIA",L("Intel + NVIDIA hybrid (Mesa + proprietary NVIDIA)","Intel + NVIDIA hibrido (Mesa + NVIDIA propietario)")},
-        {"Intel+AMD",   L("Intel + AMD hybrid (Mesa + vulkan-radeon)","Intel + AMD hibrido (Mesa + vulkan-radeon)")},
+        {"Intel",       L("Intel open-source (mesa + vulkan-intel)","Intel open-source (mesa + vulkan-intel)")},
+        {"Intel+NVIDIA",L("Intel + NVIDIA hybrid","Intel + NVIDIA hibrido")},
+        {"Intel+AMD",   L("Intel + AMD hybrid","Intel + AMD hibrido")},
         {"None",        L("No additional GPU drivers","Sin drivers adicionales de GPU")},
         {NULL,NULL}
     };
@@ -2466,14 +3093,108 @@ static int screen_flatpak(void) {
     snprintf(items[1].desc,511,"%s",L("No  - skip","No  - omitir"));
     char out[8]={0};
     if(!radiolist_dlg(L("Flatpak","Flatpak"),
-                      L("Install Flatpak and add the Flathub repository?\n\n"
-                        "Flatpak lets you install thousands of apps from Flathub\n"
-                        "independently of Arch packages.",
-                        "Instalar Flatpak y anadir el repositorio Flathub?\n\n"
-                        "Flatpak permite instalar miles de aplicaciones de Flathub\n"
-                        "de forma independiente a los paquetes de Arch."),
+                      L("Install Flatpak and add the Flathub repository?",
+                        "Instalar Flatpak y anadir el repositorio Flathub?"),
                       items,2,st.flatpak?"yes":"no",out,sizeof(out))) return 0;
     st.flatpak=!strcmp(out,"yes");
+    return 1;
+}
+
+/* ---------------------------------------------------------------
+ * screen_extra_packages  – checklist of optional packages.
+ * Space toggles. Multiple categories: monitoring, utilities,
+ * editors, shells, network, multimedia, development, fun.
+ * --------------------------------------------------------------- */
+static int screen_extra_packages(void) {
+    /* tag = package name, desc = friendly description */
+    static const char *pkgs[][2] = {
+        /* System monitors */
+        {"btop",       "btop        - beautiful resource monitor (CPU/RAM/disk/net)"},
+        {"htop",       "htop        - interactive process viewer"},
+        {"gtop",       "gtop        - graphical top in the terminal"},
+        {"nvtop",      "nvtop       - GPU process monitor (NVIDIA/AMD)"},
+        /* System info */
+        {"fastfetch",  "fastfetch   - fast, beautiful system info"},
+        {"neofetch",   "neofetch    - classic system info (slower)"},
+        {"inxi",       "inxi        - full system info tool"},
+        /* Shell utilities */
+        {"tmux",       "tmux        - terminal multiplexer"},
+        {"tree",       "tree        - directory tree viewer"},
+        {"ncdu",       "ncdu        - disk usage analyzer (TUI)"},
+        {"fzf",        "fzf         - fuzzy finder for shell"},
+        {"ranger",     "ranger      - terminal file manager (vim keys)"},
+        {"nnn",        "nnn         - ultra-fast terminal file manager"},
+        {"bat",        "bat         - cat with syntax highlighting"},
+        {"eza",        "eza         - modern ls replacement (colors + icons)"},
+        {"fd",         "fd          - fast alternative to find"},
+        {"ripgrep",    "ripgrep     - extremely fast grep replacement"},
+        /* Editors */
+        {"neovim",     "neovim      - modern Vim-based editor"},
+        {"micro",      "micro       - easy terminal editor (Ctrl+S to save)"},
+        /* Shells */
+        {"zsh",        "zsh         - Z shell (popular with oh-my-zsh)"},
+        {"fish",       "fish        - user-friendly interactive shell"},
+        /* Network */
+        {"nmap",       "nmap        - network scanner"},
+        {"wget",       "wget        - CLI download tool"},
+        {"aria2",      "aria2       - fast multi-protocol downloader"},
+        {"yt-dlp",     "yt-dlp      - download YouTube and other videos"},
+        /* Archiving */
+        {"p7zip",      "p7zip       - 7z archive support"},
+        {"unrar",      "unrar       - RAR archive support"},
+        /* Multimedia */
+        {"mpv",        "mpv         - fast, lightweight media player"},
+        {"ffmpeg",     "ffmpeg      - multimedia converter and toolkit"},
+        {"imagemagick","imagemagick - CLI image manipulation"},
+        /* Fonts */
+        {"noto-fonts", "noto-fonts  - Google Noto font family (wide Unicode)"},
+        {"ttf-hack-nerd-font","ttf-hack-nerd-font  - Hack with Nerd Font icons"},
+        /* Fun */
+        {"cowsay",     "cowsay      - talking ASCII cow"},
+        {"sl",         "sl          - steam locomotive (fix 'sl' typo)"},
+        {"lolcat",     "lolcat      - rainbow output for any command"},
+        {"figlet",     "figlet      - ASCII art text banners"},
+        {"cmatrix",    "cmatrix     - Matrix rain animation"},
+        {"pipes.sh",   "pipes.sh    - animated terminal pipes screensaver"},
+        {NULL,NULL}
+    };
+
+    int n=0; while(pkgs[n][0]) n++;
+    MenuItem *items = malloc(n * sizeof(MenuItem));
+    for(int i=0; i<n; i++) {
+        strncpy(items[i].tag,  pkgs[i][0], 255);
+        strncpy(items[i].desc, pkgs[i][1], 511);
+    }
+
+    /* Build defaults from current extra_pkgs */
+    const char *defs[64]={0}; int ndefs=0;
+    char ep_copy[2048]; strncpy(ep_copy, st.extra_pkgs, sizeof(ep_copy)-1);
+    char *tok = strtok(ep_copy," ");
+    while(tok && ndefs<64) { defs[ndefs++]=tok; tok=strtok(NULL," "); }
+
+    char sel[48][256];
+    int nsel = checklist_dlg(
+        L("Extra Packages","Paquetes adicionales"),
+        L("Select additional packages to install.\n"
+          "Use SPACE to toggle, ENTER to confirm, ESC/Cancel to skip.\n\n"
+          "All are optional - you can install them later with pacman.",
+          "Selecciona paquetes adicionales para instalar.\n"
+          "ESPACIO activa/desactiva, ENTER confirma, ESC/Cancelar omite.\n\n"
+          "Todos son opcionales - puedes instalarlos despues con pacman."),
+        items, n, defs, ndefs, sel, 48);
+    free(items);
+
+    if (nsel < 0) {
+        /* Cancel = skip extra packages, not a fatal error */
+        st.extra_pkgs[0] = '\0';
+        return 1;
+    }
+
+    st.extra_pkgs[0] = '\0';
+    for(int i=0; i<nsel; i++) {
+        if(i) strncat(st.extra_pkgs," ",sizeof(st.extra_pkgs)-strlen(st.extra_pkgs)-1);
+        strncat(st.extra_pkgs, sel[i], sizeof(st.extra_pkgs)-strlen(st.extra_pkgs)-1);
+    }
     return 1;
 }
 
@@ -2484,42 +3205,53 @@ static int screen_review(void) {
     if(!x11) x11=st.keymap;
     const char *boot_mode = is_uefi()?"UEFI":"BIOS";
 
-    char text[4096]={0};
-    char line[256];
-#define ROW(label,val) snprintf(line,sizeof(line),"  %-18s %s\n",label,val); strncat(text,line,sizeof(text)-strlen(text)-1)
+    char text[5120]={0};
+    char line[512];
+#define ROW(label,val) snprintf(line,sizeof(line),"  %-22s %s\n",label,val); strncat(text,line,sizeof(text)-strlen(text)-1)
     snprintf(line,sizeof(line),"%s\n\n",L("Review your settings:","Revisa tu configuracion:"));
     strncat(text,line,sizeof(text)-strlen(text)-1);
 
     ROW("Mode",           st.quick?L("Quick","Rapida"):L("Custom","Personalizada"));
     ROW("Boot",           boot_mode);
+    ROW("Install type",   st.dualboot?L("Dual Boot","Dual Boot"):L("Full Disk","Disco completo"));
     ROW("Installer lang", st.lang);
     ROW("System locale",  st.locale);
     ROW("Hostname",       st.hostname[0]?st.hostname:"NOT SET");
     ROW(L("Username","Usuario"), st.username[0]?st.username:"NOT SET");
     ROW("Filesystem",     st.filesystem);
-    ROW("Kernel",         st.kernel);
+    ROW("Kernels",        st.kernel_list);
     ROW("Bootloader",     st.bootloader);
     ROW("Microcode",      microcode);
-    char disk_str[128]; snprintf(disk_str,sizeof(disk_str),"/dev/%s",st.disk);
-    ROW("Disk",           st.disk[0]?disk_str:"NOT SET");
-    char swap_str[32];   snprintf(swap_str,sizeof(swap_str),"%s GB",st.swap);
-    ROW("Swap",           swap_str);
+    if (st.dualboot) {
+        ROW("Root part",  st.db_root[0]?st.db_root:"NOT SET");
+        if (is_uefi()) ROW("EFI part", st.db_efi[0]?st.db_efi:"auto-detect");
+        ROW("Swap part",  st.db_swap[0]?st.db_swap:"none");
+    } else {
+        char disk_str[128]; snprintf(disk_str,sizeof(disk_str),"/dev/%s",st.disk);
+        ROW("Disk",       st.disk[0]?disk_str:"NOT SET");
+        char swap_str[32]; snprintf(swap_str,sizeof(swap_str),"%s GB",st.swap);
+        ROW("Swap",       swap_str);
+    }
     ROW("Mirrors",        st.mirrors?L("reflector (auto)","reflector (auto)"):L("default","por defecto"));
     ROW("Keymap TTY",     st.keymap);
     ROW("Keymap X11",     x11);
     ROW("Timezone",       st.timezone);
-    ROW("Desktop",        st.desktop);
+    ROW("Desktops",       st.desktop_list);
     ROW("GPU",            st.gpu);
     ROW("Audio",          strcmp(st.desktop,"None")?"pipewire":L("none","ninguno"));
     ROW("Flatpak",        st.flatpak?L("yes","si"):"no");
     ROW("yay",            st.yay?L("yes","si"):"no");
     ROW("snapper",        st.snapper?L("yes","si"):"no");
+    if (st.extra_pkgs[0]) ROW("Extra pkgs", st.extra_pkgs);
 #undef ROW
 
     char missing[256]={0};
     if(!st.hostname[0]) strncat(missing,"hostname, ",sizeof(missing)-strlen(missing)-1);
     if(!st.username[0]) strncat(missing,"username, ",sizeof(missing)-strlen(missing)-1);
-    if(!st.disk[0])     strncat(missing,"disk, ",sizeof(missing)-strlen(missing)-1);
+    if (!st.dualboot && !st.disk[0])
+        strncat(missing,"disk, ",sizeof(missing)-strlen(missing)-1);
+    if (st.dualboot && !st.db_root[0])
+        strncat(missing,"root partition, ",sizeof(missing)-strlen(missing)-1);
     if(!st.root_pass[0]) strncat(missing,L("root password","contrasena root"),sizeof(missing)-strlen(missing)-1);
 
     if(missing[0]) {
@@ -2533,23 +3265,32 @@ static int screen_review(void) {
     }
 
     strncat(text,L("\nAll settings look good.","Todo listo."),sizeof(text)-strlen(text)-1);
-    char confirm_msg[5120];
-    snprintf(confirm_msg,sizeof(confirm_msg),"%s%s",text,
-             L("\n\nWARNING: THIS WILL ERASE /dev/","\n\nADVERTENCIA: SE BORRARA /dev/"));
-    strncat(confirm_msg,st.disk,sizeof(confirm_msg)-strlen(confirm_msg)-1);
-    strncat(confirm_msg,L(".\n\nProceed?",".\n\nProceder?"),sizeof(confirm_msg)-strlen(confirm_msg)-1);
-
+    char confirm_msg[6144];
+    if (st.dualboot) {
+        snprintf(confirm_msg,sizeof(confirm_msg),"%s%s%s%s",
+                 text,
+                 L("\n\nWARNING: THIS WILL FORMAT ","\n\nADVERTENCIA: SE FORMATEARA "),
+                 st.db_root,
+                 L(".\n\nProceed?",".\n\nProceder?"));
+    } else {
+        snprintf(confirm_msg,sizeof(confirm_msg),"%s%s%s%s",
+                 text,
+                 L("\n\nWARNING: THIS WILL ERASE /dev/","\n\nADVERTENCIA: SE BORRARA /dev/"),
+                 st.disk,
+                 L(".\n\nProceed?",".\n\nProceder?"));
+    }
     return yesno_dlg(L("Review & Confirm","Revisar y confirmar"),confirm_msg);
 }
 
+
 static void screen_finish(void) {
-    if (yesno_dlg(L("Reboot?","\xc2\xbfReiniciar?"),
+    if (yesno_dlg(L("Reboot?","¿Reiniciar?"),
                   L("Arch Linux has been installed!\n\n"
                     "Remove the installation media.\n\n"
                     "Reboot now?",
-                    "\xc2\xa1""Arch Linux se ha instalado!\n\n"
+                    "¡Arch Linux se ha instalado!\n\n"
                     "Extrae el medio de instalaci\xc3\xb3n.\n\n"
-                    "\xc2\xbfReiniciar ahora?"))) {
+                    "¿Reiniciar ahora?"))) {
         infobox_dlg(L("Rebooting","Reiniciando"),
                     L("Unmounting filesystems and rebooting...",
                       "Desmontando sistemas de archivos y reiniciando..."));
@@ -2566,10 +3307,10 @@ typedef struct {
 } Step;
 
 static int screen_welcome_wrap(void)  { screen_welcome();  return 1; }
-static int screen_language_wrap(void) { screen_language(); return 1; }
-static int screen_network_wrap(void)  { screen_network();  return 1; }
-static int screen_finish_wrap(void)   { screen_finish();   return 1; }
-static int screen_install_wrap(void)  { return screen_install(); }
+static int screen_language_wrap(void)  { screen_language(); return 1; }
+static int screen_network_wrap(void)   { screen_network();  return 1; }
+static int screen_finish_wrap(void)    { screen_finish();   return 1; }
+static int screen_install_wrap(void)   { return screen_install(); }
 
 int main(void) {
     if(geteuid()!=0) {
@@ -2604,24 +3345,24 @@ int main(void) {
     };
 
     Step custom_steps[] = {
-        {L("Locale","Idioma sistema"),     screen_locale,        1},
-        {L("Disk","Disco"),                screen_disk,          1},
-        {L("Filesystem","Sistema archivos"),screen_filesystem,   1},
-        {L("Kernel","Kernel"),             screen_kernel,        1},
-        {L("Bootloader","Bootloader"),     screen_bootloader,    1},
-        {L("Mirrors","Mirrors"),           screen_mirrors,       1},
-        {L("Identity","Identidad"),        screen_identity,      1},
-        {L("Passwords","Contrasenas"),     screen_passwords,     1},
-        {L("Keymap","Teclado"),            screen_keymap,        1},
-        {L("Timezone","Zona horaria"),     screen_timezone,      1},
-        {L("Desktop","Escritorio"),        screen_desktop,       1},
-        {"GPU",                            screen_gpu,           1},
-        {L("yay","yay"),                   screen_yay,           1},
-        {L("Flatpak","Flatpak"),           screen_flatpak,       1},
-        {L("Snapshots","Snapshots"),       screen_snapper,       1},
-        {L("Review","Revision"),           screen_review,        1},
-        {L("Install","Instalar"),          screen_install_wrap,  0},
-        {L("Finish","Finalizar"),          screen_finish_wrap,   0},
+        {L("Locale","Idioma sistema"),      screen_locale,        1},
+        {L("Disk","Disco"),                 screen_disk,          1},
+        {L("Filesystem","Sistema archivos"),screen_filesystem,    1},
+        {L("Kernel","Kernel"),              screen_kernel,        1},
+        {L("Bootloader","Bootloader"),      screen_bootloader,    1},
+        {L("Mirrors","Mirrors"),            screen_mirrors,       1},
+        {L("Identity","Identidad"),         screen_identity,      1},
+        {L("Passwords","Contrasenas"),      screen_passwords,     1},
+        {L("Keymap","Teclado"),             screen_keymap,        1},
+        {L("Timezone","Zona horaria"),      screen_timezone,      1},
+        {L("Desktop","Escritorio"),         screen_desktop,       1},
+        {"GPU",                              screen_gpu,           1},
+        {L("yay","yay"),                    screen_yay,           1},
+        {L("Flatpak","Flatpak"),            screen_flatpak,       1},
+        {L("Snapshots","Snapshots"),        screen_snapper,       1},
+        {L("Review","Revision"),            screen_review,        1},
+        {L("Install","Instalar"),           screen_install_wrap,  0},
+        {L("Finish","Finalizar"),           screen_finish_wrap,   0},
         {NULL,NULL,0}
     };
 
