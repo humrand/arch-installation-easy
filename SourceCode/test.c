@@ -19,7 +19,7 @@
 #include <dirent.h>
 #include <signal.h>
 
-#define VERSION   "V1.2.0"
+#define VERSION   "V2.0.0"
 #define LOG_FILE  "/tmp/arch_install.log"
 #define TITLE     "Arch Linux Installer"
 
