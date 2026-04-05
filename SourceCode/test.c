@@ -233,11 +233,19 @@ static void strip_ansi(const char *src, char *dst, size_t dsz) {
     dst[i] = '\0';
 }
 
+/*
+ * BUG 5 FIX: validate_name previously accepted names starting with a digit
+ * or hyphen, which violates Linux username/hostname conventions.
+ * The first character must now be a letter or underscore.
+ */
 static int validate_name(const char *s) {
     if (!s) return 0;
     size_t len = strlen(s);
     if (len == 0 || len > 32) return 0;
-    for (const char *p = s; *p; p++)
+    /* First char must be letter or underscore (Linux convention).
+       Digits and hyphens as leading character are rejected. */
+    if (!isalpha((unsigned char)s[0]) && s[0] != '_') return 0;
+    for (const char *p = s + 1; *p; p++)
         if (!isalnum((unsigned char)*p) && *p != '_' && *p != '-') return 0;
     return 1;
 }
@@ -843,7 +851,12 @@ static void ib_run(IB *ib, const char *cmd, const char *label) {
     }
 }
 
+/*
+ * BUG 3 FIX: 'ib' parameter was unused – added (void)ib to silence
+ * -Wunused-parameter warning cleanly.
+ */
 static int ib_chroot(IB *ib, const char *cmd, int ignore_error) {
+    (void)ib; /* intentionally unused – kept for API consistency */
     char q[MAX_CMD], full[MAX_CMD];
     shell_quote(cmd,q,sizeof(q));
     snprintf(full,sizeof(full),"arch-chroot /mnt /bin/bash -c %s",q);
@@ -1001,9 +1014,11 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
             "mkdir -p /boot/efi/EFI/BOOT && "
             "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI",1);
 
-        char src[512],dst[512];
-        snprintf(src,sizeof(src),"/mnt/boot/limine.conf");
-        snprintf(dst,sizeof(dst),"/mnt/boot/efi/limine.conf");
+        /*
+         * BUG 2 FIX: 'src' and 'dst' char arrays were declared, filled with
+         * snprintf, and then never referenced – the copy used hardcoded string
+         * literals instead.  Removed the dead variables entirely.
+         */
         run_simple("cp /mnt/boot/limine.conf /mnt/boot/efi/limine.conf",1);
 
         char p1[256]; char p2[256]; char p3[256];
@@ -1484,13 +1499,29 @@ static void is_writef(const char *fmt, ...) {
 
 static IS *g_is = NULL;
 
+/*
+ * BUG 1 FIX: Double-free / use-after-free in log buffer trim.
+ *
+ * Original code:
+ *   memmove(lines, lines + (nlines-keep), keep * sizeof(char*));
+ *   for (i=keep; i<nlines; i++) free(lines[i]);   // ← freed the KEPT pointers!
+ *
+ * After memmove, lines[0..keep-1] and lines[keep..nlines-1] BOTH point to
+ * the same heap strings (the ones we just moved into the front).  Freeing
+ * the tail therefore freed strings still referenced by the front half,
+ * leaving dangling pointers.
+ *
+ * Fix: free the OLD front entries BEFORE memmove, then move the survivors.
+ */
 static void is_feed(IS *is, const char *line) {
     pthread_mutex_lock(&is->lock);
     if (is->nlines >= MAX_LINES) {
-        int keep = KEEP_LINES;
-        memmove(is->lines, is->lines + (is->nlines - keep),
-                keep * sizeof(char*));
-        for (int i=keep; i<is->nlines; i++) { free(is->lines[i]); is->lines[i]=NULL; }
+        int keep    = KEEP_LINES;
+        int discard = is->nlines - keep;          /* number of old entries to drop  */
+        /* 1. Free the oldest 'discard' entries. */
+        for (int i = 0; i < discard; i++) { free(is->lines[i]); is->lines[i] = NULL; }
+        /* 2. Slide the surviving entries to the front. */
+        memmove(is->lines, is->lines + discard, keep * sizeof(char*));
         is->nlines = keep;
     }
     if (is->nlines >= is->cap_lines) {
@@ -1723,9 +1754,15 @@ static void is_stop(IS *is) {
 
 typedef struct { IS *is; volatile int *stop; } TailerArg;
 
+/*
+ * BUG 4 FIX: O_RDONLY|O_CREAT is undefined behaviour on POSIX
+ * (O_CREAT requires O_WRONLY or O_RDWR).  The log file is always
+ * created by screen_install() with fopen("a") before this thread
+ * starts, so O_CREAT is simply unnecessary – use O_RDONLY alone.
+ */
 static void *tailer_thread(void *arg) {
     TailerArg *ta = arg;
-    int fd = open(LOG_FILE, O_RDONLY|O_CREAT, 0644);
+    int fd = open(LOG_FILE, O_RDONLY); /* file is guaranteed to exist at this point */
     if (fd<0) return NULL;
     lseek(fd, 0, SEEK_END);
     FILE *f = fdopen(fd,"r");
@@ -1909,8 +1946,8 @@ static int screen_identity(void) {
                           st.hostname, hn, sizeof(hn))) return 0;
         if (!validate_name(hn)) {
             msgbox(L("Invalid hostname","Hostname invalido"),
-                   L("Only letters, digits, hyphens and underscores. Max 32 chars.",
-                     "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres."));
+                   L("Only letters, digits, hyphens and underscores. Max 32 chars. Must start with a letter.",
+                     "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres. Debe empezar con una letra."));
             continue;
         }
         char un[64]={0};
@@ -1920,8 +1957,8 @@ static int screen_identity(void) {
                           st.username, un, sizeof(un))) return 0;
         if (!validate_name(un)) {
             msgbox(L("Invalid username","Usuario invalido"),
-                   L("Only letters, digits, hyphens and underscores. Max 32 chars.",
-                     "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres."));
+                   L("Only letters, digits, hyphens and underscores. Max 32 chars. Must start with a letter.",
+                     "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres. Debe empezar con una letra."));
             continue;
         }
         strncpy(st.hostname,hn,sizeof(st.hostname)-1);
@@ -2497,11 +2534,13 @@ static int screen_review(void) {
 }
 
 static void screen_finish(void) {
-    if(yesno_dlg(L("Installation Complete!","Instalacion completa!"),
-                  L("Arch Linux has been installed successfully.\n\n"
-                    "Remove the installation media. Reboot now?",
-                    "Arch Linux se ha instalado correctamente.\n\n"
-                    "Extrae el medio de instalacion. Reiniciar ahora?"))) {
+    if (yesno_dlg(L("Reboot?","\xc2\xbfReiniciar?"),
+                  L("Arch Linux has been installed!\n\n"
+                    "Remove the installation media.\n\n"
+                    "Reboot now?",
+                    "\xc2\xa1""Arch Linux se ha instalado!\n\n"
+                    "Extrae el medio de instalaci\xc3\xb3n.\n\n"
+                    "\xc2\xbfReiniciar ahora?"))) {
         infobox_dlg(L("Rebooting","Reiniciando"),
                     L("Unmounting filesystems and rebooting...",
                       "Desmontando sistemas de archivos y reiniciando..."));
