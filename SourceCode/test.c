@@ -38,25 +38,25 @@ typedef struct {
     char user_pass[256];
     char swap[8];
     char disk[64];
-    char desktop[32];         /* primary desktop (for DM selection)        */
-    char desktop_list[512];   /* NEW: all selected desktops, space-sep     */
+    char desktop[32];        
+    char desktop_list[512];   
     char gpu[32];
     char keymap[32];
     char timezone[128];
     char filesystem[8];
-    char kernel[32];          /* primary kernel (for bootloader config)    */
-    char kernel_list[512];    /* NEW: all selected kernels, space-sep      */
+    char kernel[32];          
+    char kernel_list[512];   
     char bootloader[16];
-    char extra_pkgs[2048];    /* NEW: extra packages to install            */
+    char extra_pkgs[2048];    
     int  mirrors;
     int  quick;
     int  yay;
     int  snapper;
     int  flatpak;
-    int  dualboot;            /* NEW: 0=full disk, 1=use existing part     */
-    char db_root[128];        /* NEW: dual-boot root partition path        */
-    char db_efi[128];         /* NEW: dual-boot EFI partition (not erased) */
-    char db_swap[128];        /* NEW: dual-boot swap partition (or "")     */
+    int  dualboot;            
+    char db_root[128];      
+    char db_efi[128];     
+    char db_swap[128];       
 } State;
 
 static State st = {
@@ -396,15 +396,6 @@ static int radiolist_dlg(const char *title, const char *text,
     return rc == 0;
 }
 
-/* ---------------------------------------------------------------
- * checklist_dlg  – multi-select dialog (Space toggles items).
- * Uses --separate-output so each selected tag is on its own line
- * without quotes, making parsing trivial.
- *
- * defaults[] is an array of tag strings that start pre-selected.
- * Selected results are returned in out[0..outsz-1] (each 256 chars).
- * Returns the number of selected items (0 is valid), or -1 on Cancel.
- * --------------------------------------------------------------- */
 static int checklist_dlg(const char *title, const char *text,
                           MenuItem *items, int n,
                           const char **defaults, int ndef,
@@ -427,9 +418,9 @@ static int checklist_dlg(const char *title, const char *text,
     char raw[4096] = {0};
     int rc = da_exec(&da, raw, sizeof(raw));
     da_free(&da);
-    if (rc != 0) return -1;   /* user pressed Cancel */
+    if (rc != 0) return -1;  
 
-    /* Parse newline-separated selected tags */
+
     int count = 0;
     char *p = raw;
     while (*p && count < maxout) {
@@ -576,10 +567,7 @@ static int list_disks(DiskInfo *out, int max) {
     return n;
 }
 
-/* ---------------------------------------------------------------
- * Partition info for dual-boot partition selection.
- * Uses lsblk --pairs output for reliable parsing.
- * --------------------------------------------------------------- */
+
 typedef struct {
     char path[128];
     char fstype[32];
@@ -1003,9 +991,6 @@ static void ib_setup_btrfs(IB *ib, const char *p3, const char *disk) {
     ib_run(ib,cmd,"mount @snapshots");
 }
 
-/* ---------------------------------------------------------------
- * XFS  - straightforward: mkfs.xfs + mount
- * --------------------------------------------------------------- */
 static void ib_setup_xfs(IB *ib, const char *part) {
     char cmd[MAX_CMD];
     snprintf(cmd, sizeof(cmd), "mkfs.xfs -f %s", part);
@@ -1014,11 +999,6 @@ static void ib_setup_xfs(IB *ib, const char *part) {
     ib_run(ib, cmd, "mount xfs root");
 }
 
-/* ---------------------------------------------------------------
- * ZFS  - installs archzfs repo, creates pool + datasets, exports
- * and reimports at /mnt.  Only supports linux kernel.
- * Forces GRUB as bootloader (most compatible with ZFS).
- * --------------------------------------------------------------- */
 static void ib_add_archzfs_repo(int in_chroot) {
     const char *block =
         "\n[archzfs]\n"
@@ -1043,11 +1023,9 @@ static void ib_setup_zfs(IB *ib, const char *part) {
     ib_add_archzfs_repo(0);
     run_stream("pacman -S --noconfirm zfs-utils", NULL, NULL, 1);
 
-    /* Wipe any old ZFS labels on the partition */
     snprintf(cmd, sizeof(cmd), "zpool labelclear -f %s 2>/dev/null || true", part);
     run_stream(cmd, NULL, NULL, 1);
 
-    /* Create pool with recommended options */
     snprintf(cmd, sizeof(cmd),
         "zpool create -f "
         "-o ashift=12 "
@@ -1062,7 +1040,6 @@ static void ib_setup_zfs(IB *ib, const char *part) {
         "zroot %s", part);
     ib_run(ib, cmd, "zpool create");
 
-    /* Datasets */
     ib_run(ib, "zfs create -o canmount=off -o mountpoint=none zroot/data", "zfs create data");
     ib_run(ib, "zfs create -o mountpoint=/ zroot/data/root",               "zfs create root");
     ib_run(ib, "zfs create -o mountpoint=/home zroot/data/home",           "zfs create home");
@@ -1070,7 +1047,6 @@ static void ib_setup_zfs(IB *ib, const char *part) {
     ib_run(ib, "zfs create -o mountpoint=none zroot/data/var/lib",         "zfs create var/lib");
     ib_run(ib, "zfs create -o mountpoint=none zroot/data/var/log",         "zfs create var/log");
 
-    /* Export and reimport at /mnt */
     ib_run(ib, "zpool export zroot", "zpool export");
     ib_run(ib, "zpool import -d /dev -R /mnt zroot", "zpool import");
     ib_run(ib, "zfs mount zroot/data/root", "zfs mount root");
@@ -1119,7 +1095,6 @@ static void ib_install_systemd_boot(IB *ib, const char *root_dev) {
     }
     run_simple("mkdir -p /mnt/boot/loader/entries",0);
 
-    /* Write one entry per installed kernel */
     char klist[512]; strncpy(klist, st.kernel_list, sizeof(klist)-1);
     char *tok = strtok(klist, " ");
     int kid = 0;
@@ -1169,7 +1144,6 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
     FILE *f = fopen("/mnt/boot/limine.conf","w");
     if (f) {
         fprintf(f,"timeout: 5\n\n");
-        /* One entry per kernel */
         char klist[512]; strncpy(klist, st.kernel_list, sizeof(klist)-1);
         char *tok = strtok(klist, " ");
         while (tok) {
@@ -1379,22 +1353,17 @@ static void *ib_run_thread(void *arg) {
 
     compile_regexes();
 
-    /* ---- resolve primary kernel (first token of kernel_list) ---- */
     char pkernel[64]; strncpy(pkernel, st.kernel_list, sizeof(pkernel)-1);
     { char *sp = strchr(pkernel,' '); if(sp) *sp='\0'; }
     strncpy(st.kernel, pkernel, sizeof(st.kernel)-1);
 
-    /* ---- resolve primary desktop ---- */
     char pdesktop[64]; strncpy(pdesktop, st.desktop_list, sizeof(pdesktop)-1);
     { char *sp = strchr(pdesktop,' '); if(sp) *sp='\0'; }
     strncpy(st.desktop, pdesktop, sizeof(st.desktop)-1);
 
-    /* ---- device paths ---- */
     char disk[256];
     if (st.dualboot) {
-        /* For dual boot the "disk" for the bootloader is the parent device */
         strncpy(disk, st.db_root, sizeof(disk)-1);
-        /* strip trailing digit(s) / partition suffix to get parent disk */
         char *end = disk + strlen(disk) - 1;
         if (strstr(disk,"nvme") || strstr(disk,"mmcblk")) {
             while (end > disk && isdigit((unsigned char)*end)) end--;
@@ -1413,10 +1382,9 @@ static void *ib_run_thread(void *arg) {
     int  uefi       = is_uefi();
     const char *bl  = st.bootloader;
     const char *fs  = st.filesystem;
-    const char *ker = st.kernel;         /* primary kernel */
+    const char *ker = st.kernel;      
     const char *root_dev = st.dualboot ? st.db_root : p3;
 
-    /* ZFS forces GRUB */
     if (!strcmp(fs,"zfs")) {
         strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
         bl = st.bootloader;
@@ -1445,11 +1413,7 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,5);
 
-    /* ================================================================
-     * DISK SETUP  –  full install vs dual boot
-     * ============================================================== */
     if (!st.dualboot) {
-        /* ---- Full disk install (original behaviour) ---- */
         ib_stage(ib, L("Wiping disk...","Borrando disco..."));
         ib_gradual(ib,7,20,0.04);
         char cmd[MAX_CMD];
@@ -1503,7 +1467,6 @@ static void *ib_run_thread(void *arg) {
         }
 
     } else {
-        /* ---- Dual-boot: use existing partition ---- */
         char cmd[MAX_CMD];
         ib_stage(ib, L("Formatting root partition (dual-boot)...",
                        "Formateando particion raiz (dual-boot)..."));
@@ -1519,14 +1482,12 @@ static void *ib_run_thread(void *arg) {
             ib_run(ib, cmd, "mount root dual-boot");
         }
 
-        /* Swap */
         if (st.db_swap[0]) {
             snprintf(cmd,sizeof(cmd),"swapon %s", st.db_swap);
             run_stream(cmd, NULL, NULL, 1);
             write_log_fmt("Swap enabled: %s", st.db_swap);
         }
 
-        /* EFI – do NOT format, just mount */
         if (uefi && st.db_efi[0]) {
             ib_stage(ib, L("Mounting existing EFI partition...",
                            "Montando particion EFI existente..."));
@@ -1543,9 +1504,6 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,18);
 
-    /* ================================================================
-     * Build kernel package list from kernel_list
-     * ============================================================== */
     char kpkgs[1024]={0};
     char kheaders[1024]={0};
     {
@@ -1556,7 +1514,6 @@ static void *ib_run_thread(void *arg) {
             strncat(kpkgs, tok, sizeof(kpkgs)-strlen(kpkgs)-1);
             char hdr[64]; snprintf(hdr,sizeof(hdr)," %s-headers",tok);
             strncat(kheaders, hdr, sizeof(kheaders)-strlen(kheaders)-1);
-            /* For CachyOS kernels add their special repo */
             if (!strcmp(tok,"linux-cachyos")) ib_add_cachyos_repo(ib,0);
             tok = strtok(NULL," ");
         }
@@ -1588,7 +1545,6 @@ static void *ib_run_thread(void *arg) {
                    "Instalando sistema base - esto puede tardar..."));
     ib_pacman_critical(ib,cmd,18,52,"pacstrap");
 
-    /* Add CachyOS repo inside chroot if needed */
     {
         char klist_tmp[512]; strncpy(klist_tmp, st.kernel_list, sizeof(klist_tmp)-1);
         char *tok = strtok(klist_tmp, " ");
@@ -1597,23 +1553,18 @@ static void *ib_run_thread(void *arg) {
             tok = strtok(NULL," ");
         }
     }
-    /* Add archzfs repo inside chroot if ZFS */
     if (!strcmp(fs,"zfs")) {
         ib_add_archzfs_repo(1);
         ib_chroot(ib, "pacman -Sy --noconfirm zfs-utils", 1);
-        /* Enable ZFS services */
         ib_chroot(ib, "systemctl enable zfs-import-cache zfs-import.target zfs-mount zfs.target", 1);
-        /* Add ZFS hook to mkinitcpio */
         ib_chroot(ib,
             "sed -i 's/^HOOKS=.*$/HOOKS=(base udev autodetect modconf block zfs filesystems keyboard fsck)/' "
             "/etc/mkinitcpio.conf", 1);
-        /* Create hostid for ZFS */
         ib_chroot(ib, "zgenhostid", 1);
     }
 
     ib_stage(ib, L("Generating fstab...","Generando fstab..."));
     if (!strcmp(fs,"zfs")) {
-        /* ZFS manages its own mounts; minimal fstab */
         FILE *fstab = fopen("/mnt/etc/fstab","a");
         if (fstab) { fprintf(fstab,"# ZFS managed\n"); fclose(fstab); }
     } else {
@@ -1685,16 +1636,12 @@ static void *ib_run_thread(void *arg) {
     ib_install_gpu(ib,71,77);
     ib_pct(ib,77);
 
-    /* ================================================================
-     * Desktop Environments  –  install all selected
-     * ============================================================== */
     {
         char dlist[512]; strncpy(dlist, st.desktop_list, sizeof(dlist)-1);
         char *dtok = strtok(dlist, " ");
         int any_desktop = 0;
         int dm_enabled  = 0;
         double de_start = 77.0, de_end = 91.0;
-        /* Count non-None desktops for progress division */
         int de_count = 0;
         {
             char tmp2[512]; strncpy(tmp2, st.desktop_list, sizeof(tmp2)-1);
@@ -1724,14 +1671,12 @@ static void *ib_run_thread(void *arg) {
                         ib_pacman(ib, cmd, gs + i*gstep, gs + (i+1)*gstep, 1);
                     }
                 }
-                /* Enable DM of the first desktop only */
                 const char *dm = get_desktop_dm(dtok);
                 if (dm && !dm_enabled) {
                     snprintf(cmd,sizeof(cmd),"systemctl enable %s",dm);
                     ib_chroot(ib,cmd,0);
                     dm_enabled = 1;
                 }
-                /* Seat groups for Wayland compositors */
                 if (!strcmp(dtok,"Hyprland")||!strcmp(dtok,"Sway")) {
                     snprintf(stage_msg,sizeof(stage_msg),
                              L("Enabling seat management for %s...",
@@ -1745,7 +1690,6 @@ static void *ib_run_thread(void *arg) {
             dtok = strtok(NULL, " ");
         }
 
-        /* Audio – install once if any desktop is selected */
         if (any_desktop) {
             ib_stage(ib, L("Installing audio (pipewire)...","Instalando audio (pipewire)..."));
             ib_pacman(ib,
@@ -1756,9 +1700,6 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,94);
 
-    /* ================================================================
-     * Bootloader
-     * ============================================================== */
     if (!strcmp(bl,"systemd-boot")) {
         ib_stage(ib, L("Installing systemd-boot...","Instalando systemd-boot..."));
         ib_install_systemd_boot(ib,root_dev);
@@ -1772,9 +1713,6 @@ static void *ib_run_thread(void *arg) {
     }
     ib_pct(ib,97);
 
-    /* ================================================================
-     * Optional extras
-     * ============================================================== */
     if (st.snapper && !strcmp(fs,"btrfs")) {
         ib_stage(ib, L("Setting up snapper (BTRFS snapshots)...",
                        "Configurando snapper (snapshots BTRFS)..."));
@@ -1813,9 +1751,6 @@ static void *ib_run_thread(void *arg) {
     if (st.flatpak && strcmp(st.desktop,"None"))
         ib_install_flatpak(ib);
 
-    /* ================================================================
-     * Extra user-selected packages
-     * ============================================================== */
     if (st.extra_pkgs[0]) {
         ib_stage(ib, L("Installing extra packages...","Instalando paquetes adicionales..."));
         snprintf(cmd,sizeof(cmd),
@@ -2210,9 +2145,6 @@ static int screen_install(void) {
     return 1;
 }
 
-/* ============================================================
- * SCREEN FUNCTIONS
- * ============================================================ */
 
 static void screen_welcome(void) {
     char text[1024];
@@ -2333,13 +2265,7 @@ static int screen_passwords(void) {
     }
 }
 
-/* ---------------------------------------------------------------
- * screen_disk  – select disk (full install) OR pick partition
- *                (dual-boot).  After full-disk selection also
- *                prompts for swap size.
- * --------------------------------------------------------------- */
 static int screen_disk(void) {
-    /* Ask full vs dual-boot FIRST */
     {
         MenuItem mode_items[2];
         strncpy(mode_items[0].tag,"full",255);
@@ -2369,7 +2295,6 @@ static int screen_disk(void) {
     }
 
     if (!st.dualboot) {
-        /* ---- Full disk install path (original) ---- */
         DiskInfo disks[32]; int nd = list_disks(disks,32);
         if (nd==0) {
             msgbox(L("No disks found","Sin discos"),
@@ -2416,7 +2341,6 @@ static int screen_disk(void) {
         if (!strncmp(dname,"/dev/",5)) dname+=5;
         strncpy(st.disk,dname,sizeof(st.disk)-1);
 
-        /* Swap size */
         char sug[8]; snprintf(sug,sizeof(sug),"%d",suggest_swap_gb());
         while(1) {
             char swap_hdr[512];
@@ -2435,7 +2359,6 @@ static int screen_disk(void) {
         }
 
     } else {
-        /* ---- Dual boot path: show all partitions ---- */
         PartEntry parts[64];
         int np = list_all_partitions(parts, 64);
         if (np == 0) {
@@ -2446,7 +2369,6 @@ static int screen_disk(void) {
             return 0;
         }
 
-        /* Show lsblk overview */
         {
             char lsblk[4096]={0};
             FILE *fp = popen("lsblk 2>/dev/null | head -50","r");
@@ -2463,7 +2385,6 @@ static int screen_disk(void) {
             msgbox(L("Dual Boot - Partition Overview","Dual Boot - Vista de particiones"), txt);
         }
 
-        /* Select root partition */
         MenuItem *part_items = malloc(np * sizeof(MenuItem));
         for (int i = 0; i < np; i++) {
             strncpy(part_items[i].tag, parts[i].path, 255);
@@ -2486,7 +2407,6 @@ static int screen_disk(void) {
         free(part_items);
         if (!ok || !sel_root[0]) return 0;
 
-        /* Confirmation */
         char conf_msg[256];
         snprintf(conf_msg, sizeof(conf_msg),
                  L("CONFIRM: %s will be ERASED and formatted.\n\nProceed?",
@@ -2495,7 +2415,6 @@ static int screen_disk(void) {
         if (!yesno_dlg(L("Confirm Format","Confirmar formateo"), conf_msg)) return 0;
         strncpy(st.db_root, sel_root, sizeof(st.db_root)-1);
 
-        /* Select EFI partition (UEFI only) */
         if (is_uefi()) {
             PartEntry parts2[64]; int np2 = list_all_partitions(parts2, 64);
             MenuItem *efi_items = malloc((np2+1) * sizeof(MenuItem));
@@ -2527,7 +2446,6 @@ static int screen_disk(void) {
             if (strcmp(sel_efi,"none") != 0)
                 strncpy(st.db_efi, sel_efi, sizeof(st.db_efi)-1);
             else {
-                /* Try to auto-detect the ESP */
                 FILE *fp2 = popen(
                     "lsblk -b -p -n -o PATH,FSTYPE,PARTTYPE --pairs 2>/dev/null | "
                     "grep -i 'PARTTYPE=\"c12a7328' | head -1", "r");
@@ -2539,7 +2457,6 @@ static int screen_disk(void) {
             }
         }
 
-        /* Select swap partition (optional) */
         {
             PartEntry parts3[64]; int np3 = list_all_partitions(parts3, 64);
             MenuItem *sw_items = malloc((np3+1) * sizeof(MenuItem));
@@ -2610,7 +2527,6 @@ static int screen_filesystem(void) {
                          "  zfs    - avanzado, requiere repo archzfs."),
                        items, 4, st.filesystem, out, sizeof(out))) return 0;
 
-    /* ZFS: warn and force GRUB + linux kernel */
     if (!strcmp(out,"zfs")) {
         msgbox(L("ZFS - Important Notes","ZFS - Notas importantes"),
                L("ZFS on Arch Linux:\n\n"
@@ -2631,10 +2547,6 @@ static int screen_filesystem(void) {
     return 1;
 }
 
-/* ---------------------------------------------------------------
- * screen_kernel  – multi-select checklist.
- * Space bar toggles. First selected becomes primary kernel.
- * --------------------------------------------------------------- */
 static int screen_kernel(void) {
     MenuItem items[5];
     strncpy(items[0].tag,"linux",255);
@@ -2658,7 +2570,6 @@ static int screen_kernel(void) {
         "linux-cachyos - CachyOS kernel (max speed, needs cachyos repo)",
         "linux-cachyos - kernel CachyOS (maxima velocidad, requiere repo cachyos)"));
 
-    /* Build defaults from current kernel_list */
     char kl_copy[512]; strncpy(kl_copy, st.kernel_list, sizeof(kl_copy)-1);
     const char *defs[8]={0}; int ndefs=0;
     char *tok = strtok(kl_copy, " ");
@@ -2675,7 +2586,7 @@ static int screen_kernel(void) {
               "Usa ESPACIO para activar/desactivar. El primer kernel seleccionado se usa en el bootloader.\n"
               "Tener linux + linux-lts te da una opcion de respaldo."),
             items, 5, defs, ndefs, sel, 8);
-        if (nsel < 0) return 0;         /* Cancel */
+        if (nsel < 0) return 0;       
         if (nsel == 0) {
             msgbox(L("No kernel selected","Sin kernel seleccionado"),
                    L("You must select at least one kernel.",
@@ -2683,7 +2594,6 @@ static int screen_kernel(void) {
         }
     }
 
-    /* Build kernel_list and primary kernel */
     st.kernel_list[0] = '\0';
     for (int i = 0; i < nsel; i++) {
         if (i) strncat(st.kernel_list, " ", sizeof(st.kernel_list)-strlen(st.kernel_list)-1);
@@ -2945,10 +2855,6 @@ static int screen_timezone(void) {
     return 1;
 }
 
-/* ---------------------------------------------------------------
- * screen_desktop  – multi-select checklist.
- * Multiple DEs can be installed; the DM of the first is enabled.
- * --------------------------------------------------------------- */
 static int screen_desktop(void) {
     const char *desktops[][2] = {
         {"KDE Plasma",L("KDE Plasma - full featured, modern","KDE Plasma - completo, moderno")},
@@ -2971,7 +2877,6 @@ static int screen_desktop(void) {
         strncpy(items[i].desc,desktops[i][1],511);
     }
 
-    /* Build defaults from current desktop_list */
     char dl_copy[512]; strncpy(dl_copy, st.desktop_list, sizeof(dl_copy)-1);
     const char *defs[8]={0}; int ndefs=0;
     char *tok = strtok(dl_copy," ");
@@ -2997,7 +2902,6 @@ static int screen_desktop(void) {
     }
     free(items);
 
-    /* If "None" is in list alongside real DEs, remove None */
     char cleaned[8][256]; int nc=0;
     int has_non_none = 0;
     for(int i=0;i<nsel;i++) if(strcmp(sel[i],"None")) has_non_none=1;
@@ -3007,7 +2911,6 @@ static int screen_desktop(void) {
     }
     if (nc == 0) { strncpy(cleaned[0],"None",255); nc=1; }
 
-    /* Build desktop_list and primary desktop */
     st.desktop_list[0] = '\0';
     for (int i=0;i<nc;i++) {
         if(i) strncat(st.desktop_list," ",sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
@@ -3100,24 +3003,15 @@ static int screen_flatpak(void) {
     return 1;
 }
 
-/* ---------------------------------------------------------------
- * screen_extra_packages  – checklist of optional packages.
- * Space toggles. Multiple categories: monitoring, utilities,
- * editors, shells, network, multimedia, development, fun.
- * --------------------------------------------------------------- */
 static int screen_extra_packages(void) {
-    /* tag = package name, desc = friendly description */
     static const char *pkgs[][2] = {
-        /* System monitors */
         {"btop",       "btop        - beautiful resource monitor (CPU/RAM/disk/net)"},
         {"htop",       "htop        - interactive process viewer"},
         {"gtop",       "gtop        - graphical top in the terminal"},
         {"nvtop",      "nvtop       - GPU process monitor (NVIDIA/AMD)"},
-        /* System info */
         {"fastfetch",  "fastfetch   - fast, beautiful system info"},
         {"neofetch",   "neofetch    - classic system info (slower)"},
         {"inxi",       "inxi        - full system info tool"},
-        /* Shell utilities */
         {"tmux",       "tmux        - terminal multiplexer"},
         {"tree",       "tree        - directory tree viewer"},
         {"ncdu",       "ncdu        - disk usage analyzer (TUI)"},
@@ -3128,28 +3022,21 @@ static int screen_extra_packages(void) {
         {"eza",        "eza         - modern ls replacement (colors + icons)"},
         {"fd",         "fd          - fast alternative to find"},
         {"ripgrep",    "ripgrep     - extremely fast grep replacement"},
-        /* Editors */
         {"neovim",     "neovim      - modern Vim-based editor"},
         {"micro",      "micro       - easy terminal editor (Ctrl+S to save)"},
-        /* Shells */
         {"zsh",        "zsh         - Z shell (popular with oh-my-zsh)"},
         {"fish",       "fish        - user-friendly interactive shell"},
-        /* Network */
         {"nmap",       "nmap        - network scanner"},
         {"wget",       "wget        - CLI download tool"},
         {"aria2",      "aria2       - fast multi-protocol downloader"},
         {"yt-dlp",     "yt-dlp      - download YouTube and other videos"},
-        /* Archiving */
         {"p7zip",      "p7zip       - 7z archive support"},
         {"unrar",      "unrar       - RAR archive support"},
-        /* Multimedia */
         {"mpv",        "mpv         - fast, lightweight media player"},
         {"ffmpeg",     "ffmpeg      - multimedia converter and toolkit"},
         {"imagemagick","imagemagick - CLI image manipulation"},
-        /* Fonts */
         {"noto-fonts", "noto-fonts  - Google Noto font family (wide Unicode)"},
         {"ttf-hack-nerd-font","ttf-hack-nerd-font  - Hack with Nerd Font icons"},
-        /* Fun */
         {"cowsay",     "cowsay      - talking ASCII cow"},
         {"sl",         "sl          - steam locomotive (fix 'sl' typo)"},
         {"lolcat",     "lolcat      - rainbow output for any command"},
@@ -3166,7 +3053,6 @@ static int screen_extra_packages(void) {
         strncpy(items[i].desc, pkgs[i][1], 511);
     }
 
-    /* Build defaults from current extra_pkgs */
     const char *defs[64]={0}; int ndefs=0;
     char ep_copy[2048]; strncpy(ep_copy, st.extra_pkgs, sizeof(ep_copy)-1);
     char *tok = strtok(ep_copy," ");
@@ -3185,7 +3071,6 @@ static int screen_extra_packages(void) {
     free(items);
 
     if (nsel < 0) {
-        /* Cancel = skip extra packages, not a fatal error */
         st.extra_pkgs[0] = '\0';
         return 1;
     }
