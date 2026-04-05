@@ -1472,7 +1472,7 @@ static void *ib_run_thread(void *arg) {
                        "Formateando particion raiz (dual-boot)..."));
         ib_gradual(ib,10,15,0.04);
 
-        if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, st.db_root);
+if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         else if (!strcmp(fs,"xfs")) ib_setup_xfs(ib, st.db_root);
         else if (!strcmp(fs,"zfs")) ib_setup_zfs(ib, st.db_root);
         else {
