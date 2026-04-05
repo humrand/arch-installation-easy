@@ -36,7 +36,10 @@ The ISO image is available in the releases.
 - NetworkManager enabled by default
 - GPU driver selection
   - NVIDIA
-  - AMD/Intel (Mesa)
+  - AMD
+  - Intel
+  - intel+nvidia
+  - amd+nvidia
   - None
 - Optional desktop environments:
   - KDE Plasma
