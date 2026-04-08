@@ -1125,138 +1125,101 @@ static void ib_install_systemd_boot(IB *ib, const char *root_dev) {
 static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
     int uefi = is_uefi();
     char microcode[32]; detect_cpu(microcode,sizeof(microcode));
-    char cmd[512];
-    FILE *fp;
-
-    /* Get PARTUUID of the root partition (always needed for UEFI, useful for BIOS) */
     char partuuid[128]={0};
+    char cmd[256];
     snprintf(cmd,sizeof(cmd),"blkid -s PARTUUID -o value %s 2>/dev/null",root_dev);
-    fp = popen(cmd,"r");
+    FILE *fp = popen(cmd,"r");
     if (fp) { fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
 
-    /* root= kernel parameter */
     char root_opt[256];
     if (partuuid[0]) snprintf(root_opt,sizeof(root_opt),"root=PARTUUID=%s",partuuid);
     else             snprintf(root_opt,sizeof(root_opt),"root=%s",root_dev);
 
-    /* Extra kernel params for btrfs */
     char extra[64]={0};
     if (!strcmp(st.filesystem,"btrfs")) strcpy(extra,"rootflags=subvol=@ ");
 
-    /* btrfs subvol prefix for paths inside the partition */
     char btrfs_prefix[4] = "";
     if (!strcmp(st.filesystem,"btrfs")) strcpy(btrfs_prefix,"/@");
 
-    /*
-     * For UEFI: ESP is at /boot/efi, kernel/initramfs are on the root partition.
-     *   boot() = ESP partition, so we MUST use uuid(PARTUUID) to reach the kernel.
-     *   limine.conf must live on the ESP (FAT32) — write it directly there.
-     *
-     * For BIOS: limine.conf and limine-bios.sys go in /boot/limine/ on the root
-     *   partition. boot() refers to that same partition, so paths are just boot():/...
-     */
-    const char *conf_path = uefi ? "/mnt/boot/efi/limine.conf"
-                                 : "/mnt/boot/limine/limine.conf";
-
-    /* Create needed directories */
-    run_simple("mkdir -p /mnt/boot/limine", 0);
-    if (uefi) run_simple("mkdir -p /mnt/boot/efi", 0);
-
-    FILE *f = fopen(conf_path, "w");
+    run_simple("mkdir -p /mnt/boot/limine",0);
+    FILE *f = fopen("/mnt/boot/limine.conf","w");
     if (f) {
-        fprintf(f, "timeout: 5\n\n");
+        fprintf(f,"timeout: 5\n\n");
         char klist[512]; strncpy(klist, st.kernel_list, sizeof(klist)-1);
         char *tok = strtok(klist, " ");
         while (tok) {
             char kpath[512], ipath[512], ucode_line[512]={0};
-
             if (uefi) {
-                /* kernel is on root partition, not on ESP — always use uuid() */
-                snprintf(kpath, sizeof(kpath), "uuid(%s):%s/boot/vmlinuz-%s",
-                         partuuid, btrfs_prefix, tok);
-                snprintf(ipath, sizeof(ipath), "uuid(%s):%s/boot/initramfs-%s.img",
-                         partuuid, btrfs_prefix, tok);
+                /* UEFI: ESP is mounted at /boot, so kernel/initramfs live on FAT32.
+                   Limine can read FAT32 natively. Use boot():/ (no /boot prefix). */
+                snprintf(kpath,sizeof(kpath),"boot():/vmlinuz-%s",tok);
+                snprintf(ipath,sizeof(ipath),"boot():/initramfs-%s.img",tok);
                 if (microcode[0])
-                    snprintf(ucode_line, sizeof(ucode_line),
-                             "    module_path: uuid(%s):%s/boot/%s.img\n",
-                             partuuid, btrfs_prefix, microcode);
+                    snprintf(ucode_line,sizeof(ucode_line),
+                             "    module_path: boot():/%s.img\n",microcode);
             } else {
-                /* BIOS: limine.conf is on the same partition as /boot */
-                snprintf(kpath, sizeof(kpath), "boot():%s/boot/vmlinuz-%s",
-                         btrfs_prefix, tok);
-                snprintf(ipath, sizeof(ipath), "boot():%s/boot/initramfs-%s.img",
-                         btrfs_prefix, tok);
+                /* BIOS: kernel lives on the root partition at /boot/.
+                   Use boot() which refers to the boot device. */
+                snprintf(kpath,sizeof(kpath),"boot():%s/boot/vmlinuz-%s",btrfs_prefix,tok);
+                snprintf(ipath,sizeof(ipath),"boot():%s/boot/initramfs-%s.img",btrfs_prefix,tok);
                 if (microcode[0])
-                    snprintf(ucode_line, sizeof(ucode_line),
-                             "    module_path: boot():%s/boot/%s.img\n",
-                             btrfs_prefix, microcode);
+                    snprintf(ucode_line,sizeof(ucode_line),
+                             "    module_path: boot():%s/boot/%s.img\n",btrfs_prefix,microcode);
             }
-
-            fprintf(f, "/Arch Linux (%s)\n    protocol: linux\n", tok);
-            fprintf(f, "    kernel_path: %s\n", kpath);
-            fprintf(f, "    kernel_cmdline: %s rw quiet %s\n", root_opt, extra);
+            fprintf(f,"/Arch Linux (%s)\n    protocol: linux\n",tok);
+            fprintf(f,"    path: %s\n", kpath);
+            fprintf(f,"    cmdline: %s rw quiet %s\n", root_opt, extra);
             if (ucode_line[0]) fputs(ucode_line, f);
-            fprintf(f, "    module_path: %s\n\n", ipath);
+            fprintf(f,"    module_path: %s\n\n", ipath);
             tok = strtok(NULL, " ");
         }
         fclose(f);
-        write_log_fmt("limine.conf written to %s", conf_path);
-    } else {
-        write_log_fmt("ERROR: could not open %s for writing", conf_path);
     }
+    write_log("limine.conf written to /mnt/boot/limine.conf");
 
     if (uefi) {
-        /* Copy EFI binary to ESP */
         ib_chroot_c(ib,
-            "mkdir -p /boot/efi/EFI/limine && "
-            "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/limine/",
+            "mkdir -p /boot/EFI/limine && "
+            "cp /usr/share/limine/BOOTX64.EFI /boot/EFI/limine/",
             "limine copy EFI");
-
-        /* Fallback path for removable/broken NVRAM firmware */
         ib_chroot(ib,
-            "mkdir -p /boot/efi/EFI/BOOT && "
-            "cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI", 1);
+            "mkdir -p /boot/EFI/BOOT && "
+            "cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI",1);
 
-        /* Register boot entry in UEFI NVRAM */
-        char disk_dev[256]; snprintf(disk_dev, sizeof(disk_dev), "/dev/%s", st.disk);
-        char p1[256], p2[256], p3[256];
-        partition_paths(disk_dev, p1, p2, p3, sizeof(p1));
+        /* limine.conf is already at /mnt/boot/limine.conf (on ESP) - no copy needed */
+
+        char p1[256]; char p2[256]; char p3[256];
+        char disk_dev[256]; snprintf(disk_dev,sizeof(disk_dev),"/dev/%s",st.disk);
+        partition_paths(disk_dev,p1,p2,p3,sizeof(p1));
 
         char partn[8]="1";
-        snprintf(cmd, sizeof(cmd), "lsblk -no PARTN %s 2>/dev/null", p1);
-        fp = popen(cmd,"r");
-        if (fp) { fgets(partn,sizeof(partn),fp); pclose(fp); trim_nl(partn); }
+        snprintf(cmd,sizeof(cmd),"lsblk -no PARTN %s 2>/dev/null",p1);
+        fp = popen(cmd,"r"); if(fp){fgets(partn,sizeof(partn),fp);pclose(fp);trim_nl(partn);}
         if (!partn[0]) strcpy(partn,"1");
 
-        snprintf(cmd, sizeof(cmd),
+        snprintf(cmd,sizeof(cmd),
                  "efibootmgr --create --disk %s --part %s "
                  "--label 'Arch Linux Limine' --loader '\\EFI\\limine\\BOOTX64.EFI' --unicode",
                  disk_dev, partn);
-        run_stream(cmd, NULL, NULL, 1);
+        run_stream(cmd,NULL,NULL,1);
 
-        /* pacman hook to redeploy EFI binary after limine upgrades */
         const char *hook =
             "[Trigger]\nOperation = Install\nOperation = Upgrade\n"
             "Type = Package\nTarget = limine\n\n"
             "[Action]\nDescription = Deploying Limine after upgrade...\n"
             "When = PostTransaction\n"
             "Exec = /bin/sh -c "
-            "'/usr/bin/cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/limine/ && "
-            "/usr/bin/cp /usr/share/limine/BOOTX64.EFI /boot/efi/EFI/BOOT/BOOTX64.EFI'\n";
-        run_simple("mkdir -p /mnt/etc/pacman.d/hooks", 0);
-        fp = fopen("/mnt/etc/pacman.d/hooks/limine.hook", "w");
-        if (fp) { fputs(hook, fp); fclose(fp); }
-
+            "'cp /usr/share/limine/BOOTX64.EFI /boot/EFI/limine/ && "
+            "cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI'\n";
+        run_simple("mkdir -p /mnt/etc/pacman.d/hooks",0);
+        fp = fopen("/mnt/etc/pacman.d/hooks/limine.hook","w");
+        if (fp) { fputs(hook,fp); fclose(fp); }
         write_log("Limine UEFI fully configured.");
     } else {
-        /* BIOS: copy stage-3 file and install to MBR/GPT */
-        ib_chroot(ib, "cp /usr/share/limine/limine-bios.sys /boot/limine/", 1);
-
-        /* limine binary is inside the chroot — must run via arch-chroot */
-        snprintf(cmd, sizeof(cmd), "arch-chroot /mnt limine bios-install %s", disk);
-        int rc = run_stream(cmd, NULL, NULL, 0);
-        if (rc) write_log_fmt("limine bios-install rc=%d - check disk manually", rc);
-
+        ib_chroot(ib,"cp /usr/share/limine/limine-bios.sys /boot/limine/",1);
+        snprintf(cmd,sizeof(cmd),"limine bios-install %s",disk);
+        int rc = run_stream(cmd,NULL,NULL,0);
+        if (rc) write_log_fmt("limine bios-install rc=%d - check disk manually",rc);
         write_log("Limine BIOS installed.");
     }
 }
@@ -1495,7 +1458,7 @@ static void *ib_run_thread(void *arg) {
 
         if (uefi) {
             ib_stage(ib, L("Mounting EFI...","Montando EFI..."));
-            if (!strcmp(bl,"systemd-boot")) {
+            if (!strcmp(bl,"systemd-boot") || !strcmp(bl,"limine")) {
                 ib_run(ib,"mkdir -p /mnt/boot","mkdir /mnt/boot");
                 snprintf(cmd,sizeof(cmd),"mount %s /mnt/boot",p1);
                 ib_run(ib,cmd,"mount ESP /mnt/boot");
@@ -1532,7 +1495,7 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         if (uefi && st.db_efi[0]) {
             ib_stage(ib, L("Mounting existing EFI partition...",
                            "Montando particion EFI existente..."));
-            if (!strcmp(bl,"systemd-boot")) {
+            if (!strcmp(bl,"systemd-boot") || !strcmp(bl,"limine")) {
                 run_simple("mkdir -p /mnt/boot", 0);
                 snprintf(cmd,sizeof(cmd),"mount %s /mnt/boot", st.db_efi);
                 ib_run(ib, cmd, "mount EFI /mnt/boot dual-boot");
