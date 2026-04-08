@@ -3225,10 +3225,11 @@ int main(void) {
         {L("Keymap","Teclado"),            screen_keymap,        1},
         {L("Disk","Disco"),                screen_disk,          1},
         {L("Identity","Identidad"),        screen_identity,      1},
-        {L("Passwords","Contrasenas"),     screen_passwords,     1},
-        {L("Review","Revision"),           screen_review,        1},
-        {L("Install","Instalar"),          screen_install_wrap,  0},
-        {L("Finish","Finalizar"),          screen_finish_wrap,   0},
+        {L("Passwords","Contrasenas"),     screen_passwords,        1},
+        {L("Extra Packages","Paquetes extra"), screen_extra_packages, 1},
+        {L("Review","Revision"),           screen_review,           1},
+        {L("Install","Instalar"),          screen_install_wrap,     0},
+        {L("Finish","Finalizar"),          screen_finish_wrap,      0},
         {NULL,NULL,0}
     };
 
@@ -3246,9 +3247,10 @@ int main(void) {
         {L("Desktop","Escritorio"),         screen_desktop,       1},
         {"GPU",                              screen_gpu,           1},
         {L("yay","yay"),                    screen_yay,           1},
-        {L("Flatpak","Flatpak"),            screen_flatpak,       1},
-        {L("Snapshots","Snapshots"),        screen_snapper,       1},
-        {L("Review","Revision"),            screen_review,        1},
+        {L("Flatpak","Flatpak"),            screen_flatpak,           1},
+        {L("Snapshots","Snapshots"),        screen_snapper,           1},
+        {L("Extra Packages","Paquetes extra"), screen_extra_packages, 1},
+        {L("Review","Revision"),            screen_review,            1},
         {L("Install","Instalar"),           screen_install_wrap,  0},
         {L("Finish","Finalizar"),           screen_finish_wrap,   0},
         {NULL,NULL,0}
