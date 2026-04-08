@@ -3007,29 +3007,63 @@ static int screen_flatpak(void) {
 }
 
 static int screen_extra_packages(void) {
-    int yes = yesno_dlg(
-        L("Additional Packages", "Paquetes adicionales"),
-        L("Do you want to install additional packages?\n\n"
-          "This includes useful tools like:\n"
-          "btop, fastfetch, tmux, neovim, wget,\n"
-          "mpv, ffmpeg, p7zip, unrar, noto-fonts\n"
-          "and more.\n\n"
-          "You can always install them later with pacman.",
-          "¿Deseas instalar paquetes adicionales?\n\n"
-          "Incluye herramientas utiles como:\n"
-          "btop, fastfetch, tmux, neovim, wget,\n"
-          "mpv, ffmpeg, p7zip, unrar, noto-fonts\n"
-          "y mas.\n\n"
-          "Siempre puedes instalarlos despues con pacman."));
+    static const char *pkgs[][2] = {
+        {"btop",                 "Resource monitor (CPU/RAM/disk/net)"},
+        {"htop",                 "Interactive process viewer"},
+        {"fastfetch",            "Fast system info display"},
+        {"neofetch",             "Classic system info display"},
+        {"tmux",                 "Terminal multiplexer"},
+        {"neovim",               "Modern Vim-based text editor"},
+        {"micro",                "Easy terminal editor (Ctrl+S saves)"},
+        {"ranger",               "Terminal file manager (vim keys)"},
+        {"nnn",                  "Ultra-fast terminal file manager"},
+        {"bat",                  "cat with syntax highlighting"},
+        {"eza",                  "Modern ls replacement with colors"},
+        {"fd",                   "Fast alternative to find"},
+        {"ripgrep",              "Extremely fast grep replacement"},
+        {"fzf",                  "Fuzzy finder for the shell"},
+        {"ncdu",                 "Disk usage analyzer (TUI)"},
+        {"tree",                 "Directory tree viewer"},
+        {"wget",                 "CLI download tool"},
+        {"aria2",                "Fast multi-protocol downloader"},
+        {"yt-dlp",               "Download YouTube and other videos"},
+        {"nmap",                 "Network scanner"},
+        {"p7zip",                "7z archive support"},
+        {"unrar",                "RAR archive support"},
+        {"mpv",                  "Fast, lightweight media player"},
+        {"ffmpeg",               "Multimedia converter and toolkit"},
+        {"imagemagick",          "CLI image manipulation"},
+        {"zsh",                  "Z shell (use with oh-my-zsh)"},
+        {"fish",                 "User-friendly interactive shell"},
+        {"noto-fonts",           "Google Noto fonts (wide Unicode)"},
+        {"ttf-hack-nerd-font",   "Hack font with Nerd Font icons"},
+        {NULL, NULL}
+    };
 
-    if (yes) {
-        strncpy(st.extra_pkgs,
-            "btop fastfetch tmux neovim wget mpv ffmpeg "
-            "p7zip unrar noto-fonts ttf-hack-nerd-font "
-            "bat eza ripgrep fd ncdu",
-            sizeof(st.extra_pkgs) - 1);
-    } else {
-        st.extra_pkgs[0] = '\0';
+    int n = 0;
+    while (pkgs[n][0]) n++;
+    MenuItem *items = malloc(n * sizeof(MenuItem));
+    for (int i = 0; i < n; i++) {
+        strncpy(items[i].tag,  pkgs[i][0], 255);
+        strncpy(items[i].desc, pkgs[i][1], 511);
+    }
+
+    char sel[64][256];
+    int nsel = checklist_dlg(
+        L("Additional Packages", "Paquetes adicionales"),
+        L("Select packages to install (SPACE to toggle, ENTER to confirm).\n"
+          "Press Cancel or ESC to skip all.",
+          "Selecciona paquetes a instalar (ESPACIO activa, ENTER confirma).\n"
+          "Cancela o ESC para omitir todos."),
+        items, n, NULL, 0, sel, 64);
+    free(items);
+
+    st.extra_pkgs[0] = '\0';
+    if (nsel > 0) {
+        for (int i = 0; i < nsel; i++) {
+            if (i) strncat(st.extra_pkgs, " ", sizeof(st.extra_pkgs) - strlen(st.extra_pkgs) - 1);
+            strncat(st.extra_pkgs, sel[i], sizeof(st.extra_pkgs) - strlen(st.extra_pkgs) - 1);
+        }
     }
     return 1;
 }
