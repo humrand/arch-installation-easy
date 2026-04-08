@@ -995,6 +995,7 @@ static void ib_setup_xfs(IB *ib, const char *part) {
     char cmd[MAX_CMD];
     snprintf(cmd, sizeof(cmd), "mkfs.xfs -f %s", part);
     ib_run(ib, cmd, "mkfs.xfs");
+    run_simple("udevadm settle --timeout=10", 1);
     snprintf(cmd, sizeof(cmd), "mount %s /mnt", part);
     ib_run(ib, cmd, "mount xfs root");
 }
@@ -1448,6 +1449,7 @@ static void *ib_run_thread(void *arg) {
         else {
             snprintf(cmd,sizeof(cmd),"mkfs.ext4 -F %s",root_dev);
             ib_run(ib,cmd,"mkfs.ext4");
+            run_simple("udevadm settle --timeout=10", 1);
             snprintf(cmd,sizeof(cmd),"mount %s /mnt",root_dev);
             ib_run(ib,cmd,"mount root");
         }
@@ -1478,6 +1480,7 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         else {
             snprintf(cmd,sizeof(cmd),"mkfs.ext4 -F %s", st.db_root);
             ib_run(ib, cmd, "mkfs.ext4 dual-boot");
+            run_simple("udevadm settle --timeout=10", 1);
             snprintf(cmd,sizeof(cmd),"mount %s /mnt", st.db_root);
             ib_run(ib, cmd, "mount root dual-boot");
         }
