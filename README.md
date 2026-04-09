@@ -1,62 +1,130 @@
-# Arch Linux Auto Installer
+# Arch Linux Auto Installer (C Version)
 
-A fully automated Arch Linux installer written in Python, designed to run directly from an Arch ISO and guide the user through the installation interactively.  
+A fully automated Arch Linux installer written in C, designed to run directly from the Arch ISO and guide the user through the installation using an interactive terminal interface.
 
-This installer simplifies Arch installation while keeping full control over the system. It now includes **GPU selection, multiple desktop environments, configurable swap, proper password input handling, automatic language selection.
+This project started as a Python-based installer and has been completely rewritten in C for better performance, control, and reliability.
 
-## How to run the instaler
+---
+
+
+## Usage
+
+Run from the Arch ISO:
 
 ```bash
-python install.py
+./install
 ```
 
+---
 
-# ISO image
+## Permissions
 
-The ISO image is available in the releases.
+If the binary does not execute:
+
+```bash
+chmod +x install
+./install
+```
+
+---
+
+## Logs
+
+If something fails, check:
+
+```bash
+cat /tmp/arch_install.log
+```
+
+---
+
+
+
+
+## Migration from Python to C
+
+The installer was originally implemented in Python, but has now been fully migrated to C
+
+Key differences:
+
+* Full rewrite in C (no Python dependency anymore)
+* Faster execution and lower resource usage
+* Better process control (fork, exec, pipes, real-time output parsing)
+* Improved error handling and logging
+* Thread-safe logging system using mutex
+* More robust dialog integration (custom wrapper instead of subprocess calls)
+* Cleaner state management using structs instead of dynamic dictionaries  
+
+---
 
 ## Features
 
-- Automatic detection of the largest disk, with optional manual selection  
-- Checks for existing partitions and optionally wipes them  
-- Automatic GPT partitioning:
-  - 1GB EFI partition
-  - Configurable swap partition
-  - Remaining space for root
-- Filesystem setup:
-  - FAT32 for EFI
-  - EXT4 for root
-  - BTRFS for roor if sleected
-  - Swap activation
-- Automatic mounting of partitions
-- Hostname configuration
-- Root password setup
-- systemd-boot grub and limine bootloader
-- User creation with sudo (wheel group)
-- NetworkManager enabled by default
-- GPU driver selection
-  - NVIDIA
-  - AMD
-  - Intel
-  - intel+nvidia
-  - amd+nvidia
-  - None
-- Optional desktop environments:
-  - KDE Plasma
-  - Cinnamon
-  - Gnome
-  - Lxqt
-  - Xfce
-  - mate
-  - sway
-  - hyprland
-- Desktop installation includes:
-  - Necessary Xorg packages
-  - Firefox and basic apps (Alacritty, Konsole, Dolphin, Kate, and Ark)
-  - Display manager setup (sddm for KDE, lightdm for Cinnamon)
-- Final prompt to reboot
+* Automatic disk detection (largest disk)
+* Optional manual disk selection
+* GPT partitioning:
+
+  * 1GB EFI
+  * Configurable swap
+  * Root partition
+* Filesystem support:
+
+  * EXT4
+  * BTRFS
+  * XFS
+  * ZFS (experimental)
+* Bootloaders:
+
+  * GRUB
+  * systemd-boot
+  * Limine
+* GPU detection:
+
+  * NVIDIA
+  * AMD
+  * Intel
+  * Hybrid setups
+* Desktop environments:
+
+  * KDE Plasma
+  * GNOME
+  * Cinnamon
+  * XFCE
+  * MATE
+  * LXQt
+  * Sway
+  * Hyprland
+* Multi-desktop selection support
+* Kernel selection (single or multiple)
+* Network setup:
+
+  * Ethernet (auto)
+  * WiFi via `iwctl`
+* Locale, timezone, and keyboard configuration
+* User creation with sudo (wheel)
+* NetworkManager enabled by default
+* Optional components:
+
+  * Flatpak
+  * Yay (AUR helper)
+* Full installation logging:
+
+  ```
+  /tmp/arch_install.log
+  ```
+
+---
 
 ## Requirements
 
-- Internet connection  
+* Arch Linux ISO
+* Internet connection (Ethernet or WiFi)
 
+---
+
+
+## Notes
+
+* This installer will modify disks. Use it carefully.
+* UEFI and BIOS systems are supported
+* ZFS support may depend on kernel compatibility
+* WiFi requires a compatible adapter (`iwctl`)
