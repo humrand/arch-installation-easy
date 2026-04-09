@@ -1021,10 +1021,31 @@ static void ib_add_archzfs_repo(int in_chroot) {
 static void ib_setup_zfs(IB *ib, const char *part) {
     char cmd[MAX_CMD];
 
-    /* Install zfs-dkms (kernel module) + zfs-utils on the live system.
-       zfs-utils alone has no kernel module and zpool commands will fail. */
+    /* Install the ZFS kernel module on the live system.
+     * zfs-dkms requires gcc/make/headers (~377 MB) and COMPILES on install,
+     * which fills the live ISO overlay (tmpfs) and always fails.
+     * zfs-linux is the prebuilt binary module (~30 MB, no compilation).
+     * It must match the running kernel exactly; if it does not, archzfs
+     * will refuse to install it and we abort with a clear error message. */
     ib_add_archzfs_repo(0);
-    run_stream("pacman -S --noconfirm zfs-dkms zfs-utils", NULL, NULL, 1);
+    {
+        int rc = run_stream(
+            "pacman -S --noconfirm --needed zfs-linux zfs-utils",
+            NULL, NULL, 1);
+        if (rc != 0) {
+            /* zfs-linux version mismatch: the live ISO kernel is newer
+             * than what archzfs has prebuilt modules for. Cannot run zpool. */
+            ib->on_done(0,
+                "ZFS setup failed: zfs-linux does not match the running kernel.\n\n"
+                "Solutions:\n"
+                "  1. Use a ZFS-enabled Arch ISO:\n"
+                "     https://archzfs.leibelt.de\n"
+                "  2. Wait for archzfs to release an updated zfs-linux.\n"
+                "  3. Choose a different filesystem (ext4, btrfs, xfs).",
+                ib->ud);
+            pthread_exit(NULL);
+        }
+    }
     run_stream("modprobe zfs 2>/dev/null || true", NULL, NULL, 1);
 
     snprintf(cmd, sizeof(cmd), "zpool labelclear -f %s 2>/dev/null || true", part);
@@ -1560,7 +1581,10 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
     if (microcode[0]) snprintf(ucode_pkg,sizeof(ucode_pkg)," %s",microcode);
     if (!strcmp(fs,"btrfs")) strcpy(extra_pkg," btrfs-progs");
     if (!strcmp(fs,"xfs"))   strcpy(extra_pkg," xfsprogs");
-    if (!strcmp(fs,"zfs"))   strcpy(extra_pkg," zfs-dkms zfs-utils");
+    /* ZFS: zfs-utils is all pacstrap needs; zfs-dkms is installed
+       in the dedicated post-pacstrap chroot block below, which also
+       ensures linux-headers are present before DKMS compilation. */
+    if (!strcmp(fs,"zfs"))   strcpy(extra_pkg," zfs-utils");
 
     if (!strcmp(bl,"systemd-boot")) {
         strcpy(boot_pkgs," efibootmgr");
