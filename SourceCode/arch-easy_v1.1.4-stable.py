@@ -1,3 +1,6 @@
+#this script will be obsolete in the next release.
+
+
 
 import subprocess
 import sys
