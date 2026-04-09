@@ -1021,20 +1021,12 @@ static void ib_add_archzfs_repo(int in_chroot) {
 static void ib_setup_zfs(IB *ib, const char *part) {
     char cmd[MAX_CMD];
 
-    /* Install the ZFS kernel module on the live system.
-     * zfs-dkms requires gcc/make/headers (~377 MB) and COMPILES on install,
-     * which fills the live ISO overlay (tmpfs) and always fails.
-     * zfs-linux is the prebuilt binary module (~30 MB, no compilation).
-     * It must match the running kernel exactly; if it does not, archzfs
-     * will refuse to install it and we abort with a clear error message. */
     ib_add_archzfs_repo(0);
     {
         int rc = run_stream(
             "pacman -S --noconfirm --needed zfs-linux zfs-utils",
             NULL, NULL, 1);
         if (rc != 0) {
-            /* zfs-linux version mismatch: the live ISO kernel is newer
-             * than what archzfs has prebuilt modules for. Cannot run zpool. */
             ib->on_done(0,
                 "ZFS setup failed: zfs-linux does not match the running kernel.\n\n"
                 "Solutions:\n"
@@ -1051,7 +1043,6 @@ static void ib_setup_zfs(IB *ib, const char *part) {
     snprintf(cmd, sizeof(cmd), "zpool labelclear -f %s 2>/dev/null || true", part);
     run_stream(cmd, NULL, NULL, 1);
 
-    /* Create pool with -R /mnt so all datasets will mount under /mnt */
     snprintf(cmd, sizeof(cmd),
         "zpool create -f "
         "-o ashift=12 "
@@ -1069,28 +1060,23 @@ static void ib_setup_zfs(IB *ib, const char *part) {
     ib_run(ib, cmd, "zpool create");
 
     ib_run(ib, "zfs create -o canmount=off   -o mountpoint=none zroot/data",      "zfs create data");
-    /* canmount=noauto: we mount manually below so it lands at /mnt */
     ib_run(ib, "zfs create -o canmount=noauto -o mountpoint=/ zroot/data/root",   "zfs create root");
     ib_run(ib, "zfs create -o mountpoint=/home zroot/data/home",                  "zfs create home");
     ib_run(ib, "zfs create -o canmount=off  -o mountpoint=/var zroot/data/var",   "zfs create var");
     ib_run(ib, "zfs create -o mountpoint=none zroot/data/var/lib",                "zfs create var/lib");
     ib_run(ib, "zfs create -o mountpoint=none zroot/data/var/log",                "zfs create var/log");
 
-    /* Mark which dataset GRUB / initramfs should boot */
     ib_run(ib, "zpool set bootfs=zroot/data/root zroot", "zpool set bootfs");
 
-    /* Create the pool cache file before export so it persists */
     run_simple("mkdir -p /etc/zfs", 0);
     ib_run(ib, "zpool set cachefile=/etc/zfs/zpool.cache zroot", "zpool set cachefile");
 
-    /* Export so the pool is clean, then re-import under /mnt */
     ib_run(ib, "zpool export zroot", "zpool export");
     ib_run(ib, "zpool import -d /dev -R /mnt zroot", "zpool import");
     ib_run(ib, "zfs mount zroot/data/root", "zfs mount root");
     run_stream("zfs mount -a", NULL, NULL, 1);
     run_simple("mkdir -p /mnt/home /mnt/var/log /mnt/var/lib", 0);
 
-    /* Copy the pool cache into the new system - needed for boot-time import */
     run_simple("mkdir -p /mnt/etc/zfs", 0);
     run_simple("cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache 2>/dev/null || true", 0);
 
@@ -1190,16 +1176,12 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
         while (tok) {
             char kpath[512], ipath[512], ucode_line[512]={0};
             if (uefi) {
-                /* UEFI: ESP is mounted at /boot, so kernel/initramfs live on FAT32.
-                   Limine can read FAT32 natively. Use boot():/ (no /boot prefix). */
                 snprintf(kpath,sizeof(kpath),"boot():/vmlinuz-%s",tok);
                 snprintf(ipath,sizeof(ipath),"boot():/initramfs-%s.img",tok);
                 if (microcode[0])
                     snprintf(ucode_line,sizeof(ucode_line),
                              "    module_path: boot():/%s.img\n",microcode);
             } else {
-                /* BIOS: kernel lives on the root partition at /boot/.
-                   Use boot() which refers to the boot device. */
                 snprintf(kpath,sizeof(kpath),"boot():%s/boot/vmlinuz-%s",btrfs_prefix,tok);
                 snprintf(ipath,sizeof(ipath),"boot():%s/boot/initramfs-%s.img",btrfs_prefix,tok);
                 if (microcode[0])
@@ -1226,7 +1208,6 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
             "mkdir -p /boot/EFI/BOOT && "
             "cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI",1);
 
-        /* limine.conf is already at /mnt/boot/limine.conf (on ESP) - no copy needed */
 
         char p1[256]; char p2[256]; char p3[256];
         char disk_dev[256]; snprintf(disk_dev,sizeof(disk_dev),"/dev/%s",st.disk);
@@ -1384,13 +1365,11 @@ static void ib_configure_grub_cmdline(IB *ib) {
             1);
     }
     if (!strcmp(st.filesystem,"zfs")) {
-        /* Tell the initramfs ZFS hook which dataset to boot */
         ib_chroot(ib,
             "grep -q 'zfs=bootfs' /etc/default/grub || "
             "sed -i 's|^\\(GRUB_CMDLINE_LINUX_DEFAULT=\"[^\"]*\\)\"|\\1 zfs=bootfs\"|' "
             "/etc/default/grub",
             1);
-        /* Required so grub-mkconfig can resolve ZFS device names */
         ib_chroot(ib,
             "grep -q ZPOOL_VDEV_NAME_PATH /etc/default/grub || "
             "printf '\\nexport ZPOOL_VDEV_NAME_PATH=1\\n' >> /etc/default/grub",
@@ -1581,9 +1560,6 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
     if (microcode[0]) snprintf(ucode_pkg,sizeof(ucode_pkg)," %s",microcode);
     if (!strcmp(fs,"btrfs")) strcpy(extra_pkg," btrfs-progs");
     if (!strcmp(fs,"xfs"))   strcpy(extra_pkg," xfsprogs");
-    /* ZFS: zfs-utils is all pacstrap needs; zfs-dkms is installed
-       in the dedicated post-pacstrap chroot block below, which also
-       ensures linux-headers are present before DKMS compilation. */
     if (!strcmp(fs,"zfs"))   strcpy(extra_pkg," zfs-utils");
 
     if (!strcmp(bl,"systemd-boot")) {
@@ -1615,32 +1591,20 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         }
     }
     if (!strcmp(fs,"zfs")) {
-        /* Add archzfs repo and install the kernel module package inside chroot.
-           zfs-dkms builds via DKMS so linux-headers (already in kheaders) is needed. */
         ib_add_archzfs_repo(1);
         ib_chroot(ib, "pacman -Sy --noconfirm zfs-dkms zfs-utils", 1);
 
-        /* Enable all required ZFS services for automatic pool import at boot */
         ib_chroot(ib,
             "systemctl enable zfs-import-cache.service "
             "zfs-import.target zfs-mount.service zfs.target", 1);
 
-        /* Fix mkinitcpio HOOKS:
-           - keyboard MUST come before zfs (for console access if boot fails)
-           - fsck must be removed (ZFS has its own integrity checking)
-           - microcode, kms, keymap, consolefont added per current ArchWiki
-           - The mkinitcpio zfs hook is only compatible with busybox initramfs
-             (base+udev), NOT with systemd-based initramfs */
         ib_chroot(ib,
             "sed -i 's/^HOOKS=.*$/"
             "HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block zfs filesystems)/' "
             "/etc/mkinitcpio.conf", 1);
 
-        /* Generate hostid from the live environment so ZFS can import the pool.
-           The pool was created in this session, so hostid must match. */
         ib_chroot(ib, "zgenhostid $(hostid)", 1);
 
-        /* Rebuild initramfs with ZFS hooks */
         {
             char klist_tmp[512]; strncpy(klist_tmp, st.kernel_list, sizeof(klist_tmp)-1);
             char *tok = strtok(klist_tmp, " ");
@@ -1653,7 +1617,6 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
             }
         }
 
-        /* Re-copy zpool.cache after initramfs build (mkinitcpio may refresh it) */
         run_simple("cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache 2>/dev/null || true", 0);
     }
 
@@ -2637,12 +2600,9 @@ static int screen_filesystem(void) {
                  "  - Snapper desactivado (solo para btrfs).\n"
                  "  - ZFS es experimental en este instalador.\n\n"
                  "Si hay errores de ZFS, revisa el log."));
-        /* ZFS kernel modules in archzfs are tied to exact kernel versions.
-           Custom/LTS kernels may not have matching packages. Force 'linux'. */
         strncpy(st.bootloader,  "grub",  sizeof(st.bootloader)-1);
         strncpy(st.kernel,      "linux", sizeof(st.kernel)-1);
         strncpy(st.kernel_list, "linux", sizeof(st.kernel_list)-1);
-        /* snapper is btrfs-only */
         st.snapper = 0;
     }
     strncpy(st.filesystem, out, sizeof(st.filesystem)-1);
