@@ -1,4 +1,4 @@
-#this script will be obsolete in the next release.
+#this script is no longer mantained
 
 
 
