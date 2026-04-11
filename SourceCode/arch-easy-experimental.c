@@ -162,7 +162,7 @@ static const DesktopDef DESKTOP_DEFS[] = {
         "xorg-server lxqt sddm breeze-icons alacritty firefox"
     }, 1},
     {"Hyprland", {
-        "hyprland waybar wofi alacritty xdg-desktop-portal-hyprland "
+        "hyprland waybar wofi kitty xdg-desktop-portal-hyprland "
         "polkit-gnome qt5-wayland qt6-wayland sddm firefox"
     }, 1},
     {"Sway", {
