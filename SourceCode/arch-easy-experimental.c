@@ -307,12 +307,24 @@ static int da_exec(DA *da, char *out, size_t outsz) {
     if (pid == 0) {
         dup2(tfd, STDERR_FILENO);
         close(tfd);
+        
+        const char *term = getenv("TERM");
+        if (!term ||
+            (!strstr(term, "xterm") &&
+             !strstr(term, "rxvt")  &&
+             strncmp(term, "screen", 6) != 0 &&
+             strncmp(term, "tmux",   4) != 0)) {
+            setenv("TERM", "xterm-256color", 1);
+        }
         execvp("dialog", da->v);
         _exit(127);
     }
     close(tfd);
 
     int status; waitpid(pid, &status, 0);
+
+    
+    write(STDOUT_FILENO, "\033[?25h", 6);
 
     if (out && outsz>0) {
         FILE *f = fopen(tmp,"r");
@@ -516,7 +528,7 @@ typedef struct {
     char vendor[32];      
     int  cores;
     int  threads;
-    int  has_vmx;        
+    int  has_vmx;       
     int  has_svm;        
     int  has_avx2;
     int  has_avx512;
@@ -852,7 +864,6 @@ static int screen_wifi_connect(void) {
         pclose(fp);
     }
 
-     ── #38  Build richer network list with signal + security ── */
     typedef struct { char ssid[128]; int signal; char security[32]; } NetEntry;
     NetEntry nets[16]; int nnets = 0;
 
@@ -2121,6 +2132,16 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
                  "arch-chroot /mnt pacman -S --noconfirm %s", st.extra_pkgs);
         ib_pacman(ib, cmd, 98, 99, 1);
         write_log_fmt("Extra packages installed: %s", st.extra_pkgs);
+
+        if (strstr(st.extra_pkgs, "fish")) {
+            ib_stage(ib, L("Setting fish as default shell...","Estableciendo fish como shell por defecto..."));
+            ib_chroot(ib,
+                "grep -qxF /usr/bin/fish /etc/shells || echo /usr/bin/fish >> /etc/shells",
+                1);
+            snprintf(cmd, sizeof(cmd), "chsh -s /usr/bin/fish %s", st.username);
+            ib_chroot(ib, cmd, 1);
+            write_log("fish set as default shell for user.");
+        }
     }
 
     {
@@ -2156,9 +2177,20 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         ib_chroot(ib,"pacman -S --noconfirm --needed git 2>/dev/null || true",1);
 
         const char *url = NULL;
-        if (!strcmp(st.dotfiles,"caelestia"))
+        if (!strcmp(st.dotfiles,"caelestia")) {
             url = "https://github.com/caelestia-dots/caelestia";
-        else if (!strcmp(st.dotfiles,"custom") && st.dotfiles_url[0])
+            ib_stage(ib, L("Installing fish (required by caelestia)...",
+                           "Instalando fish (requerido por caelestia)..."));
+            ib_chroot(ib,
+                "pacman -S --noconfirm --needed fish 2>/dev/null || true",
+                1);
+            ib_chroot(ib,
+                "grep -qxF /usr/bin/fish /etc/shells || echo /usr/bin/fish >> /etc/shells",
+                1);
+            snprintf(cmd, sizeof(cmd), "chsh -s /usr/bin/fish %s", st.username);
+            ib_chroot(ib, cmd, 1);
+            write_log("fish installed and set as default shell for caelestia dotfiles.");
+        } else if (!strcmp(st.dotfiles,"custom") && st.dotfiles_url[0])
             url = st.dotfiles_url;
 
         if (url) {
@@ -3512,6 +3544,12 @@ static int screen_profile(void) {
 }
 
 static int screen_dotfiles(void) {
+    if (!strstr(st.desktop_list, "Hyprland")) {
+        strncpy(st.dotfiles, "none", sizeof(st.dotfiles)-1);
+        st.dotfiles_url[0] = '\0';
+        return 1;
+    }
+
     MenuItem items[3];
     strncpy(items[0].tag,"none",255);
     snprintf(items[0].desc,511,"%s",
