@@ -307,24 +307,12 @@ static int da_exec(DA *da, char *out, size_t outsz) {
     if (pid == 0) {
         dup2(tfd, STDERR_FILENO);
         close(tfd);
-        
-        const char *term = getenv("TERM");
-        if (!term ||
-            (!strstr(term, "xterm") &&
-             !strstr(term, "rxvt")  &&
-             strncmp(term, "screen", 6) != 0 &&
-             strncmp(term, "tmux",   4) != 0)) {
-            setenv("TERM", "xterm-256color", 1);
-        }
         execvp("dialog", da->v);
         _exit(127);
     }
     close(tfd);
 
     int status; waitpid(pid, &status, 0);
-
-   
-    write(STDOUT_FILENO, "\033[?25h", 6);
 
     if (out && outsz>0) {
         FILE *f = fopen(tmp,"r");
@@ -343,7 +331,6 @@ static void da_hdr(DA *da, const char *title) {
     snprintf(bt, sizeof(bt), "\\Zb\\Z4%s\\Zn  -  %s", TITLE, VERSION);
     snprintf(tt, sizeof(tt), " %s ", title);
     da_push(da,"dialog"); da_push(da,"--colors");
-    da_push(da,"--mouse");
     da_push(da,"--backtitle"); da_push(da,bt);
     da_push(da,"--title");    da_push(da,tt);
 }
@@ -529,7 +516,7 @@ typedef struct {
     int  cores;
     int  threads;
     int  has_vmx;        
-    int  has_svm;       
+    int  has_svm;        
     int  has_avx2;
     int  has_avx512;
 } CPUInfo;
