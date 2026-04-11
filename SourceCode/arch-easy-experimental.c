@@ -323,7 +323,7 @@ static int da_exec(DA *da, char *out, size_t outsz) {
 
     int status; waitpid(pid, &status, 0);
 
-    
+   
     write(STDOUT_FILENO, "\033[?25h", 6);
 
     if (out && outsz>0) {
@@ -528,8 +528,8 @@ typedef struct {
     char vendor[32];      
     int  cores;
     int  threads;
-    int  has_vmx;       
-    int  has_svm;        
+    int  has_vmx;        
+    int  has_svm;       
     int  has_avx2;
     int  has_avx512;
 } CPUInfo;
