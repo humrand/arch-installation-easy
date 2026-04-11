@@ -63,6 +63,7 @@ typedef struct {
     char optimus_mode[16];
     char dotfiles[64];
     char dotfiles_url[256];
+    int  fish_default;
 } State;
 
 static State st = {
@@ -98,6 +99,7 @@ static State st = {
     .optimus_mode = "hybrid",
     .dotfiles     = "none",
     .dotfiles_url = "",
+    .fish_default = 0,
 };
 
 #define L(en, es) (strcmp(st.lang,"en")==0 ? (en) : (es))
@@ -511,12 +513,12 @@ static int is_laptop(void) {
 }
 
 typedef struct {
-    char microcode[32];   
+    char microcode[32];  
     char vendor[32];      
     int  cores;
     int  threads;
-    int  has_vmx;        
-    int  has_svm;        
+    int  has_vmx;         
+    int  has_svm;       
     int  has_avx2;
     int  has_avx512;
 } CPUInfo;
@@ -595,7 +597,7 @@ static int is_ssd(const char *disk_path) {
 }
 
 static int check_connectivity(void);
-static int msgbox_declared_above;  
+static int msgbox_declared_above; 
 
 static int run_preflight(void) {
     char report[2048] = {0};
@@ -2120,7 +2122,7 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         ib_pacman(ib, cmd, 98, 99, 1);
         write_log_fmt("Extra packages installed: %s", st.extra_pkgs);
 
-        if (strstr(st.extra_pkgs, "fish")) {
+        if (strstr(st.extra_pkgs, "fish") && st.fish_default) {
             ib_stage(ib, L("Setting fish as default shell...","Estableciendo fish como shell por defecto..."));
             ib_chroot(ib,
                 "grep -qxF /usr/bin/fish /etc/shells || echo /usr/bin/fish >> /etc/shells",
@@ -2163,35 +2165,48 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
 
         ib_chroot(ib,"pacman -S --noconfirm --needed git 2>/dev/null || true",1);
 
-        const char *url = NULL;
         if (!strcmp(st.dotfiles,"caelestia")) {
-            url = "https://github.com/caelestia-dots/caelestia";
             ib_stage(ib, L("Installing fish (required by caelestia)...",
                            "Instalando fish (requerido por caelestia)..."));
             ib_chroot(ib,
-                "pacman -S --noconfirm --needed fish 2>/dev/null || true",
+                "pacman -S --noconfirm --needed fish git 2>/dev/null || true",
                 1);
             ib_chroot(ib,
-                "grep -qxF /usr/bin/fish /etc/shells || echo /usr/bin/fish >> /etc/shells",
+                "grep -qxF /usr/bin/fish /etc/shells "
+                "|| echo /usr/bin/fish >> /etc/shells",
                 1);
             snprintf(cmd, sizeof(cmd), "chsh -s /usr/bin/fish %s", st.username);
             ib_chroot(ib, cmd, 1);
-            write_log("fish installed and set as default shell for caelestia dotfiles.");
-        } else if (!strcmp(st.dotfiles,"custom") && st.dotfiles_url[0])
-            url = st.dotfiles_url;
+            write_log("fish installed and set as default shell for caelestia.");
 
-        if (url) {
+            ib_stage(ib, L("Cloning caelestia dotfiles...",
+                           "Clonando dotfiles caelestia..."));
+            const char *aur_helper = st.yay ? "yay" : "paru";
+            char caelestia_cmd[MAX_CMD];
+            snprintf(caelestia_cmd, sizeof(caelestia_cmd),
+                "su - %s -c '"
+                "mkdir -p ~/.local/share && "
+                "git clone --depth=1 https://github.com/caelestia-dots/caelestia "
+                "~/.local/share/caelestia 2>&1 && "
+                "cd ~/.local/share/caelestia && "
+                "fish install.fish --noconfirm --aur-helper=%s 2>&1'",
+                st.username, aur_helper);
+            ib_chroot(ib, caelestia_cmd, 1);
+            write_log("Caelestia dotfiles installed.");
+
+        } else if (!strcmp(st.dotfiles,"custom") && st.dotfiles_url[0]) {
+            ib_chroot(ib,"pacman -S --noconfirm --needed git 2>/dev/null || true",1);
             char install_cmd[MAX_CMD];
-            snprintf(install_cmd,sizeof(install_cmd),
+            snprintf(install_cmd, sizeof(install_cmd),
                      "su - %s -c '"
                      "git clone --depth=1 %s ~/dots 2>&1 && "
                      "cd ~/dots && "
-                     "[ -f install.sh ] && bash install.sh --noconfirm 2>&1 || "
-                     "[ -f setup.sh ]   && bash setup.sh --noconfirm 2>&1 || "
-                     "echo \"No install script found, dotfiles cloned to ~/dots\"'",
-                     st.username, url);
-            ib_chroot(ib,install_cmd,1);
-            write_log_fmt("Dotfiles installed from: %s", url);
+                     "if [ -f install.sh ]; then bash install.sh --noconfirm 2>&1; "
+                     "elif [ -f setup.sh ]; then bash setup.sh --noconfirm 2>&1; "
+                     "else echo No install script found, dotfiles cloned to ~/dots; fi'",
+                     st.username, st.dotfiles_url);
+            ib_chroot(ib, install_cmd, 1);
+            write_log_fmt("Custom dotfiles installed from: %s", st.dotfiles_url);
         }
     }
 
@@ -3629,11 +3644,21 @@ static int screen_extra_packages(void) {
     free(items);
 
     st.extra_pkgs[0] = '\0';
+    int fish_selected = 0;
     if (nsel > 0) {
         for (int i = 0; i < nsel; i++) {
             if (i) strncat(st.extra_pkgs, " ", sizeof(st.extra_pkgs) - strlen(st.extra_pkgs) - 1);
             strncat(st.extra_pkgs, sel[i], sizeof(st.extra_pkgs) - strlen(st.extra_pkgs) - 1);
+            if (!strcmp(sel[i], "fish")) fish_selected = 1;
         }
+    }
+    if (fish_selected) {
+        st.fish_default = yesno_dlg(
+            L("fish shell", "fish shell"),
+            L("fish was selected.\n\nSet fish as the default shell for your user?",
+              "Has seleccionado fish.\n\n?Establecer fish como shell por defecto para tu usuario?"));
+    } else {
+        st.fish_default = 0;
     }
     return 1;
 }
