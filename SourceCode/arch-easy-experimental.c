@@ -1200,8 +1200,10 @@ static void ib_setup_btrfs(IB *ib, const char *p3, const char *disk) {
         write_log_fmt("SSD detected on %s - adding ssd,discard=async",disk);
     }
     char cmd[MAX_CMD];
+    run_simple("modprobe btrfs", 1);
     snprintf(cmd,sizeof(cmd),"mkfs.btrfs -f %s",p3); ib_run(ib,cmd,"mkfs.btrfs");
-    snprintf(cmd,sizeof(cmd),"mount %s /mnt",p3);     ib_run(ib,cmd,"mount btrfs");
+    run_simple("udevadm settle --timeout=5", 1);
+    snprintf(cmd,sizeof(cmd),"mount -t btrfs %s /mnt",p3); ib_run(ib,cmd,"mount btrfs");
     ib_run(ib,"btrfs subvolume create /mnt/@",          "btrfs subvol @");
     ib_run(ib,"btrfs subvolume create /mnt/@home",      "btrfs subvol @home");
     ib_run(ib,"btrfs subvolume create /mnt/@var",       "btrfs subvol @var");
