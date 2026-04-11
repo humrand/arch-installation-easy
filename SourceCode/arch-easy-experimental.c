@@ -490,7 +490,6 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     return rc;
 }
 
-/* ── #3  Auto-retry with exponential backoff ── */
 static int run_retry(const char *cmd, int retries) {
     for (int attempt = 0; attempt < retries; attempt++) {
         int rc = run_simple(cmd, 1);
@@ -507,20 +506,18 @@ static int run_retry(const char *cmd, int retries) {
     return -1;
 }
 
-/* ── #16  Laptop detection ── */
 static int is_laptop(void) {
     return access("/sys/class/power_supply/BAT0", F_OK) == 0 ||
            access("/sys/class/power_supply/BAT1", F_OK) == 0;
 }
 
-/* ── #14  Advanced CPU detection ── */
 typedef struct {
-    char microcode[32];   /* intel-ucode / amd-ucode */
-    char vendor[32];      /* GenuineIntel / AuthenticAMD */
+    char microcode[32];   
+    char vendor[32];      
     int  cores;
     int  threads;
-    int  has_vmx;         /* Intel VT-x */
-    int  has_svm;         /* AMD-V */
+    int  has_vmx;        
+    int  has_svm;        
     int  has_avx2;
     int  has_avx512;
 } CPUInfo;
@@ -547,7 +544,6 @@ static void detect_cpu_full(CPUInfo *ci) {
     if (ci->threads < 1) ci->threads = ci->cores;
 }
 
-/* Legacy wrapper – keeps existing call sites working */
 static void detect_cpu(char *out, size_t sz) {
     out[0]='\0';
     FILE *fp = popen("lscpu 2>/dev/null","r");
@@ -560,7 +556,6 @@ static void detect_cpu(char *out, size_t sz) {
     pclose(fp);
 }
 
-/* ── #33  Mirror speed test ── */
 static double measure_mirror_speed(const char *url) {
     char cmd[512];
     snprintf(cmd,sizeof(cmd),
@@ -600,16 +595,13 @@ static int is_ssd(const char *disk_path) {
     return c[0]=='0';
 }
 
-/* forward declaration */
 static int check_connectivity(void);
-static int msgbox_declared_above;  /* suppress unused warning */
+static int msgbox_declared_above;  
 
-/* ── #9  Preflight validation ── */
 static int run_preflight(void) {
     char report[2048] = {0};
     int ok = 1;
 
-    /* root */
     if (geteuid() != 0) {
         strncat(report, L("  ✗ Not running as root\n",
                           "  ✗ No se esta ejecutando como root\n"),
@@ -620,7 +612,6 @@ static int run_preflight(void) {
                 sizeof(report)-strlen(report)-1);
     }
 
-    /* internet */
     if (!check_connectivity()) {
         strncat(report, L("  ✗ No internet connection\n",
                           "  ✗ Sin conexion a internet\n"),
@@ -631,7 +622,6 @@ static int run_preflight(void) {
                 sizeof(report)-strlen(report)-1);
     }
 
-    /* pacstrap */
     if (system("which pacstrap >/dev/null 2>&1") != 0) {
         strncat(report, L("  ✗ pacstrap not found (are you in the Arch ISO?)\n",
                           "  ✗ pacstrap no encontrado (estas en la ISO de Arch?)\n"),
@@ -642,18 +632,15 @@ static int run_preflight(void) {
                 sizeof(report)-strlen(report)-1);
     }
 
-    /* /mnt not already mounted */
     if (system("mountpoint -q /mnt 2>/dev/null") == 0) {
         strncat(report, L("  ⚠ /mnt is already mounted (may conflict)\n",
                           "  ⚠ /mnt ya esta montado (puede haber conflicto)\n"),
                 sizeof(report)-strlen(report)-1);
-        /* warning, not fatal */
     } else {
         strncat(report, L("  ✓ /mnt is free\n","  ✓ /mnt libre\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
-    /* laptop detection */
     st.laptop = is_laptop();
     if (st.laptop) {
         strncat(report, L("  ✓ Laptop detected (will install TLP power management)\n",
@@ -661,7 +648,6 @@ static int run_preflight(void) {
                 sizeof(report)-strlen(report)-1);
     }
 
-    /* disk space on installer itself */
     {
         struct statvfs vfs;
         if (statvfs("/", &vfs) == 0) {
@@ -684,7 +670,6 @@ static int run_preflight(void) {
         return 0;
     }
 
-    /* show summary and continue */
     char msg[2560];
     snprintf(msg,sizeof(msg),
              L("System checks passed:\n\n%s\nReady to install.",
@@ -867,12 +852,11 @@ static int screen_wifi_connect(void) {
         pclose(fp);
     }
 
-    /* ── #38  Build richer network list with signal + security ── */
+     ── #38  Build richer network list with signal + security ── */
     typedef struct { char ssid[128]; int signal; char security[32]; } NetEntry;
     NetEntry nets[16]; int nnets = 0;
 
     if (nssids > 0) {
-        /* Try to get detailed info per SSID via iw */
         char scan_raw[8192]={0};
         char scan_cmd2[256];
         snprintf(scan_cmd2,sizeof(scan_cmd2),
@@ -886,17 +870,13 @@ static int screen_wifi_connect(void) {
             nets[nnets].signal   = -100;
             nets[nnets].security[0] = '\0';
 
-            /* Search for signal/security in raw iw output */
             char *pos = scan_raw;
             while ((pos = strstr(pos, ssids[i])) != NULL) {
-                /* look backward for signal */
                 char *sig_p = pos;
                 while (sig_p > scan_raw && *sig_p != '\n') sig_p--;
                 char ctx[512]={0};
-                /* look forward for signal: */
                 char *end_p = strchr(pos, '\n');
                 if (!end_p) end_p = pos + strlen(pos);
-                /* scan next 300 chars for signal: and security: */
                 int range = (int)(end_p - pos) + 300;
                 if (range > (int)(sizeof(scan_raw) - (pos - scan_raw)))
                     range = (int)(sizeof(scan_raw) - (pos - scan_raw));
@@ -905,7 +885,6 @@ static int screen_wifi_connect(void) {
                 char *sp;
                 if ((sp = strstr(ctx,"signal:")) || (sp = strstr(ctx,"Signal:"))) {
                     float sv=0; sscanf(sp+7,"%f",&sv);
-                    /* convert dBm to percent roughly */
                     int pct = (int)((sv + 100) * 2);
                     if (pct > 100) pct = 100;
                     if (pct < 0)   pct = 0;
@@ -922,7 +901,6 @@ static int screen_wifi_connect(void) {
             nnets++;
         }
 
-        /* Sort by signal descending (bubble sort, small n) */
         for (int i=0; i<nnets-1; i++)
             for (int j=i+1; j<nnets; j++)
                 if (nets[j].signal > nets[i].signal) {
@@ -930,13 +908,11 @@ static int screen_wifi_connect(void) {
                 }
     }
 
-    /* ── Build menu: if nets found show rich list, else ask SSID manually ── */
     char ssid_sel[128]={0};
     if (nnets > 0) {
         MenuItem items[16];
         for (int i=0; i<nnets; i++) {
             strncpy(items[i].tag, nets[i].ssid, 255);
-            /* Rich description: signal bar + security */
             char bar[6]="-----";
             int pct = nets[i].signal;
             if (pct < 0) pct = 0;
@@ -1539,13 +1515,11 @@ static void ib_install_gpu(IB *ib, double start, double end) {
                  nv_pkg);
         ib_pacman(ib,cmd,mid,end,1);
         ib_configure_nvidia_modeset(ib);
-        /* envycontrol for easy GPU mode switching */
         ib_pacman(ib,
                   "arch-chroot /mnt pacman -S --noconfirm python-pip 2>/dev/null || true",
                   end,end,1);
         ib_chroot(ib,
                   "pip install envycontrol --break-system-packages 2>/dev/null || true",1);
-        /* apply selected Optimus mode */
         if (!strcmp(st.optimus_mode,"integrated")) {
             ib_chroot(ib,"envycontrol -s integrated 2>/dev/null || true",1);
             write_log("Optimus: integrated mode");
@@ -1627,7 +1601,6 @@ static void ib_install_flatpak(IB *ib) {
     write_log("Flatpak + Flathub configured.");
 }
 
-/* ── #16  Laptop power management ── */
 static void ib_install_laptop(IB *ib) {
     ib_stage(ib, L("Installing laptop power management (TLP)...",
                    "Instalando gestion de energia para laptop (TLP)..."));
@@ -1636,12 +1609,10 @@ static void ib_install_laptop(IB *ib) {
               0,0,1);
     ib_chroot(ib,"systemctl enable tlp",1);
     ib_chroot(ib,"systemctl enable acpid",1);
-    /* disable conflicting services */
     ib_chroot(ib,"systemctl mask systemd-rfkill.service systemd-rfkill.socket 2>/dev/null || true",1);
     write_log("Laptop: TLP + powertop + acpi installed and enabled.");
 }
 
-/* ── #49  Enable multilib in chroot pacman.conf ── */
 static void ib_enable_multilib(IB *ib) {
     ib_chroot(ib,
         "sed -i '/^#\\[multilib\\]/{N;s/#\\[multilib\\]\\n#Include/[multilib]\\nInclude/}' "
@@ -1650,7 +1621,6 @@ static void ib_enable_multilib(IB *ib) {
     write_log("multilib repository enabled.");
 }
 
-/* ── #49  Install gaming profile packages ── */
 static void ib_install_gaming(IB *ib, double start, double end) {
     ib_stage(ib, L("Enabling multilib for Steam...","Habilitando multilib para Steam..."));
     ib_enable_multilib(ib);
@@ -1664,7 +1634,6 @@ static void ib_install_gaming(IB *ib, double start, double end) {
     write_log("Gaming profile: steam, lutris, gamemode, mangohud, wine installed.");
 }
 
-/* ── #49  Install developer profile packages ── */
 static void ib_install_developer(IB *ib, double start, double end) {
     ib_stage(ib, L("Installing developer packages...","Instalando paquetes de desarrollo..."));
     ib_pacman(ib,
@@ -1681,7 +1650,6 @@ static void ib_install_developer(IB *ib, double start, double end) {
     write_log("Developer profile installed.");
 }
 
-/* ── #49  Install privacy profile packages ── */
 static void ib_install_privacy(IB *ib, double start, double end) {
     ib_stage(ib, L("Installing privacy packages...","Instalando paquetes de privacidad..."));
     ib_pacman(ib,
@@ -2155,7 +2123,6 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         write_log_fmt("Extra packages installed: %s", st.extra_pkgs);
     }
 
-    /* ── #14  Set MAKEFLAGS based on CPU core count ── */
     {
         CPUInfo ci; detect_cpu_full(&ci);
         if (ci.threads > 1) {
@@ -2169,12 +2136,10 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         }
     }
 
-    /* ── #16  Laptop power management ── */
     if (st.laptop) {
         ib_install_laptop(ib);
     }
 
-    /* ── #49  Profile-specific packages ── */
     if (!strcmp(st.profile,"gaming")) {
         ib_install_gaming(ib, 98.5, 99.2);
     } else if (!strcmp(st.profile,"developer")) {
@@ -2183,13 +2148,11 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         ib_install_privacy(ib, 98.5, 99.2);
     }
 
-    /* ── #50  Post-install dotfiles ── */
     if (strcmp(st.dotfiles,"none") != 0) {
         ib_stage(ib, L("Installing dotfiles...","Instalando dotfiles..."));
         char q_user[MAX_CMD];
         shell_quote(st.username,q_user,sizeof(q_user));
 
-        /* ensure git is available */
         ib_chroot(ib,"pacman -S --noconfirm --needed git 2>/dev/null || true",1);
 
         const char *url = NULL;
@@ -3108,7 +3071,6 @@ static int screen_mirrors(void) {
                        items,2,st.mirrors?"yes":"no",out,sizeof(out))) return 0;
     st.mirrors = !strcmp(out,"yes");
 
-    /* ── #33  Network speed test before committing to mirrors ── */
     if (st.mirrors) {
         infobox_dlg(L("Testing network speed...","Probando velocidad de red..."),
                     L("Measuring download speed to archlinux.org...",
@@ -3431,7 +3393,6 @@ static int screen_gpu(void) {
     if(!ok) return 0;
     strncpy(st.gpu,out,sizeof(st.gpu)-1);
 
-    /* ── #18  Optimus mode selector ── */
     if (!strcmp(st.gpu,"Intel+NVIDIA")) {
         MenuItem om[3];
         strncpy(om[0].tag,"hybrid",255);
@@ -3508,7 +3469,6 @@ static int screen_flatpak(void) {
     return 1;
 }
 
-/* ── #49  Installation profile screen ── */
 static int screen_profile(void) {
     MenuItem items[5];
     strncpy(items[0].tag,"none",255);
@@ -3551,7 +3511,6 @@ static int screen_profile(void) {
     return 1;
 }
 
-/* ── #50  Post-install dotfiles screen ── */
 static int screen_dotfiles(void) {
     MenuItem items[3];
     strncpy(items[0].tag,"none",255);
