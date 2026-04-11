@@ -18,8 +18,9 @@
 #include <sys/select.h>
 #include <dirent.h>
 #include <signal.h>
+#include <sys/statvfs.h>
 
-#define VERSION   "V2.0.0"
+#define VERSION   "V2.1.0"
 #define LOG_FILE  "/tmp/arch_install.log"
 #define TITLE     "Arch Linux Installer"
 
@@ -53,10 +54,16 @@ typedef struct {
     int  yay;
     int  snapper;
     int  flatpak;
-    int  dualboot;            
-    char db_root[128];      
-    char db_efi[128];     
-    char db_swap[128];       
+    int  dualboot;
+    char db_root[128];
+    char db_efi[128];
+    char db_swap[128];
+    char profile[32];
+    int  laptop;
+    char optimus_mode[16];
+    char dotfiles[64];
+    char dotfiles_url[256];
+    int  fish_default;
 } State;
 
 static State st = {
@@ -87,6 +94,12 @@ static State st = {
     .db_root      = "",
     .db_efi       = "",
     .db_swap      = "",
+    .profile      = "none",
+    .laptop       = 0,
+    .optimus_mode = "hybrid",
+    .dotfiles     = "none",
+    .dotfiles_url = "",
+    .fish_default = 0,
 };
 
 #define L(en, es) (strcmp(st.lang,"en")==0 ? (en) : (es))
@@ -149,7 +162,7 @@ static const DesktopDef DESKTOP_DEFS[] = {
         "xorg-server lxqt sddm breeze-icons alacritty firefox"
     }, 1},
     {"Hyprland", {
-        "hyprland waybar wofi alacritty xdg-desktop-portal-hyprland "
+        "hyprland waybar wofi kitty xdg-desktop-portal-hyprland "
         "polkit-gnome qt5-wayland qt6-wayland sddm firefox"
     }, 1},
     {"Sway", {
@@ -478,6 +491,85 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     return rc;
 }
 
+static int run_retry(const char *cmd, int retries) {
+    for (int attempt = 0; attempt < retries; attempt++) {
+        int rc = run_simple(cmd, 1);
+        if (rc == 0) return 0;
+        write_log_fmt("run_retry: attempt %d/%d failed (rc=%d): %s",
+                      attempt+1, retries, rc, cmd);
+        if (attempt < retries-1) {
+            int delay = 2 * (attempt + 1);
+            write_log_fmt("run_retry: waiting %ds before next attempt...", delay);
+            sleep(delay);
+        }
+    }
+    write_log_fmt("run_retry: all %d attempts failed: %s", retries, cmd);
+    return -1;
+}
+
+static int is_laptop(void) {
+    return access("/sys/class/power_supply/BAT0", F_OK) == 0 ||
+           access("/sys/class/power_supply/BAT1", F_OK) == 0;
+}
+
+typedef struct {
+    char microcode[32]; 
+    char vendor[32];     
+    int  cores;
+    int  threads;
+    int  has_vmx;        
+    int  has_svm;        
+    int  has_avx2;
+    int  has_avx512;
+} CPUInfo;
+
+static void detect_cpu_full(CPUInfo *ci) {
+    memset(ci, 0, sizeof(*ci));
+    FILE *fp = popen("lscpu 2>/dev/null", "r");
+    if (!fp) return;
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        if      (strstr(line, "GenuineIntel"))     { strncpy(ci->microcode,"intel-ucode",31); strncpy(ci->vendor,"Intel",31); }
+        else if (strstr(line, "AuthenticAMD"))     { strncpy(ci->microcode,"amd-ucode",31);   strncpy(ci->vendor,"AMD",31);   }
+        else if (strncmp(line,"CPU(s):",7)==0)     { sscanf(line+7," %d",&ci->threads); }
+        else if (strstr(line,"Core(s) per socket")){ char *p=strchr(line,':'); if(p) sscanf(p+1," %d",&ci->cores); }
+        else if (strstr(line,"Flags:")) {
+            if (strstr(line," vmx "))    ci->has_vmx  = 1;
+            if (strstr(line," svm "))    ci->has_svm  = 1;
+            if (strstr(line," avx2 "))   ci->has_avx2 = 1;
+            if (strstr(line," avx512f")) ci->has_avx512 = 1;
+        }
+    }
+    pclose(fp);
+    if (ci->cores < 1)   ci->cores   = 1;
+    if (ci->threads < 1) ci->threads = ci->cores;
+}
+
+static void detect_cpu(char *out, size_t sz) {
+    out[0]='\0';
+    FILE *fp = popen("lscpu 2>/dev/null","r");
+    if (!fp) return;
+    char line[256];
+    while (fgets(line,sizeof(line),fp)) {
+        if (strstr(line,"GenuineIntel")) { strncpy(out,"intel-ucode",sz-1); break; }
+        if (strstr(line,"AuthenticAMD")) { strncpy(out,"amd-ucode",sz-1);   break; }
+    }
+    pclose(fp);
+}
+
+static double measure_mirror_speed(const char *url) {
+    char cmd[512];
+    snprintf(cmd,sizeof(cmd),
+             "curl -o /dev/null -s --max-time 5 -w '%%{speed_download}' '%s' 2>/dev/null",
+             url);
+    FILE *fp = popen(cmd,"r");
+    if (!fp) return 0.0;
+    double speed = 0.0;
+    fscanf(fp,"%lf",&speed);
+    pclose(fp);
+    return speed;
+}
+
 
 static int is_uefi(void) {
     struct stat st2;
@@ -504,6 +596,90 @@ static int is_ssd(const char *disk_path) {
     return c[0]=='0';
 }
 
+static int check_connectivity(void);
+static int msgbox_declared_above;  
+
+static int run_preflight(void) {
+    char report[2048] = {0};
+    int ok = 1;
+
+    if (geteuid() != 0) {
+        strncat(report, L("  ✗ Not running as root\n",
+                          "  ✗ No se esta ejecutando como root\n"),
+                sizeof(report)-strlen(report)-1);
+        ok = 0;
+    } else {
+        strncat(report, L("  ✓ Running as root\n","  ✓ Ejecutando como root\n"),
+                sizeof(report)-strlen(report)-1);
+    }
+
+    if (!check_connectivity()) {
+        strncat(report, L("  ✗ No internet connection\n",
+                          "  ✗ Sin conexion a internet\n"),
+                sizeof(report)-strlen(report)-1);
+        ok = 0;
+    } else {
+        strncat(report, L("  ✓ Internet connection OK\n","  ✓ Conexion a internet OK\n"),
+                sizeof(report)-strlen(report)-1);
+    }
+
+    if (system("which pacstrap >/dev/null 2>&1") != 0) {
+        strncat(report, L("  ✗ pacstrap not found (are you in the Arch ISO?)\n",
+                          "  ✗ pacstrap no encontrado (estas en la ISO de Arch?)\n"),
+                sizeof(report)-strlen(report)-1);
+        ok = 0;
+    } else {
+        strncat(report, L("  ✓ pacstrap found\n","  ✓ pacstrap encontrado\n"),
+                sizeof(report)-strlen(report)-1);
+    }
+
+    if (system("mountpoint -q /mnt 2>/dev/null") == 0) {
+        strncat(report, L("  ⚠ /mnt is already mounted (may conflict)\n",
+                          "  ⚠ /mnt ya esta montado (puede haber conflicto)\n"),
+                sizeof(report)-strlen(report)-1);
+    } else {
+        strncat(report, L("  ✓ /mnt is free\n","  ✓ /mnt libre\n"),
+                sizeof(report)-strlen(report)-1);
+    }
+
+    st.laptop = is_laptop();
+    if (st.laptop) {
+        strncat(report, L("  ✓ Laptop detected (will install TLP power management)\n",
+                          "  ✓ Laptop detectada (se instalara gestion de energia TLP)\n"),
+                sizeof(report)-strlen(report)-1);
+    }
+
+    {
+        struct statvfs vfs;
+        if (statvfs("/", &vfs) == 0) {
+            long long free_mb = ((long long)vfs.f_bavail * vfs.f_frsize) / (1024*1024);
+            char line[128];
+            snprintf(line,sizeof(line),
+                     L("  ✓ Installer free space: %lld MB\n",
+                       "  ✓ Espacio libre en instalador: %lld MB\n"), free_mb);
+            strncat(report,line,sizeof(report)-strlen(report)-1);
+        }
+    }
+
+    if (!ok) {
+        char msg[2560];
+        snprintf(msg,sizeof(msg),
+                 L("Preflight checks failed:\n\n%s\nFix the issues above before continuing.",
+                   "Comprobaciones previas fallidas:\n\n%s\nCorrige los problemas antes de continuar."),
+                 report);
+        msgbox(L("Preflight Failed","Comprobacion previa fallida"), msg);
+        return 0;
+    }
+
+    char msg[2560];
+    snprintf(msg,sizeof(msg),
+             L("System checks passed:\n\n%s\nReady to install.",
+               "Comprobaciones del sistema OK:\n\n%s\nListo para instalar."),
+             report);
+    msgbox(L("Preflight OK","Comprobacion previa OK"), msg);
+    return 1;
+}
+
 static void detect_gpu(char *out, size_t sz) {
     FILE *fp = popen("lspci 2>/dev/null | grep -iE 'vga|3d|display'","r");
     char buf[4096]={0};
@@ -519,18 +695,6 @@ static void detect_gpu(char *out, size_t sz) {
     else if (in)       strncpy(out,"Intel",sz-1);
     else               strncpy(out,"None",sz-1);
     out[sz-1]='\0';
-}
-
-static void detect_cpu(char *out, size_t sz) {
-    out[0]='\0';
-    FILE *fp = popen("lscpu 2>/dev/null","r");
-    if (!fp) return;
-    char line[256];
-    while (fgets(line,sizeof(line),fp)) {
-        if (strstr(line,"GenuineIntel")) { strncpy(out,"intel-ucode",sz-1); break; }
-        if (strstr(line,"AuthenticAMD")) { strncpy(out,"amd-ucode",sz-1);   break; }
-    }
-    pclose(fp);
 }
 
 static int suggest_swap_gb(void) {
@@ -689,19 +853,85 @@ static int screen_wifi_connect(void) {
         pclose(fp);
     }
 
+    typedef struct { char ssid[128]; int signal; char security[32]; } NetEntry;
+    NetEntry nets[16]; int nnets = 0;
+
+    if (nssids > 0) {
+        char scan_raw[8192]={0};
+        char scan_cmd2[256];
+        snprintf(scan_cmd2,sizeof(scan_cmd2),
+                 "iw dev '%s' scan 2>/dev/null || "
+                 "iwctl station '%s' get-networks 2>/dev/null", iface, iface);
+        FILE *fp2 = popen(scan_cmd2,"r");
+        if (fp2) { fread(scan_raw,1,sizeof(scan_raw)-1,fp2); pclose(fp2); }
+
+        for (int i=0; i<nssids && nnets<15; i++) {
+            strncpy(nets[nnets].ssid, ssids[i], 127);
+            nets[nnets].signal   = -100;
+            nets[nnets].security[0] = '\0';
+
+            char *pos = scan_raw;
+            while ((pos = strstr(pos, ssids[i])) != NULL) {
+                char *sig_p = pos;
+                while (sig_p > scan_raw && *sig_p != '\n') sig_p--;
+                char ctx[512]={0};
+                char *end_p = strchr(pos, '\n');
+                if (!end_p) end_p = pos + strlen(pos);
+                int range = (int)(end_p - pos) + 300;
+                if (range > (int)(sizeof(scan_raw) - (pos - scan_raw)))
+                    range = (int)(sizeof(scan_raw) - (pos - scan_raw));
+                strncpy(ctx, pos, range < (int)sizeof(ctx)-1 ? range : (int)sizeof(ctx)-1);
+
+                char *sp;
+                if ((sp = strstr(ctx,"signal:")) || (sp = strstr(ctx,"Signal:"))) {
+                    float sv=0; sscanf(sp+7,"%f",&sv);
+                    int pct = (int)((sv + 100) * 2);
+                    if (pct > 100) pct = 100;
+                    if (pct < 0)   pct = 0;
+                    nets[nnets].signal = pct;
+                }
+                if ((sp = strstr(ctx,"WPA3"))) strncpy(nets[nnets].security,"WPA3",31);
+                else if ((sp = strstr(ctx,"WPA2"))) strncpy(nets[nnets].security,"WPA2",31);
+                else if ((sp = strstr(ctx,"WPA")))  strncpy(nets[nnets].security,"WPA",31);
+                else if ((sp = strstr(ctx,"WEP")))  strncpy(nets[nnets].security,"WEP",31);
+                else strncpy(nets[nnets].security,"Open",31);
+                break;
+                pos++;
+            }
+            nnets++;
+        }
+
+        for (int i=0; i<nnets-1; i++)
+            for (int j=i+1; j<nnets; j++)
+                if (nets[j].signal > nets[i].signal) {
+                    NetEntry tmp = nets[i]; nets[i] = nets[j]; nets[j] = tmp;
+                }
+    }
+
     char ssid_sel[128]={0};
-    if (nssids>0) {
-        MenuItem items[16]; int ni2=nssids>15?15:nssids;
-        for (int i=0;i<ni2;i++) {
-            strncpy(items[i].tag,ssids[i],255);
-            strncpy(items[i].desc,ssids[i],511);
+    if (nnets > 0) {
+        MenuItem items[16];
+        for (int i=0; i<nnets; i++) {
+            strncpy(items[i].tag, nets[i].ssid, 255);
+            char bar[6]="-----";
+            int pct = nets[i].signal;
+            if (pct < 0) pct = 0;
+            int filled = (pct * 5) / 100;
+            for (int b=0; b<filled && b<5; b++) bar[b]='#';
+            char sec[32]; strncpy(sec, nets[i].security[0]?nets[i].security:"?", 31);
+            if (pct >= 0)
+                snprintf(items[i].desc, 511, "[%s] %3d%%  %-6s  %s",
+                         bar, pct, sec, nets[i].ssid);
+            else
+                snprintf(items[i].desc, 511, "[-----]  ?%%  %-6s  %s",
+                         sec, nets[i].ssid);
         }
         char hdr[512];
         snprintf(hdr,sizeof(hdr),
-                 L("Interface: %s\nSelect a network (Cancel = go back):",
-                   "Interfaz: %s\nSelecciona una red (Cancelar = volver):"), iface);
+                 L("Interface: %s\nSorted by signal strength. Select a network:",
+                   "Interfaz: %s\nOrdenado por senal. Selecciona una red:"), iface);
         if (!radiolist_dlg(L("WiFi Networks","Redes WiFi"), hdr,
-                           items,ni2,NULL,ssid_sel,sizeof(ssid_sel)))
+                           items, nnets, NULL, ssid_sel, sizeof(ssid_sel)))
             return -1;
     } else {
         char hdr[512];
@@ -970,8 +1200,10 @@ static void ib_setup_btrfs(IB *ib, const char *p3, const char *disk) {
         write_log_fmt("SSD detected on %s - adding ssd,discard=async",disk);
     }
     char cmd[MAX_CMD];
+    run_simple("modprobe btrfs", 1);
     snprintf(cmd,sizeof(cmd),"mkfs.btrfs -f %s",p3); ib_run(ib,cmd,"mkfs.btrfs");
-    snprintf(cmd,sizeof(cmd),"mount %s /mnt",p3);     ib_run(ib,cmd,"mount btrfs");
+    run_simple("udevadm settle --timeout=5", 1);
+    snprintf(cmd,sizeof(cmd),"mount -t btrfs %s /mnt",p3); ib_run(ib,cmd,"mount btrfs");
     ib_run(ib,"btrfs subvolume create /mnt/@",          "btrfs subvol @");
     ib_run(ib,"btrfs subvolume create /mnt/@home",      "btrfs subvol @home");
     ib_run(ib,"btrfs subvolume create /mnt/@var",       "btrfs subvol @var");
@@ -1274,8 +1506,8 @@ static void ib_install_gpu(IB *ib, double start, double end) {
                   "arch-chroot /mnt pacman -S --noconfirm mesa vulkan-intel intel-media-driver",
                   start,end,1);
     } else if (!strcmp(st.gpu,"Intel+NVIDIA")) {
-        ib_stage(ib, L("Installing Intel+NVIDIA (hybrid) drivers...",
-                       "Instalando drivers Intel+NVIDIA (hybrid)..."));
+        ib_stage(ib, L("Installing Intel+NVIDIA (Optimus hybrid) drivers...",
+                       "Instalando drivers Intel+NVIDIA (Optimus hibrido)..."));
         double mid = start + (end-start)*0.4;
         ib_pacman(ib,
                   "arch-chroot /mnt pacman -S --noconfirm mesa vulkan-intel intel-media-driver",
@@ -1285,6 +1517,21 @@ static void ib_install_gpu(IB *ib, double start, double end) {
                  nv_pkg);
         ib_pacman(ib,cmd,mid,end,1);
         ib_configure_nvidia_modeset(ib);
+        ib_pacman(ib,
+                  "arch-chroot /mnt pacman -S --noconfirm python-pip 2>/dev/null || true",
+                  end,end,1);
+        ib_chroot(ib,
+                  "pip install envycontrol --break-system-packages 2>/dev/null || true",1);
+        if (!strcmp(st.optimus_mode,"integrated")) {
+            ib_chroot(ib,"envycontrol -s integrated 2>/dev/null || true",1);
+            write_log("Optimus: integrated mode");
+        } else if (!strcmp(st.optimus_mode,"nvidia")) {
+            ib_chroot(ib,"envycontrol -s nvidia 2>/dev/null || true",1);
+            write_log("Optimus: NVIDIA-only mode");
+        } else {
+            ib_chroot(ib,"envycontrol -s hybrid 2>/dev/null || true",1);
+            write_log("Optimus: hybrid mode");
+        }
     } else if (!strcmp(st.gpu,"Intel+AMD")) {
         ib_stage(ib, L("Installing Intel+AMD (hybrid) drivers...",
                        "Instalando drivers Intel+AMD (hybrid)..."));
@@ -1354,6 +1601,68 @@ static void ib_install_flatpak(IB *ib) {
              "https://dl.flathub.org/repo/flathub.flatpakrepo'",q);
     ib_chroot(ib,cmd,1);
     write_log("Flatpak + Flathub configured.");
+}
+
+static void ib_install_laptop(IB *ib) {
+    ib_stage(ib, L("Installing laptop power management (TLP)...",
+                   "Instalando gestion de energia para laptop (TLP)..."));
+    ib_pacman(ib,
+              "arch-chroot /mnt pacman -S --noconfirm tlp tlp-rdw powertop acpi acpid",
+              0,0,1);
+    ib_chroot(ib,"systemctl enable tlp",1);
+    ib_chroot(ib,"systemctl enable acpid",1);
+    ib_chroot(ib,"systemctl mask systemd-rfkill.service systemd-rfkill.socket 2>/dev/null || true",1);
+    write_log("Laptop: TLP + powertop + acpi installed and enabled.");
+}
+
+static void ib_enable_multilib(IB *ib) {
+    ib_chroot(ib,
+        "sed -i '/^#\\[multilib\\]/{N;s/#\\[multilib\\]\\n#Include/[multilib]\\nInclude/}' "
+        "/etc/pacman.conf",1);
+    ib_chroot(ib,"pacman -Sy --noconfirm",1);
+    write_log("multilib repository enabled.");
+}
+
+static void ib_install_gaming(IB *ib, double start, double end) {
+    ib_stage(ib, L("Enabling multilib for Steam...","Habilitando multilib para Steam..."));
+    ib_enable_multilib(ib);
+    ib_stage(ib, L("Installing gaming packages...","Instalando paquetes para gaming..."));
+    ib_pacman(ib,
+              "arch-chroot /mnt pacman -S --noconfirm "
+              "steam lutris gamemode lib32-gamemode mangohud lib32-mangohud "
+              "wine-staging winetricks wine-mono "
+              "lib32-vulkan-icd-loader vulkan-icd-loader",
+              start, end, 1);
+    write_log("Gaming profile: steam, lutris, gamemode, mangohud, wine installed.");
+}
+
+static void ib_install_developer(IB *ib, double start, double end) {
+    ib_stage(ib, L("Installing developer packages...","Instalando paquetes de desarrollo..."));
+    ib_pacman(ib,
+              "arch-chroot /mnt pacman -S --noconfirm "
+              "git base-devel vim neovim tmux docker docker-compose "
+              "python python-pip nodejs npm go rust jdk-openjdk "
+              "gdb valgrind strace ltrace",
+              start, end, 1);
+    ib_chroot(ib,"systemctl enable docker",1);
+    char q[MAX_CMD], cmd[MAX_CMD];
+    shell_quote(st.username,q,sizeof(q));
+    snprintf(cmd,sizeof(cmd),"usermod -aG docker %s",st.username);
+    ib_chroot(ib,cmd,1);
+    write_log("Developer profile installed.");
+}
+
+static void ib_install_privacy(IB *ib, double start, double end) {
+    ib_stage(ib, L("Installing privacy packages...","Instalando paquetes de privacidad..."));
+    ib_pacman(ib,
+              "arch-chroot /mnt pacman -S --noconfirm "
+              "tor torsocks ufw fail2ban bleachbit keepassxc "
+              "firejail apparmor",
+              start, end, 1);
+    ib_chroot(ib,"systemctl enable ufw",1);
+    ib_chroot(ib,"ufw default deny incoming 2>/dev/null || true",1);
+    ib_chroot(ib,"systemctl enable fail2ban",1);
+    write_log("Privacy profile installed.");
 }
 
 static void ib_configure_grub_cmdline(IB *ib) {
@@ -1814,6 +2123,92 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
                  "arch-chroot /mnt pacman -S --noconfirm %s", st.extra_pkgs);
         ib_pacman(ib, cmd, 98, 99, 1);
         write_log_fmt("Extra packages installed: %s", st.extra_pkgs);
+
+        if (strstr(st.extra_pkgs, "fish") && st.fish_default) {
+            ib_stage(ib, L("Setting fish as default shell...","Estableciendo fish como shell por defecto..."));
+            ib_chroot(ib,
+                "grep -qxF /usr/bin/fish /etc/shells || echo /usr/bin/fish >> /etc/shells",
+                1);
+            snprintf(cmd, sizeof(cmd), "chsh -s /usr/bin/fish %s", st.username);
+            ib_chroot(ib, cmd, 1);
+            write_log("fish set as default shell for user.");
+        }
+    }
+
+    {
+        CPUInfo ci; detect_cpu_full(&ci);
+        if (ci.threads > 1) {
+            snprintf(cmd,sizeof(cmd),
+                     "sed -i 's/^#MAKEFLAGS=.*/MAKEFLAGS=\"-j%d\"/' /etc/makepkg.conf || "
+                     "echo 'MAKEFLAGS=\"-j%d\"' >> /etc/makepkg.conf",
+                     ci.threads, ci.threads);
+            ib_chroot(ib,cmd,1);
+            write_log_fmt("MAKEFLAGS set to -j%d (%s CPU, %d cores, %d threads)",
+                          ci.threads, ci.vendor, ci.cores, ci.threads);
+        }
+    }
+
+    if (st.laptop) {
+        ib_install_laptop(ib);
+    }
+
+    if (!strcmp(st.profile,"gaming")) {
+        ib_install_gaming(ib, 98.5, 99.2);
+    } else if (!strcmp(st.profile,"developer")) {
+        ib_install_developer(ib, 98.5, 99.2);
+    } else if (!strcmp(st.profile,"privacy")) {
+        ib_install_privacy(ib, 98.5, 99.2);
+    }
+
+    if (strcmp(st.dotfiles,"none") != 0) {
+        ib_stage(ib, L("Installing dotfiles...","Instalando dotfiles..."));
+        char q_user[MAX_CMD];
+        shell_quote(st.username,q_user,sizeof(q_user));
+
+        ib_chroot(ib,"pacman -S --noconfirm --needed git 2>/dev/null || true",1);
+
+        if (!strcmp(st.dotfiles,"caelestia")) {
+            ib_stage(ib, L("Installing fish (required by caelestia)...",
+                           "Instalando fish (requerido por caelestia)..."));
+            ib_chroot(ib,
+                "pacman -S --noconfirm --needed fish git 2>/dev/null || true",
+                1);
+            ib_chroot(ib,
+                "grep -qxF /usr/bin/fish /etc/shells "
+                "|| echo /usr/bin/fish >> /etc/shells",
+                1);
+            snprintf(cmd, sizeof(cmd), "chsh -s /usr/bin/fish %s", st.username);
+            ib_chroot(ib, cmd, 1);
+            write_log("fish installed and set as default shell for caelestia.");
+
+            ib_stage(ib, L("Cloning caelestia dotfiles...",
+                           "Clonando dotfiles caelestia..."));
+            const char *aur_helper = st.yay ? "yay" : "paru";
+            char caelestia_cmd[MAX_CMD];
+            snprintf(caelestia_cmd, sizeof(caelestia_cmd),
+                "mkdir -p /home/%s/.local/share && "
+                "git clone --depth=1 https://github.com/caelestia-dots/caelestia "
+                "/home/%s/.local/share/caelestia 2>&1 && "
+                "cd /home/%s/.local/share/caelestia && "
+                "fish install.fish --noconfirm --aur-helper=%s 2>&1",
+                st.username, st.username, st.username, aur_helper);
+            ib_chroot(ib, caelestia_cmd, 1);
+            write_log("Caelestia dotfiles installed.");
+
+        } else if (!strcmp(st.dotfiles,"custom") && st.dotfiles_url[0]) {
+            ib_chroot(ib,"pacman -S --noconfirm --needed git 2>/dev/null || true",1);
+            char install_cmd[MAX_CMD];
+            snprintf(install_cmd, sizeof(install_cmd),
+                     "su - %s -c '"
+                     "git clone --depth=1 %s ~/dots 2>&1 && "
+                     "cd ~/dots && "
+                     "if [ -f install.sh ]; then bash install.sh --noconfirm 2>&1; "
+                     "elif [ -f setup.sh ]; then bash setup.sh --noconfirm 2>&1; "
+                     "else echo No install script found, dotfiles cloned to ~/dots; fi'",
+                     st.username, st.dotfiles_url);
+            ib_chroot(ib, install_cmd, 1);
+            write_log_fmt("Custom dotfiles installed from: %s", st.dotfiles_url);
+        }
     }
 
     ib_pct(ib,100);
@@ -2710,6 +3105,26 @@ static int screen_mirrors(void) {
                          "Usar reflector para seleccionar los 10 mirrors mas rapidos? (recomendado)"),
                        items,2,st.mirrors?"yes":"no",out,sizeof(out))) return 0;
     st.mirrors = !strcmp(out,"yes");
+
+    if (st.mirrors) {
+        infobox_dlg(L("Testing network speed...","Probando velocidad de red..."),
+                    L("Measuring download speed to archlinux.org...",
+                      "Midiendo velocidad de descarga a archlinux.org..."));
+        double speed = measure_mirror_speed("https://archlinux.org/packages/");
+        char speed_msg[256];
+        if (speed > 0) {
+            double kbps = speed / 1024.0;
+            snprintf(speed_msg,sizeof(speed_msg),
+                     L("Network speed: %.0f KB/s\n\nreflector will find the fastest mirrors for your location.",
+                       "Velocidad de red: %.0f KB/s\n\nreflector elegira los mirrors mas rapidos para tu ubicacion."),
+                     kbps);
+        } else {
+            snprintf(speed_msg,sizeof(speed_msg),"%s",
+                     L("Speed test inconclusive.\nreflector will still attempt to find fast mirrors.",
+                       "Test de velocidad no concluyente.\nreflector intentara encontrar mirrors rapidos."));
+        }
+        msgbox(L("Speed Test","Test de velocidad"), speed_msg);
+    }
     return 1;
 }
 
@@ -3012,6 +3427,30 @@ static int screen_gpu(void) {
     free(items);
     if(!ok) return 0;
     strncpy(st.gpu,out,sizeof(st.gpu)-1);
+
+    if (!strcmp(st.gpu,"Intel+NVIDIA")) {
+        MenuItem om[3];
+        strncpy(om[0].tag,"hybrid",255);
+        snprintf(om[0].desc,511,"%s",
+                 L("Hybrid   - iGPU for display, dGPU on demand (best battery)",
+                   "Hibrido  - iGPU para pantalla, dGPU bajo demanda (mejor bateria)"));
+        strncpy(om[1].tag,"integrated",255);
+        snprintf(om[1].desc,511,"%s",
+                 L("Integrated - iGPU only (max battery, no NVIDIA)",
+                   "Integrada    - solo iGPU (maxima bateria, sin NVIDIA)"));
+        strncpy(om[2].tag,"nvidia",255);
+        snprintf(om[2].desc,511,"%s",
+                 L("NVIDIA   - dGPU only (max performance, more power)",
+                   "NVIDIA   - solo dGPU (maxima potencia, mas consumo)"));
+        char om_out[16]={0};
+        radiolist_dlg(L("Optimus Mode","Modo Optimus"),
+                      L("Select the GPU mode for your hybrid laptop.\n"
+                        "(Can be changed later with: envycontrol -s <mode>)",
+                        "Selecciona el modo GPU para tu laptop hibrida.\n"
+                        "(Se puede cambiar luego con: envycontrol -s <modo>)"),
+                      om, 3, st.optimus_mode, om_out, sizeof(om_out));
+        if (om_out[0]) strncpy(st.optimus_mode, om_out, sizeof(st.optimus_mode)-1);
+    }
     return 1;
 }
 
@@ -3062,6 +3501,94 @@ static int screen_flatpak(void) {
                         "Instalar Flatpak y anadir el repositorio Flathub?"),
                       items,2,st.flatpak?"yes":"no",out,sizeof(out))) return 0;
     st.flatpak=!strcmp(out,"yes");
+    return 1;
+}
+
+static int screen_profile(void) {
+    MenuItem items[5];
+    strncpy(items[0].tag,"none",255);
+    snprintf(items[0].desc,511,"%s",
+             L("None      - no profile, just base system",
+               "Ninguno   - sin perfil, solo el sistema base"));
+    strncpy(items[1].tag,"gaming",255);
+    snprintf(items[1].desc,511,"%s",
+             L("Gaming    - Steam + Lutris + GameMode + MangoHud + Wine + multilib",
+               "Gaming    - Steam + Lutris + GameMode + MangoHud + Wine + multilib"));
+    strncpy(items[2].tag,"developer",255);
+    snprintf(items[2].desc,511,"%s",
+             L("Developer - git + Docker + Python + Node + Go + Rust + JDK + gdb",
+               "Desarrollador - git + Docker + Python + Node + Go + Rust + JDK + gdb"));
+    strncpy(items[3].tag,"minimal",255);
+    snprintf(items[3].desc,511,"%s",
+             L("Minimal   - no profile extras (lightest possible install)",
+               "Minimal   - sin extras de perfil (instalacion mas ligera)"));
+    strncpy(items[4].tag,"privacy",255);
+    snprintf(items[4].desc,511,"%s",
+             L("Privacy   - Tor + ufw + fail2ban + firejail + KeePassXC + BleachBit",
+               "Privacidad - Tor + ufw + fail2ban + firejail + KeePassXC + BleachBit"));
+
+    char out[32]={0};
+    if (!radiolist_dlg(
+            L("Installation Profile","Perfil de instalacion"),
+            L("Choose a profile to pre-select a set of packages.\n\n"
+              "Gaming:    multilib is REQUIRED and will be enabled automatically.\n"
+              "Developer: Docker, full toolchain.\n"
+              "Privacy:   firewall + anonymization tools.\n"
+              "Minimal:   only what you explicitly selected above.",
+              "Elige un perfil para preseleccionar paquetes.\n\n"
+              "Gaming:    se requiere y habilita multilib automaticamente.\n"
+              "Desarrollador: Docker, toolchain completo.\n"
+              "Privacidad: firewall + herramientas de anonimizacion.\n"
+              "Minimal:   solo lo que seleccionaste manualmente."),
+            items, 5, st.profile, out, sizeof(out)))
+        return 0;
+    strncpy(st.profile, out, sizeof(st.profile)-1);
+    return 1;
+}
+
+static int screen_dotfiles(void) {
+    if (!strstr(st.desktop_list, "Hyprland")) {
+        strncpy(st.dotfiles, "none", sizeof(st.dotfiles)-1);
+        st.dotfiles_url[0] = '\0';
+        return 1;
+    }
+
+    MenuItem items[3];
+    strncpy(items[0].tag,"none",255);
+    snprintf(items[0].desc,511,"%s",
+             L("None     - skip dotfiles","Ninguno - omitir dotfiles"));
+    strncpy(items[1].tag,"caelestia",255);
+    snprintf(items[1].desc,511,"%s",
+             L("Caelestia - install caelestia-dots (Hyprland rice)",
+               "Caelestia - instalar caelestia-dots (rice para Hyprland)"));
+    strncpy(items[2].tag,"custom",255);
+    snprintf(items[2].desc,511,"%s",
+             L("Custom   - provide your own git repository URL",
+               "Personalizado - URL de tu propio repositorio git"));
+
+    char out[32]={0};
+    if (!radiolist_dlg(
+            L("Dotfiles / Post-install","Dotfiles / Post-instalacion"),
+            L("Install dotfiles after the base system is set up?\n\n"
+              "The script ~/dots/install.sh (or setup.sh) will be run as your user.\n"
+              "Internet is required. Errors here are non-fatal.",
+              "Instalar dotfiles despues de configurar el sistema base?\n\n"
+              "Se ejecutara ~/dots/install.sh (o setup.sh) como tu usuario.\n"
+              "Necesitas internet. Los errores aqui no son fatales."),
+            items, 3, st.dotfiles, out, sizeof(out)))
+        return 0;
+    strncpy(st.dotfiles, out, sizeof(st.dotfiles)-1);
+
+    if (!strcmp(out,"custom")) {
+        char url[256]={0};
+        if (!inputbox_dlg(
+                L("Dotfiles URL","URL de dotfiles"),
+                L("Enter the git repository URL for your dotfiles:",
+                  "Ingresa la URL del repositorio git de tus dotfiles:"),
+                st.dotfiles_url, url, sizeof(url)))
+            return 0;
+        strncpy(st.dotfiles_url, url, sizeof(st.dotfiles_url)-1);
+    }
     return 1;
 }
 
@@ -3118,11 +3645,21 @@ static int screen_extra_packages(void) {
     free(items);
 
     st.extra_pkgs[0] = '\0';
+    int fish_selected = 0;
     if (nsel > 0) {
         for (int i = 0; i < nsel; i++) {
             if (i) strncat(st.extra_pkgs, " ", sizeof(st.extra_pkgs) - strlen(st.extra_pkgs) - 1);
             strncat(st.extra_pkgs, sel[i], sizeof(st.extra_pkgs) - strlen(st.extra_pkgs) - 1);
+            if (!strcmp(sel[i], "fish")) fish_selected = 1;
         }
+    }
+    if (fish_selected) {
+        st.fish_default = yesno_dlg(
+            L("fish shell", "fish shell"),
+            L("fish was selected.\n\nSet fish as the default shell for your user?",
+              "Has seleccionado fish.\n\n?Establecer fish como shell por defecto para tu usuario?"));
+    } else {
+        st.fish_default = 0;
     }
     return 1;
 }
@@ -3241,6 +3778,7 @@ static int screen_language_wrap(void)  { screen_language(); return 1; }
 static int screen_network_wrap(void)   { screen_network();  return 1; }
 static int screen_finish_wrap(void)    { screen_finish();   return 1; }
 static int screen_install_wrap(void)   { return screen_install(); }
+static int screen_preflight_wrap(void) { return run_preflight(); }
 
 int main(void) {
     if(geteuid()!=0) {
@@ -3268,8 +3806,11 @@ int main(void) {
         {L("Disk","Disco"),                screen_disk,          1},
         {L("Identity","Identidad"),        screen_identity,      1},
         {L("Passwords","Contrasenas"),     screen_passwords,        1},
+        {L("Profile","Perfil"),            screen_profile,          1},
+        {L("Dotfiles","Dotfiles"),         screen_dotfiles,         1},
         {L("Extra Packages","Paquetes extra"), screen_extra_packages, 1},
         {L("Review","Revision"),           screen_review,           1},
+        {L("Preflight","Preflight"),       screen_preflight_wrap,   0},
         {L("Install","Instalar"),          screen_install_wrap,     0},
         {L("Finish","Finalizar"),          screen_finish_wrap,      0},
         {NULL,NULL,0}
@@ -3288,11 +3829,14 @@ int main(void) {
         {L("Timezone","Zona horaria"),      screen_timezone,      1},
         {L("Desktop","Escritorio"),         screen_desktop,       1},
         {"GPU",                              screen_gpu,           1},
+        {L("Profile","Perfil"),             screen_profile,       1},
+        {L("Dotfiles","Dotfiles"),          screen_dotfiles,      1},
         {L("yay","yay"),                    screen_yay,           1},
         {L("Flatpak","Flatpak"),            screen_flatpak,           1},
         {L("Snapshots","Snapshots"),        screen_snapper,           1},
         {L("Extra Packages","Paquetes extra"), screen_extra_packages, 1},
         {L("Review","Revision"),            screen_review,            1},
+        {L("Preflight","Preflight"),        screen_preflight_wrap,    0},
         {L("Install","Instalar"),           screen_install_wrap,  0},
         {L("Finish","Finalizar"),           screen_finish_wrap,   0},
         {NULL,NULL,0}
