@@ -162,7 +162,7 @@ static const DesktopDef DESKTOP_DEFS[] = {
         "xorg-server lxqt sddm breeze-icons alacritty firefox"
     }, 1},
     {"Hyprland", {
-        "hyprland waybar wofi kitty xdg-desktop-portal-hyprland "
+        "hyprland waybar wofi alacritty xdg-desktop-portal-hyprland "
         "polkit-gnome qt5-wayland qt6-wayland sddm firefox"
     }, 1},
     {"Sway", {
@@ -513,12 +513,12 @@ static int is_laptop(void) {
 }
 
 typedef struct {
-    char microcode[32];  
-    char vendor[32];      
+    char microcode[32]; 
+    char vendor[32];     
     int  cores;
     int  threads;
-    int  has_vmx;         
-    int  has_svm;       
+    int  has_vmx;        
+    int  has_svm;        
     int  has_avx2;
     int  has_avx512;
 } CPUInfo;
@@ -597,7 +597,7 @@ static int is_ssd(const char *disk_path) {
 }
 
 static int check_connectivity(void);
-static int msgbox_declared_above; 
+static int msgbox_declared_above;  
 
 static int run_preflight(void) {
     char report[2048] = {0};
@@ -2184,13 +2184,12 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
             const char *aur_helper = st.yay ? "yay" : "paru";
             char caelestia_cmd[MAX_CMD];
             snprintf(caelestia_cmd, sizeof(caelestia_cmd),
-                "su - %s -c '"
-                "mkdir -p ~/.local/share && "
+                "mkdir -p /home/%s/.local/share && "
                 "git clone --depth=1 https://github.com/caelestia-dots/caelestia "
-                "~/.local/share/caelestia 2>&1 && "
-                "cd ~/.local/share/caelestia && "
-                "fish install.fish --noconfirm --aur-helper=%s 2>&1'",
-                st.username, aur_helper);
+                "/home/%s/.local/share/caelestia 2>&1 && "
+                "cd /home/%s/.local/share/caelestia && "
+                "fish install.fish --noconfirm --aur-helper=%s 2>&1",
+                st.username, st.username, st.username, aur_helper);
             ib_chroot(ib, caelestia_cmd, 1);
             write_log("Caelestia dotfiles installed.");
 
