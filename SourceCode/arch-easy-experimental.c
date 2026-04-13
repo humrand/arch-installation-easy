@@ -298,114 +298,152 @@ static void da_free(DA *da) {
     free(da->v); da->v=NULL; da->n=0;
 }
 
-static int da_exec(DA *da, char *out, size_t outsz) {
-    char tmp[64] = "/tmp/.dlgXXXXXX";
-    int tfd = mkstemp(tmp);
-    if (tfd < 0) { if(out&&outsz) out[0]='\0'; return -1; }
 
-    tcflush(STDIN_FILENO, TCIFLUSH);
+typedef struct { char tag[256]; char desc[512]; } MenuItem;
+
+static void dlg_strip(const char *src, char *dst, size_t n) {
+    size_t i = 0;
+    while (*src && i < n - 1) {
+        if (*src == '\\' && *(src+1) == 'Z') {
+            src += 2;
+            if (*src) src++;
+        } else {
+            dst[i++] = *src++;
+        }
+    }
+    dst[i] = '\0';
+}
+
+static int yad_exec(char **argv, char *out, size_t outsz) {
+    int pfd[2];
+    if (pipe(pfd) != 0) { if (out && outsz) out[0] = '\0'; return -1; }
 
     pid_t pid = fork();
     if (pid == 0) {
-        dup2(tfd, STDERR_FILENO);
-        close(tfd);
-        execvp("dialog", da->v);
+        close(pfd[0]);
+        dup2(pfd[1], STDOUT_FILENO);
+        close(pfd[1]);
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) dup2(dn, STDERR_FILENO);
+        execvp("yad", argv);
         _exit(127);
     }
-    close(tfd);
+    close(pfd[1]);
 
-    int status; waitpid(pid, &status, 0);
-
-    if (out && outsz>0) {
-        FILE *f = fopen(tmp,"r");
-        if (f) {
-            size_t n = fread(out, 1, outsz-1, f);
-            out[n]='\0'; fclose(f);
-            trim_nl(out);
-        } else out[0]='\0';
+    if (out && outsz > 0) {
+        size_t total = 0;
+        char buf[512];
+        ssize_t n;
+        while ((n = read(pfd[0], buf, sizeof(buf))) > 0) {
+            if (total + (size_t)n < outsz) {
+                memcpy(out + total, buf, (size_t)n);
+                total += (size_t)n;
+            }
+        }
+        out[total] = '\0';
+        size_t len = strlen(out);
+        while (len > 0 && (out[len-1] == '|' || out[len-1] == '\n' || out[len-1] == '\r'))
+            out[--len] = '\0';
+        trim_nl(out);
     }
-    unlink(tmp);
+    close(pfd[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-static void da_hdr(DA *da, const char *title) {
-    char bt[256], tt[256];
-    snprintf(bt, sizeof(bt), "\\Zb\\Z4%s\\Zn  -  %s", TITLE, VERSION);
-    snprintf(tt, sizeof(tt), " %s ", title);
-    da_push(da,"dialog"); da_push(da,"--colors");
-    da_push(da,"--backtitle"); da_push(da,bt);
-    da_push(da,"--title");    da_push(da,tt);
-}
-
+#define YAD_W   "--width=580"
+#define YAD_WS  "--width=420"
+#define YAD_WL  "--width=700"
 
 static void msgbox(const char *title, const char *text) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--msgbox"); da_push(&da,text);
-    da_push(&da,"0"); da_push(&da,"0");
-    da_exec(&da,NULL,0); da_free(&da);
+    char clean[4096]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
+                 "--button=OK:0", YAD_W, "--wrap", NULL};
+    yad_exec(a, NULL, 0);
 }
 
 static int yesno_dlg(const char *title, const char *text) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--yesno"); da_push(&da,text);
-    da_push(&da,"0"); da_push(&da,"0");
-    int rc = da_exec(&da,NULL,0); da_free(&da);
-    return rc == 0;
+    char clean[4096]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--question","--title",(char*)title,"--text",clean,
+                 "--button=Yes:0","--button=No:1", YAD_W, "--wrap", NULL};
+    return yad_exec(a, NULL, 0) == 0;
 }
 
 static int inputbox_dlg(const char *title, const char *text,
                          const char *init, char *out, size_t outsz) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--inputbox"); da_push(&da,text);
-    da_push(&da,"0"); da_push(&da,"60");
-    if (init && *init) da_push(&da,init);
-    else da_push(&da,"");
-    int rc = da_exec(&da,out,outsz); da_free(&da);
-    return rc == 0;
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--entry","--title",(char*)title,"--text",clean,
+                 "--entry-text",(char*)(init?init:""),
+                 "--button=OK:0","--button=Cancel:1", YAD_W, NULL};
+    return yad_exec(a, out, outsz) == 0;
 }
 
 static int passwordbox_dlg(const char *title, const char *text,
                             char *out, size_t outsz) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--insecure"); da_push(&da,"--passwordbox");
-    da_push(&da,text); da_push(&da,"0"); da_push(&da,"60");
-    int rc = da_exec(&da,out,outsz); da_free(&da);
-    return rc == 0;
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--entry","--hide-text","--title",(char*)title,
+                 "--text",clean,
+                 "--button=OK:0","--button=Cancel:1", YAD_WS, NULL};
+    return yad_exec(a, out, outsz) == 0;
 }
-
-typedef struct { char tag[256]; char desc[512]; } MenuItem;
 
 static int menu_dlg(const char *title, const char *text,
                      MenuItem *items, int n, char *out, size_t outsz) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--menu"); da_push(&da,text);
-    char h[8]; snprintf(h,sizeof(h),"%d", n>28?40:n+12);
-    char ns[8]; snprintf(ns,sizeof(ns),"%d",n);
-    da_push(&da,h); da_push(&da,"76"); da_push(&da,ns);
-    for (int i=0;i<n;i++) { da_push(&da,items[i].tag); da_push(&da,items[i].desc); }
-    int rc = da_exec(&da,out,outsz); da_free(&da);
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+
+    int argc = 0;
+    char **a = calloc((size_t)(n * 2 + 16), sizeof(char*));
+    a[argc++] = "yad";
+    a[argc++] = "--list";
+    a[argc++] = "--title";    a[argc++] = (char*)title;
+    a[argc++] = "--text";     a[argc++] = clean;
+    a[argc++] = "--column=Option";
+    a[argc++] = "--column=Description";
+    a[argc++] = "--print-column=1";
+    a[argc++] = YAD_WL;
+    a[argc++] = "--button=OK:0";
+    a[argc++] = "--button=Cancel:1";
+    for (int i = 0; i < n; i++) {
+        a[argc++] = items[i].tag;
+        a[argc++] = items[i].desc;
+    }
+    a[argc] = NULL;
+
+    int rc = yad_exec(a, out, outsz);
+    free(a);
     return rc == 0;
 }
 
 static int radiolist_dlg(const char *title, const char *text,
                            MenuItem *items, int n, const char *def,
                            char *out, size_t outsz) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--radiolist"); da_push(&da,text);
-    char h[8]; snprintf(h,sizeof(h),"%d", n>28?40:n+12);
-    char ns[8]; snprintf(ns,sizeof(ns),"%d",n);
-    da_push(&da,h); da_push(&da,"76"); da_push(&da,ns);
-    for (int i=0;i<n;i++) {
-        da_push(&da,items[i].tag); da_push(&da,items[i].desc);
-        da_push(&da,(def && strcmp(items[i].tag,def)==0)?"on":"off");
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+
+    int argc = 0;
+    char **a = calloc((size_t)(n * 3 + 20), sizeof(char*));
+    a[argc++] = "yad";
+    a[argc++] = "--list";
+    a[argc++] = "--radiolist";
+    a[argc++] = "--title";    a[argc++] = (char*)title;
+    a[argc++] = "--text";     a[argc++] = clean;
+    a[argc++] = "--column= "; 
+    a[argc++] = "--column=Option";
+    a[argc++] = "--column=Description";
+    a[argc++] = "--print-column=2";
+    a[argc++] = YAD_WL;
+    a[argc++] = "--button=OK:0";
+    a[argc++] = "--button=Cancel:1";
+    for (int i = 0; i < n; i++) {
+        a[argc++] = (def && strcmp(items[i].tag, def) == 0) ? "TRUE" : "FALSE";
+        a[argc++] = items[i].tag;
+        a[argc++] = items[i].desc;
     }
-    int rc = da_exec(&da,out,outsz); da_free(&da);
+    a[argc] = NULL;
+
+    int rc = yad_exec(a, out, outsz);
+    free(a);
     return rc == 0;
 }
 
@@ -413,26 +451,36 @@ static int checklist_dlg(const char *title, const char *text,
                           MenuItem *items, int n,
                           const char **defaults, int ndef,
                           char out[][256], int maxout) {
-    DA da = da_new();
-    da_hdr(&da, title);
-    da_push(&da, "--separate-output");
-    da_push(&da, "--checklist"); da_push(&da, text);
-    char h[8]; snprintf(h, sizeof(h), "%d", n>28 ? 40 : n+12);
-    char ns[8]; snprintf(ns, sizeof(ns), "%d", n);
-    da_push(&da, h); da_push(&da, "76"); da_push(&da, ns);
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+
+    int argc = 0;
+    char **a = calloc((size_t)(n * 3 + 20), sizeof(char*));
+    a[argc++] = "yad";
+    a[argc++] = "--list";
+    a[argc++] = "--checklist";
+    a[argc++] = "--title";    a[argc++] = (char*)title;
+    a[argc++] = "--text";     a[argc++] = clean;
+    a[argc++] = "--column= ";
+    a[argc++] = "--column=Option";
+    a[argc++] = "--column=Description";
+    a[argc++] = "--print-column=2";
+    a[argc++] = YAD_WL;
+    a[argc++] = "--button=OK:0";
+    a[argc++] = "--button=Cancel:1";
     for (int i = 0; i < n; i++) {
-        da_push(&da, items[i].tag);
-        da_push(&da, items[i].desc);
         int on = 0;
         for (int j = 0; j < ndef; j++)
-            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0) { on=1; break; }
-        da_push(&da, on ? "on" : "off");
+            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0) { on = 1; break; }
+        a[argc++] = on ? "TRUE" : "FALSE";
+        a[argc++] = items[i].tag;
+        a[argc++] = items[i].desc;
     }
-    char raw[4096] = {0};
-    int rc = da_exec(&da, raw, sizeof(raw));
-    da_free(&da);
-    if (rc != 0) return -1;  
+    a[argc] = NULL;
 
+    char raw[4096] = {0};
+    int rc = yad_exec(a, raw, sizeof(raw));
+    free(a);
+    if (rc != 0) return -1;
 
     int count = 0;
     char *p = raw;
@@ -440,22 +488,36 @@ static int checklist_dlg(const char *title, const char *text,
         char *nl = strchr(p, '\n');
         int len = nl ? (int)(nl - p) : (int)strlen(p);
         if (len > 0 && len < 255) {
-            strncpy(out[count], p, len);
+            strncpy(out[count], p, (size_t)len);
             out[count][len] = '\0';
             count++;
         }
         if (!nl) break;
         p = nl + 1;
     }
+    if (count == 0 && raw[0]) {
+        char copy[4096]; strncpy(copy, raw, sizeof(copy)-1);
+        char *tok = strtok(copy, "|");
+        while (tok && count < maxout) {
+            trim_nl(tok);
+            if (tok[0]) { strncpy(out[count++], tok, 255); }
+            tok = strtok(NULL, "|");
+        }
+    }
     return count;
 }
 
 static void infobox_dlg(const char *title, const char *text) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--infobox"); da_push(&da,text);
-    da_push(&da,"5"); da_push(&da,"50");
-    da_exec(&da,NULL,0); da_free(&da);
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
+                 "--timeout=60","--no-buttons", YAD_WS, NULL};
+    pid_t pid = fork();
+    if (pid == 0) {
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) { dup2(dn, STDOUT_FILENO); dup2(dn, STDERR_FILENO); }
+        execvp("yad", a);
+        _exit(0);
+    }
 }
 
 typedef void (*LineCallback)(const char *line, void *ud);
@@ -2217,355 +2279,109 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
     return NULL;
 }
 
-#define IS_MODE_PROGRESS 0
-#define IS_MODE_DEBUG    1
 
-typedef struct {
-    double  pct;
-    char    stage[512];
-    char  **lines;
-    int     nlines;
-    int     cap_lines;
-    int     mode;
-    int     prev_mode;
-    char    keybuf[32];
-    int     running;
-    struct termios old_tty;
-    int            has_tty;
-    pthread_mutex_t lock;
-    pthread_t       render_tid;
-    pthread_t       key_tid;
-} IS;
 
-static void is_write(const char *s) { write(STDOUT_FILENO, s, strlen(s)); }
-static void is_writef(const char *fmt, ...) {
-    char buf[1024]; va_list ap; va_start(ap,fmt);
-    vsnprintf(buf,sizeof(buf),fmt,ap); va_end(ap);
-    is_write(buf);
-}
-
-static IS *g_is = NULL;
-
-static void is_feed(IS *is, const char *line) {
-    pthread_mutex_lock(&is->lock);
-    if (is->nlines >= MAX_LINES) {
-        int keep    = KEEP_LINES;
-        int discard = is->nlines - keep;
-        for (int i = 0; i < discard; i++) { free(is->lines[i]); is->lines[i] = NULL; }
-        memmove(is->lines, is->lines + discard, keep * sizeof(char*));
-        is->nlines = keep;
-    }
-    if (is->nlines >= is->cap_lines) {
-        is->cap_lines *= 2;
-        is->lines = realloc(is->lines, is->cap_lines * sizeof(char*));
-    }
-    is->lines[is->nlines++] = strdup(line);
-    pthread_mutex_unlock(&is->lock);
-}
-
-static void is_update(IS *is, double pct, const char *stage) {
-    pthread_mutex_lock(&is->lock);
-    is->pct = pct;
-    strncpy(is->stage, stage, sizeof(is->stage)-1);
-    pthread_mutex_unlock(&is->lock);
-}
-
-static void is_get_term_size(int *rows, int *cols) {
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)==0 && ws.ws_row>0)
-        { *rows = ws.ws_row; *cols = ws.ws_col; }
-    else { *rows=24; *cols=80; }
-}
-
-static void is_trunc(const char *s, char *out, int n) {
-    int len = (int)strlen(s);
-    if (len <= n) { strcpy(out,s); return; }
-    strncpy(out,s,n-3); out[n-3]='\0'; strcat(out,"...");
-}
-
-static void is_draw_progress(IS *is, double pct, const char *stage, int rows, int cols) {
-    int W = cols-2 < 74 ? cols-2 : 74;
-    if (W < 10) W=10;
-    int lft = (cols-W)/2; if(lft<0)lft=0;
-    int top = (rows-6)/2; if(top<1)top=1;
-
-    char pad[128]={0};
-    for (int i=0;i<lft&&i<(int)sizeof(pad)-1;i++) pad[i]=' ';
-
-    for (int r=1;r<top;r++) is_writef("\033[%d;1H\033[2K",r);
-    for (int r=top+7;r<=rows;r++) is_writef("\033[%d;1H\033[2K",r);
-
-    char title[128];
-    snprintf(title,sizeof(title)," %s  -  %s ",TITLE,VERSION);
-    int tlen=(int)strlen(title);
-    char title_padded[256]="";
-    int left_pad=(W-tlen)/2; if(left_pad<0)left_pad=0;
-    for(int i=0;i<left_pad;i++) strncat(title_padded," ",sizeof(title_padded)-strlen(title_padded)-1);
-    strncat(title_padded,title,sizeof(title_padded)-strlen(title_padded)-1);
-    while((int)strlen(title_padded)<W)
-        strncat(title_padded," ",sizeof(title_padded)-strlen(title_padded)-1);
-    is_writef("\033[%d;1H\033[2K%s\033[44m\033[97m\033[1m%s\033[0m",top,pad,title_padded);
-    is_writef("\033[%d;1H\033[2K",top+1);
-
-    char trunc_stage[512];
-    is_trunc(stage, trunc_stage, W-4);
-    is_writef("\033[%d;1H\033[2K%s  \033[1m%s\033[0m",top+2,pad,trunc_stage);
-    is_writef("\033[%d;1H\033[2K",top+3);
-
-    int bar_w = W-9; if(bar_w<4)bar_w=4;
-    int filled = (int)(bar_w * pct / 100.0);
-    int empty  = bar_w - filled;
-    char bar[512]="";
-    strncat(bar,"\033[44m\033[97m",sizeof(bar)-strlen(bar)-1);
-    for(int i=0;i<filled;i++) strncat(bar," ",sizeof(bar)-strlen(bar)-1);
-    strncat(bar,"\033[0m\033[100m",sizeof(bar)-strlen(bar)-1);
-    for(int i=0;i<empty;i++) strncat(bar," ",sizeof(bar)-strlen(bar)-1);
-    strncat(bar,"\033[0m",sizeof(bar)-strlen(bar)-1);
-    is_writef("\033[%d;1H\033[2K%s  [%s] \033[1m%3d%%\033[0m",top+4,pad,bar,(int)pct);
-    is_writef("\033[%d;1H\033[2K",top+5);
-    is_writef("\033[%d;1H\033[2K",top+6);
-}
-
-static void is_draw_debug(IS *is, double pct, const char *stage,
-                            char **lines, int nlines, int rows, int cols) {
-    char hdr_l[512], trunc[512];
-    is_trunc(stage, trunc, cols-28);
-    snprintf(hdr_l,sizeof(hdr_l)," DEBUG  %.0f%%  %s",pct,trunc);
-    const char *hdr_r = "write 'exit' to go back ";
-    int gap = cols - (int)strlen(hdr_l) - (int)strlen(hdr_r);
-    if (gap<0) gap=0;
-    is_writef("\033[1;1H\033[2K\033[44m\033[97m\033[1m%s",hdr_l);
-    for(int i=0;i<gap;i++) is_write(" ");
-    is_writef("%s\033[0m",hdr_r);
-    is_writef("\033[2;1H\033[2K\033[96m");
-    for(int i=0;i<cols;i++) is_write("-");
-    is_write("\033[0m");
-    int available = rows-2;
-    int start = nlines-available; if(start<0)start=0;
-    for (int i=0;i<available;i++) {
-        is_writef("\033[%d;1H\033[2K",3+i);
-        if (start+i < nlines) {
-            const char *ln = lines[start+i];
-            if (strstr(ln,"ERROR")||strstr(ln,"FATAL")||strstr(ln,"CRITICAL"))
-                is_write("\033[91m\033[1m");
-            else if (strstr(ln,">>>"))
-                is_write("\033[93m\033[1m");
-            else if (ln[0]=='[')
-                is_write("\033[90m");
-            char tln[4096]; is_trunc(ln,tln,cols-1);
-            is_write(tln);
-            is_write("\033[0m");
-        }
-    }
-}
-
-static void *is_render_loop(void *arg) {
-    IS *is = arg;
-    while (1) {
-        pthread_mutex_lock(&is->lock);
-        int running = is->running;
-        pthread_mutex_unlock(&is->lock);
-        if (!running) break;
-
-        pthread_mutex_lock(&is->lock);
-        double pct = is->pct;
-        char stage[512]; strncpy(stage,is->stage,511); stage[511]='\0';
-        int mode = is->mode;
-        int mode_changed = (mode != is->prev_mode);
-        is->prev_mode = mode;
-        int nlines = is->nlines;
-        char **lines_snap = NULL;
-        if (mode == IS_MODE_DEBUG && nlines > 0) {
-            lines_snap = malloc(nlines * sizeof(char*));
-            for (int i=0;i<nlines;i++) lines_snap[i] = strdup(is->lines[i]);
-        }
-        pthread_mutex_unlock(&is->lock);
-
-        int rows,cols; is_get_term_size(&rows,&cols);
-        if (mode_changed) is_write("\033[2J\033[H");
-        is_write("\033[?25l");
-
-        if (mode == IS_MODE_PROGRESS)
-            is_draw_progress(is, pct, stage, rows, cols);
-        else
-            is_draw_debug(is, pct, stage, lines_snap, nlines, rows, cols);
-
-        fflush(stdout);
-        if (lines_snap) {
-            for (int i=0;i<nlines;i++) free(lines_snap[i]);
-            free(lines_snap);
-        }
-        usleep(80000);
-    }
-    return NULL;
-}
-
-static void *is_key_loop(void *arg) {
-    IS *is = arg;
-    while (1) {
-        pthread_mutex_lock(&is->lock);
-        int running = is->running;
-        pthread_mutex_unlock(&is->lock);
-        if (!running) break;
-        fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO,&fds);
-        struct timeval tv = {0, 50000};
-        if (select(STDIN_FILENO+1,&fds,NULL,NULL,&tv) > 0) {
-            char ch[2]={0};
-            ssize_t n = read(STDIN_FILENO,ch,1);
-            if (n>0) {
-                pthread_mutex_lock(&is->lock);
-                size_t klen = strlen(is->keybuf);
-                if (klen < sizeof(is->keybuf)-2)
-                    is->keybuf[klen]=ch[0], is->keybuf[klen+1]='\0';
-                else {
-                    memmove(is->keybuf, is->keybuf+1, klen-1);
-                    is->keybuf[klen-1]=ch[0]; is->keybuf[klen]='\0';
-                }
-                char *kb = is->keybuf;
-                if (strstr(kb,"debug")) { is->mode=IS_MODE_DEBUG; kb[0]='\0'; }
-                else if (strstr(kb,"exit")) { is->mode=IS_MODE_PROGRESS; kb[0]='\0'; }
-                pthread_mutex_unlock(&is->lock);
-            }
-        }
-    }
-    return NULL;
-}
-
-static IS *is_create(void) {
-    IS *is = calloc(1,sizeof(IS));
-    is->cap_lines = 256;
-    is->lines     = malloc(is->cap_lines * sizeof(char*));
-    is->mode      = IS_MODE_PROGRESS;
-    is->prev_mode = IS_MODE_PROGRESS;
-    pthread_mutex_init(&is->lock, NULL);
-    strncpy(is->stage, L("Preparing...","Preparando..."), sizeof(is->stage)-1);
-    return is;
-}
-
-static void is_start(IS *is) {
-    pthread_mutex_lock(&is->lock);
-    is->running = 1;
-    pthread_mutex_unlock(&is->lock);
-    if (isatty(STDIN_FILENO)) {
-        struct termios raw;
-        tcgetattr(STDIN_FILENO, &is->old_tty);
-        is->has_tty = 1;
-        raw = is->old_tty;
-        raw.c_lflag &= ~(ICANON|ECHO);
-        tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-    }
-    is_write("\033[?25l\033[2J\033[H");
-    fflush(stdout);
-    pthread_create(&is->render_tid, NULL, is_render_loop, is);
-    pthread_create(&is->key_tid,    NULL, is_key_loop,    is);
-}
-
-static void is_stop(IS *is) {
-    pthread_mutex_lock(&is->lock);
-    is->running = 0;
-    pthread_mutex_unlock(&is->lock);
-    pthread_join(is->render_tid, NULL);
-    pthread_join(is->key_tid,    NULL);
-    if (is->has_tty) tcsetattr(STDIN_FILENO, TCSADRAIN, &is->old_tty);
-    is_write("\033[?25h\033[2J\033[H");
-    fflush(stdout);
-    for (int i=0;i<is->nlines;i++) free(is->lines[i]);
-    free(is->lines);
-    pthread_mutex_destroy(&is->lock);
-    free(is);
-}
-
-typedef struct { IS *is; volatile int *stop; } TailerArg;
-
-static void *tailer_thread(void *arg) {
-    TailerArg *ta = arg;
-    int fd = open(LOG_FILE, O_RDONLY);
-    if (fd<0) return NULL;
-    lseek(fd, 0, SEEK_END);
-    FILE *f = fdopen(fd,"r");
-    if (!f) { close(fd); return NULL; }
-    char line[4096];
-    while (!*ta->stop) {
-        if (fgets(line,sizeof(line),f)) {
-            size_t len=strlen(line);
-            while(len>0&&(line[len-1]=='\n'||line[len-1]=='\r')) line[--len]='\0';
-            if (len>0) is_feed(ta->is,line);
-        } else {
-            clearerr(f);
-            usleep(50000);
-        }
-    }
-    fclose(f);
-    return NULL;
-}
-
-typedef struct {
-    IS    *is;
-    double pct;
-    char   stage[512];
-    int    done;
-    int    success;
-    char   reason[1024];
-    pthread_mutex_t mu;
-    pthread_cond_t  cv;
-} InstallState;
+static int   g_prog_fd  = -1;
+static pid_t g_prog_pid = -1;
 
 static void on_progress_cb(double pct, void *ud) {
-    InstallState *iss = ud;
-    pthread_mutex_lock(&iss->mu);
-    iss->pct = pct;
-    is_update(iss->is, pct, iss->stage);
-    pthread_mutex_unlock(&iss->mu);
+    (void)ud;
+    if (g_prog_fd < 0) return;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d\n", (int)pct);
+    write(g_prog_fd, buf, strlen(buf));
 }
 
 static void on_stage_cb(const char *msg, void *ud) {
-    InstallState *iss = ud;
-    pthread_mutex_lock(&iss->mu);
-    strncpy(iss->stage,msg,sizeof(iss->stage)-1);
-    is_update(iss->is, iss->pct, msg);
-    pthread_mutex_unlock(&iss->mu);
+    (void)ud;
+    if (g_prog_fd < 0) return;
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "# %s\n", msg);
+    write(g_prog_fd, buf, strlen(buf));
 }
+
+typedef struct {
+    volatile int  done;
+    int           success;
+    char          reason[1024];
+    pthread_mutex_t mu;
+    pthread_cond_t  cv;
+} InstallState;
 
 static void on_done_cb(int ok, const char *reason, void *ud) {
     InstallState *iss = ud;
     pthread_mutex_lock(&iss->mu);
     iss->success = ok;
-    strncpy(iss->reason,reason?reason:"",sizeof(iss->reason)-1);
+    strncpy(iss->reason, reason ? reason : "", sizeof(iss->reason) - 1);
     iss->done = 1;
     pthread_cond_signal(&iss->cv);
     pthread_mutex_unlock(&iss->mu);
 }
 
 static int screen_install(void) {
-    { FILE *f=fopen(LOG_FILE,"a"); if(f) fclose(f); }
+    { FILE *f = fopen(LOG_FILE, "a"); if (f) fclose(f); }
 
-    IS           *is  = is_create();
-    InstallState  iss = {
-        .is      = is,
-        .pct     = 0.0,
-        .done    = 0,
-        .success = 0,
-        .mu      = PTHREAD_MUTEX_INITIALIZER,
-        .cv      = PTHREAD_COND_INITIALIZER,
-    };
-    strncpy(iss.stage, L("Preparing...","Preparando..."), sizeof(iss.stage)-1);
+    int pfd[2];
+    if (pipe(pfd) != 0) {
+        msgbox(L("Error","Error"),
+               L("Could not create pipe for progress display.",
+                 "No se pudo crear el pipe para progreso."));
+        return 0;
+    }
 
-    IB *ib = calloc(1,sizeof(IB));
+    pid_t yad_pid = fork();
+    if (yad_pid == 0) {
+        dup2(pfd[0], STDIN_FILENO);
+        close(pfd[1]);
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) dup2(dn, STDERR_FILENO);
+        char *a[] = {
+            "yad", "--progress",
+            "--title",  TITLE "  " VERSION,
+            "--text",   L("Installing Arch Linux - please wait...",
+                          "Instalando Arch Linux - por favor espere..."),
+            "--percentage", "0",
+            "--width",  "620",
+            "--auto-kill",
+            "--no-buttons",
+            "--enable-log",
+            "--log-expanded",
+            "--log-height=200",
+            "--log-on-top",
+            NULL
+        };
+        execvp("yad", a);
+        char *b[] = {
+            "yad", "--progress",
+            "--title",  TITLE "  " VERSION,
+            "--text",   L("Installing Arch Linux...", "Instalando Arch Linux..."),
+            "--percentage", "0",
+            "--width",  "620",
+            "--auto-kill",
+            "--no-buttons",
+            NULL
+        };
+        execvp("yad", b);
+        _exit(1);
+    }
+    close(pfd[0]);
+    g_prog_fd  = pfd[1];
+    g_prog_pid = yad_pid;
+
+    InstallState iss;
+    memset(&iss, 0, sizeof(iss));
+    pthread_mutex_init(&iss.mu, NULL);
+    pthread_cond_init(&iss.cv,  NULL);
+
+    IB *ib = calloc(1, sizeof(IB));
     ib->on_progress = on_progress_cb;
     ib->on_stage    = on_stage_cb;
     ib->on_done     = on_done_cb;
     ib->ud          = &iss;
-    pthread_mutex_init(&ib->lock,NULL);
-
-    volatile int stop_tail = 0;
-    TailerArg ta = {is, &stop_tail};
-    pthread_t tailer_tid;
-    pthread_create(&tailer_tid, NULL, tailer_thread, &ta);
+    pthread_mutex_init(&ib->lock, NULL);
 
     IBRunArg *ra = malloc(sizeof(IBRunArg));
     ra->ib = ib;
-
-    is_start(is);
 
     pthread_t install_tid;
     pthread_create(&install_tid, NULL, ib_run_thread, ra);
@@ -2574,11 +2390,10 @@ static int screen_install(void) {
     while (!iss.done) pthread_cond_wait(&iss.cv, &iss.mu);
     pthread_mutex_unlock(&iss.mu);
 
-    stop_tail = 1;
-    pthread_join(tailer_tid,  NULL);
     pthread_join(install_tid, NULL);
-    usleep(150000);
-    is_stop(is);
+
+    if (g_prog_fd >= 0) { close(g_prog_fd); g_prog_fd = -1; }
+    if (g_prog_pid > 0) { waitpid(g_prog_pid, NULL, 0); g_prog_pid = -1; }
 
     pthread_mutex_destroy(&ib->lock);
     free(ib);
@@ -2587,11 +2402,11 @@ static int screen_install(void) {
 
     if (!iss.success) {
         char msg[1536];
-        snprintf(msg,sizeof(msg),
+        snprintf(msg, sizeof(msg),
                  L("Installation failed.\n\n%s\n\nCheck %s for details.",
                    "La instalacion fallo.\n\n%s\n\nRevisa %s para detalles."),
                  iss.reason, LOG_FILE);
-        msgbox(L("Installation Failed","Instalacion fallida"),msg);
+        msgbox(L("Installation Failed", "Instalacion fallida"), msg);
         return 0;
     }
     return 1;
@@ -3780,19 +3595,102 @@ static int screen_finish_wrap(void)    { screen_finish();   return 1; }
 static int screen_install_wrap(void)   { return screen_install(); }
 static int screen_preflight_wrap(void) { return run_preflight(); }
 
+
+
+static void ensure_x11_deps(void) {
+    static const char *deps[] = {
+        "xorg-server",
+        "xorg-xinit",
+        "xf86-video-fbdev",
+        "xf86-video-vesa",
+        "yad",
+        NULL
+    };
+
+    int missing = 0;
+    for (int i = 0; deps[i]; i++) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "pacman -Q %s >/dev/null 2>&1", deps[i]);
+        if (system(cmd) != 0) {
+            printf("[!] Missing: %s\n", deps[i]);
+            missing = 1;
+        }
+    }
+
+    if (missing) {
+        printf("[*] Installing X11 + yad dependencies via pacman...\n");
+        fflush(stdout);
+        if (system("pacman -Sy --noconfirm "
+                   "xorg-server xorg-xinit "
+                   "xf86-video-fbdev xf86-video-vesa "
+                   "yad") != 0) {
+            fprintf(stderr,
+                "[!] WARNING: Some X11 deps failed to install.\n"
+                "    The installer will try to continue anyway.\n");
+        } else {
+            printf("[+] X11 dependencies installed.\n");
+        }
+        fflush(stdout);
+    }
+}
+
+static void ensure_display(void) {
+    if (getenv("DISPLAY") != NULL) return;  
+
+    ensure_x11_deps();
+
+    
+    char exepath[1024] = {0};
+    ssize_t elen = readlink("/proc/self/exe", exepath, sizeof(exepath) - 1);
+    if (elen <= 0) strncpy(exepath, "/usr/local/bin/arch_installer", sizeof(exepath)-1);
+    else exepath[elen] = '\0';
+
+    const char *xinitrc = "/tmp/.arch_installer_xinitrc";
+    FILE *f = fopen(xinitrc, "w");
+    if (!f) {
+        fprintf(stderr, "[!] Cannot write xinitrc – starting without X.\n");
+        return;
+    }
+    fprintf(f, "#!/bin/sh\n");
+    fprintf(f, "# Auto-generated by arch-easy installer\n");
+    fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
+    fprintf(f, "exec \"%s\"\n", exepath);
+    fclose(f);
+    chmod(xinitrc, 0755);
+
+    printf("[*] Launching Xorg display server...\n");
+    printf("    Log: /tmp/xorg_installer.log\n");
+    fflush(stdout);
+
+    
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+             "startx %s -- :0 -nolisten tcp "
+             ">>/tmp/xorg_installer.log 2>&1",
+             xinitrc);
+    execl("/bin/sh", "sh", "-c", cmd, NULL);
+
+    perror("[!] startx failed");
+    fprintf(stderr, "    Continuing in terminal mode (no X).\n");
+}
+
+
 int main(void) {
-    if(geteuid()!=0) {
-        fprintf(stderr,"This installer must be run as root.\n"
-                       "Example: sudo ./arch_installer\n");
+    if (geteuid() != 0) {
+        fprintf(stderr,
+            "This installer must be run as root.\n"
+            "Example: sudo ./arch_installer\n");
         return 1;
     }
-    if(system("which dialog >/dev/null 2>&1")!=0) {
-        printf("[*] dialog not found - installing via pacman...\n");
-        if(system("pacman -Sy --noconfirm dialog")!=0) {
-            fprintf(stderr,"[!] Failed to install dialog. Check your network.\n");
+
+    ensure_display();
+
+    if (system("which yad >/dev/null 2>&1") != 0) {
+        printf("[*] yad not found - installing...\n");
+        if (system("pacman -Sy --noconfirm yad") != 0) {
+            fprintf(stderr, "[!] Failed to install yad. Check network.\n");
             return 1;
         }
-        printf("[+] dialog installed.\n\n");
     }
 
     screen_welcome_wrap();
@@ -3843,16 +3741,20 @@ int main(void) {
     };
 
     Step *steps = quick ? quick_steps : custom_steps;
-    int idx=0;
-    while(steps[idx].fn) {
+    int idx = 0;
+    while (steps[idx].fn) {
         int result = steps[idx].fn();
-        if(result==0 && steps[idx].can_go_back) {
-            if(idx==0) {
-                if(yesno_dlg(L("Exit","Salir"),
-                             L("Exit the installer?","Salir del instalador?")))
+        if (result == 0 && steps[idx].can_go_back) {
+            if (idx == 0) {
+                if (yesno_dlg(L("Exit","Salir"),
+                              L("Exit the installer?","Salir del instalador?")))
                     exit(0);
-            } else idx--;
-        } else idx++;
+            } else {
+                idx--;
+            }
+        } else {
+            idx++;
+        }
     }
     return 0;
 }
