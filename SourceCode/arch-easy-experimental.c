@@ -3571,6 +3571,8 @@ static void ensure_x11_deps(void) {
     static const char *deps[] = {
         "xorg-server",
         "xorg-xinit",
+        "xorg-xinput",
+        "xf86-input-libinput",
         "xf86-video-fbdev",
         "xf86-video-vesa",
         "xdotool",
@@ -3592,7 +3594,7 @@ static void ensure_x11_deps(void) {
         printf("[*] Installing X11 + yad dependencies via pacman...\n");
         fflush(stdout);
         if (system("pacman -Sy --noconfirm "
-                   "xorg-server xorg-xinit "
+                   "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
                    "xf86-video-fbdev xf86-video-vesa "
                    "xdotool yad") != 0) {
             fprintf(stderr,
@@ -3623,11 +3625,11 @@ static void ensure_display(void) {
         return;
     }
     fprintf(f, "#!/bin/sh\n");
+    fprintf(f, "export XDG_SESSION_TYPE=x11\n");
+    fprintf(f, "export LIBINPUT_ENABLE_DEVICE_GROUP=1\n");
     fprintf(f, "xrandr --auto 2>/dev/null || true\n");
     fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
-    fprintf(f, "xinput create-master \"VirtualPointer\" 2>/dev/null || true\n");
-    fprintf(f, "sleep 0.3\n");
-    fprintf(f, "xdotool mousemove 640 400 2>/dev/null || true\n");
+    fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
     fprintf(f, "exec \"%s\"\n", exepath);
     fclose(f);
     chmod(xinitrc, 0755);
