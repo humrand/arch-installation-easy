@@ -277,26 +277,7 @@ static int validate_swap(const char *s) {
     return v >= 1 && v <= 128;
 }
 
-typedef struct { char **v; int n; int cap; } DA;
 
-static DA da_new(void) {
-    DA da; da.cap=32; da.n=0;
-    da.v = malloc(32*sizeof(char*));
-    da.v[0] = NULL;
-    return da;
-}
-static void da_push(DA *da, const char *s) {
-    if (da->n+2 > da->cap) {
-        da->cap *= 2;
-        da->v = realloc(da->v, da->cap*sizeof(char*));
-    }
-    da->v[da->n++] = strdup(s);
-    da->v[da->n]   = NULL;
-}
-static void da_free(DA *da) {
-    for (int i=0;i<da->n;i++) free(da->v[i]);
-    free(da->v); da->v=NULL; da->n=0;
-}
 
 
 typedef struct { char tag[256]; char desc[512]; } MenuItem;
@@ -353,9 +334,9 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-#define YAD_W   "--width=580"
-#define YAD_WS  "--width=420"
-#define YAD_WL  "--width=700"
+#define YAD_W   "--width=580", "--center"
+#define YAD_WS  "--width=420", "--center"
+#define YAD_WL  "--width=700", "--center"
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
@@ -553,21 +534,7 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     return rc;
 }
 
-static int run_retry(const char *cmd, int retries) {
-    for (int attempt = 0; attempt < retries; attempt++) {
-        int rc = run_simple(cmd, 1);
-        if (rc == 0) return 0;
-        write_log_fmt("run_retry: attempt %d/%d failed (rc=%d): %s",
-                      attempt+1, retries, rc, cmd);
-        if (attempt < retries-1) {
-            int delay = 2 * (attempt + 1);
-            write_log_fmt("run_retry: waiting %ds before next attempt...", delay);
-            sleep(delay);
-        }
-    }
-    write_log_fmt("run_retry: all %d attempts failed: %s", retries, cmd);
-    return -1;
-}
+
 
 static int is_laptop(void) {
     return access("/sys/class/power_supply/BAT0", F_OK) == 0 ||
@@ -627,7 +594,7 @@ static double measure_mirror_speed(const char *url) {
     FILE *fp = popen(cmd,"r");
     if (!fp) return 0.0;
     double speed = 0.0;
-    fscanf(fp,"%lf",&speed);
+    (void)fscanf(fp,"%lf",&speed);
     pclose(fp);
     return speed;
 }
@@ -654,12 +621,11 @@ static int is_ssd(const char *disk_path) {
     snprintf(rot,sizeof(rot),"/sys/block/%s/queue/rotational",block);
     FILE *f = fopen(rot,"r");
     if (!f) return 0;
-    char c[4]={0}; fread(c,1,3,f); fclose(f);
+    char c[4]={0}; (void)fread(c,1,3,f); fclose(f);
     return c[0]=='0';
 }
 
 static int check_connectivity(void);
-static int msgbox_declared_above;  
 
 static int run_preflight(void) {
     char report[2048] = {0};
@@ -745,7 +711,7 @@ static int run_preflight(void) {
 static void detect_gpu(char *out, size_t sz) {
     FILE *fp = popen("lspci 2>/dev/null | grep -iE 'vga|3d|display'","r");
     char buf[4096]={0};
-    if (fp) { fread(buf,1,sizeof(buf)-1,fp); pclose(fp); }
+    if (fp) { (void)fread(buf,1,sizeof(buf)-1,fp); pclose(fp); }
     for (char *p=buf; *p; p++) *p=tolower((unsigned char)*p);
     int nv = strstr(buf,"nvidia")!=NULL;
     int am = (strstr(buf,"amd")!=NULL)||(strstr(buf,"radeon")!=NULL);
@@ -885,7 +851,7 @@ static int screen_wifi_connect(void) {
 
     char scan_cmd[256];
     snprintf(scan_cmd,sizeof(scan_cmd),"iwctl station '%s' scan 2>/dev/null",iface);
-    system(scan_cmd);
+    (void)system(scan_cmd);
 
     char ssids[16][128]; int nssids=0;
     time_t deadline = time(NULL)+12;
@@ -925,7 +891,7 @@ static int screen_wifi_connect(void) {
                  "iw dev '%s' scan 2>/dev/null || "
                  "iwctl station '%s' get-networks 2>/dev/null", iface, iface);
         FILE *fp2 = popen(scan_cmd2,"r");
-        if (fp2) { fread(scan_raw,1,sizeof(scan_raw)-1,fp2); pclose(fp2); }
+        if (fp2) { (void)fread(scan_raw,1,sizeof(scan_raw)-1,fp2); pclose(fp2); }
 
         for (int i=0; i<nssids && nnets<15; i++) {
             strncpy(nets[nnets].ssid, ssids[i], 127);
@@ -958,7 +924,6 @@ static int screen_wifi_connect(void) {
                 else if ((sp = strstr(ctx,"WEP")))  strncpy(nets[nnets].security,"WEP",31);
                 else strncpy(nets[nnets].security,"Open",31);
                 break;
-                pos++;
             }
             nnets++;
         }
@@ -1028,7 +993,7 @@ static int screen_wifi_connect(void) {
     } else {
         snprintf(cmd,sizeof(cmd),"iwctl station '%s' connect %s",iface,q_ssid);
     }
-    system(cmd);
+    (void)system(cmd);
     sleep(5);
 
     if (!check_connectivity()) {
@@ -1104,7 +1069,7 @@ static int ensure_network(void) {
         snprintf(p,sizeof(p),"which %s >/dev/null 2>&1",tools[i]);
         if (system(p)==0) {
             char cmd[128]; snprintf(cmd,sizeof(cmd),"%s >/dev/null 2>&1",tools[i]);
-            system(cmd); sleep(3);
+            (void)system(cmd); sleep(3);
             if (check_connectivity()) return 1;
         }
     }
@@ -1399,7 +1364,7 @@ static void ib_install_systemd_boot(IB *ib, const char *root_dev) {
     char cmd[256];
     snprintf(cmd,sizeof(cmd),"blkid -s PARTUUID -o value %s 2>/dev/null",root_dev);
     FILE *fp = popen(cmd,"r");
-    if (fp) { fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
+    if (fp) { (void)fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
 
     char root_opt[256];
     if (partuuid[0]) snprintf(root_opt,sizeof(root_opt),"root=PARTUUID=%s",partuuid);
@@ -1449,7 +1414,7 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
     char cmd[256];
     snprintf(cmd,sizeof(cmd),"blkid -s PARTUUID -o value %s 2>/dev/null",root_dev);
     FILE *fp = popen(cmd,"r");
-    if (fp) { fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
+    if (fp) { (void)fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
 
     char root_opt[256];
     if (partuuid[0]) snprintf(root_opt,sizeof(root_opt),"root=PARTUUID=%s",partuuid);
@@ -1509,7 +1474,7 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
 
         char partn[8]="1";
         snprintf(cmd,sizeof(cmd),"lsblk -no PARTN %s 2>/dev/null",p1);
-        fp = popen(cmd,"r"); if(fp){fgets(partn,sizeof(partn),fp);pclose(fp);trim_nl(partn);}
+        fp = popen(cmd,"r"); if(fp){(void)fgets(partn,sizeof(partn),fp);pclose(fp);trim_nl(partn);}
         if (!partn[0]) strcpy(partn,"1");
 
         snprintf(cmd,sizeof(cmd),
@@ -1788,7 +1753,6 @@ static void *ib_run_thread(void *arg) {
     int  uefi       = is_uefi();
     const char *bl  = st.bootloader;
     const char *fs  = st.filesystem;
-    const char *ker = st.kernel;      
     const char *root_dev = st.dualboot ? st.db_root : p3;
 
     if (!strcmp(fs,"zfs")) {
@@ -2289,7 +2253,7 @@ static void on_progress_cb(double pct, void *ud) {
     if (g_prog_fd < 0) return;
     char buf[32];
     snprintf(buf, sizeof(buf), "%d\n", (int)pct);
-    write(g_prog_fd, buf, strlen(buf));
+    (void)write(g_prog_fd, buf, strlen(buf));
 }
 
 static void on_stage_cb(const char *msg, void *ud) {
@@ -2297,7 +2261,7 @@ static void on_stage_cb(const char *msg, void *ud) {
     if (g_prog_fd < 0) return;
     char buf[1024];
     snprintf(buf, sizeof(buf), "# %s\n", msg);
-    write(g_prog_fd, buf, strlen(buf));
+    (void)write(g_prog_fd, buf, strlen(buf));
 }
 
 typedef struct {
@@ -2348,6 +2312,7 @@ static int screen_install(void) {
             "--log-expanded",
             "--log-height=200",
             "--log-on-top",
+            "--center",
             NULL
         };
         execvp("yad", a);
@@ -2359,6 +2324,7 @@ static int screen_install(void) {
             "--width",  "620",
             "--auto-kill",
             "--no-buttons",
+            "--center",
             NULL
         };
         execvp("yad", b);
@@ -2572,7 +2538,7 @@ static int screen_disk(void) {
 
         char lsblk[4096]={0};
         FILE *fp = popen("lsblk -f 2>/dev/null | head -40","r");
-        if (fp) { fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
+        if (fp) { (void)fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
         if (lsblk[0]) {
             char txt[MAX_OUT];
             snprintf(txt,sizeof(txt),
@@ -2639,7 +2605,7 @@ static int screen_disk(void) {
         {
             char lsblk[4096]={0};
             FILE *fp = popen("lsblk 2>/dev/null | head -50","r");
-            if (fp) { fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
+            if (fp) { (void)fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
             char txt[MAX_OUT];
             snprintf(txt,sizeof(txt),
                      L("Current partition layout:\n\n%s\n\n"
@@ -2717,7 +2683,7 @@ static int screen_disk(void) {
                     "lsblk -b -p -n -o PATH,FSTYPE,PARTTYPE --pairs 2>/dev/null | "
                     "grep -i 'PARTTYPE=\"c12a7328' | head -1", "r");
                 if (fp2) {
-                    char line[256]={0}; fgets(line,sizeof(line),fp2); pclose(fp2);
+                    char line[256]={0}; (void)fgets(line,sizeof(line),fp2); pclose(fp2);
                     char *pp = strstr(line,"PATH=\"");
                     if (pp) { sscanf(pp+6,"%127[^\"]",st.db_efi); }
                 }
@@ -3013,7 +2979,7 @@ static int screen_keymap(void) {
     };
     char avail[8192]={0};
     FILE *fp = popen("localectl list-keymaps 2>/dev/null || true","r");
-    if (fp) { fread(avail,1,sizeof(avail)-1,fp); pclose(fp); }
+    if (fp) { (void)fread(avail,1,sizeof(avail)-1,fp); pclose(fp); }
 
     MenuItem items[32]; int ni=0;
     for (int i=0; wanted[i] && ni<32; i++) {
@@ -3050,7 +3016,7 @@ static int screen_keymap(void) {
 static int screen_timezone(void) {
     char zones_raw[65536]={0};
     FILE *fp = popen("timedatectl list-timezones 2>/dev/null || true","r");
-    if (fp) { fread(zones_raw,1,sizeof(zones_raw)-1,fp); pclose(fp); }
+    if (fp) { (void)fread(zones_raw,1,sizeof(zones_raw)-1,fp); pclose(fp); }
 
     char **zones=NULL; int nz=0, zc=0;
     if (zones_raw[0]) {
@@ -3104,14 +3070,17 @@ static int screen_timezone(void) {
                       reg_items,nr+1,cur_reg,sel_reg,sizeof(sel_reg))) {
         for(int i=0;i<nr;i++) free(regions[i]);
         free(reg_items);
-        for(int i=0;i<nz;i++) free(zones[i]); free(zones);
+        for(int i=0;i<nz;i++) free(zones[i]);
+        free(zones);
         return 0;
     }
-    for(int i=0;i<nr;i++) free(regions[i]); free(reg_items);
+    for(int i=0;i<nr;i++) free(regions[i]);
+    free(reg_items);
 
     if(!strcmp(sel_reg,"UTC")) {
         strncpy(st.timezone,"UTC",sizeof(st.timezone)-1);
-        for(int i=0;i<nz;i++) free(zones[i]); free(zones);
+        for(int i=0;i<nz;i++) free(zones[i]);
+        free(zones);
         return 1;
     }
 
@@ -3125,7 +3094,8 @@ static int screen_timezone(void) {
         strncpy(city_items[nc].desc,sl+1,511);
         nc++;
     }
-    for(int i=0;i<nz;i++) free(zones[i]); free(zones);
+    for(int i=0;i<nz;i++) free(zones[i]);
+    free(zones);
 
     if(nc==0) {
         if(city_items)free(city_items);
@@ -3489,7 +3459,7 @@ static int screen_review(void) {
 
     char text[5120]={0};
     char line[512];
-#define ROW(label,val) snprintf(line,sizeof(line),"  %-22s %s\n",label,val); strncat(text,line,sizeof(text)-strlen(text)-1)
+#define ROW(label,val) do { snprintf(line,sizeof(line),"  %-22s %s\n",label,val); strncat(text,line,sizeof(text)-strlen(text)-1); } while(0)
     snprintf(line,sizeof(line),"%s\n\n",L("Review your settings:","Revisa tu configuracion:"));
     strncat(text,line,sizeof(text)-strlen(text)-1);
 
@@ -3576,8 +3546,8 @@ static void screen_finish(void) {
         infobox_dlg(L("Rebooting","Reiniciando"),
                     L("Unmounting filesystems and rebooting...",
                       "Desmontando sistemas de archivos y reiniciando..."));
-        system("umount -R /mnt 2>/dev/null");
-        system("reboot");
+        (void)system("umount -R /mnt 2>/dev/null");
+        (void)system("reboot");
     }
     exit(0);
 }
@@ -3603,6 +3573,7 @@ static void ensure_x11_deps(void) {
         "xorg-xinit",
         "xf86-video-fbdev",
         "xf86-video-vesa",
+        "xdotool",
         "yad",
         NULL
     };
@@ -3623,7 +3594,7 @@ static void ensure_x11_deps(void) {
         if (system("pacman -Sy --noconfirm "
                    "xorg-server xorg-xinit "
                    "xf86-video-fbdev xf86-video-vesa "
-                   "yad") != 0) {
+                   "xdotool yad") != 0) {
             fprintf(stderr,
                 "[!] WARNING: Some X11 deps failed to install.\n"
                 "    The installer will try to continue anyway.\n");
@@ -3652,8 +3623,11 @@ static void ensure_display(void) {
         return;
     }
     fprintf(f, "#!/bin/sh\n");
-    fprintf(f, "# Auto-generated by arch-easy installer\n");
+    fprintf(f, "xrandr --auto 2>/dev/null || true\n");
     fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
+    fprintf(f, "xinput create-master \"VirtualPointer\" 2>/dev/null || true\n");
+    fprintf(f, "sleep 0.3\n");
+    fprintf(f, "xdotool mousemove 640 400 2>/dev/null || true\n");
     fprintf(f, "exec \"%s\"\n", exepath);
     fclose(f);
     chmod(xinitrc, 0755);
