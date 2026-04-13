@@ -191,6 +191,7 @@ static const char *get_desktop_dm(const char *name) {
 }
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_fullscreen = 1;
 
 static void write_log(const char *msg) {
     time_t t = time(NULL);
@@ -296,8 +297,30 @@ static void dlg_strip(const char *src, char *dst, size_t n) {
 }
 
 static int yad_exec(char **argv, char *out, size_t outsz) {
+    char **exec_argv = argv;
+    char **fs_argv   = NULL;
+
+    if (g_fullscreen) {
+        int n = 0;
+        while (argv[n]) n++;
+        fs_argv = calloc((size_t)(n + 3), sizeof(char*));
+        int j = 0;
+        for (int i = 0; i < n; i++) {
+            if (strncmp(argv[i], "--width=", 8) == 0) continue;
+            if (strncmp(argv[i], "--height=", 9) == 0) continue;
+            fs_argv[j++] = argv[i];
+        }
+        fs_argv[j++] = "--fullscreen";
+        fs_argv[j]   = NULL;
+        exec_argv    = fs_argv;
+    }
+
     int pfd[2];
-    if (pipe(pfd) != 0) { if (out && outsz) out[0] = '\0'; return -1; }
+    if (pipe(pfd) != 0) {
+        if (out && outsz) out[0] = '\0';
+        if (fs_argv) free(fs_argv);
+        return -1;
+    }
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -306,7 +329,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
         close(pfd[1]);
         int dn = open("/dev/null", O_RDWR);
         if (dn >= 0) dup2(dn, STDERR_FILENO);
-        execvp("yad", argv);
+        execvp("yad", exec_argv);
         _exit(127);
     }
     close(pfd[1]);
@@ -331,6 +354,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
 
     int status;
     waitpid(pid, &status, 0);
+    if (fs_argv) free(fs_argv);
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
@@ -2305,7 +2329,7 @@ static int screen_install(void) {
             "--text",   L("Installing Arch Linux - please wait...",
                           "Instalando Arch Linux - por favor espere..."),
             "--percentage", "0",
-            "--width",  "620",
+            "--fullscreen",
             "--auto-kill",
             "--no-buttons",
             "--enable-log",
@@ -2321,7 +2345,7 @@ static int screen_install(void) {
             "--title",  TITLE "  " VERSION,
             "--text",   L("Installing Arch Linux...", "Instalando Arch Linux..."),
             "--percentage", "0",
-            "--width",  "620",
+            "--fullscreen",
             "--auto-kill",
             "--no-buttons",
             "--center",
@@ -3450,6 +3474,26 @@ static int screen_extra_packages(void) {
 }
 
 
+static int review_confirm_dlg(const char *title, const char *text) {
+    const char *tmpfile = "/tmp/arch_review.txt";
+    FILE *f = fopen(tmpfile, "w");
+    if (!f) return yesno_dlg(title, text);
+    fprintf(f, "%s", text);
+    fclose(f);
+
+    char *a[] = {
+        "yad", "--text-info",
+        "--title",    (char*)title,
+        "--filename", (char*)tmpfile,
+        "--button",   L("Install:0","Instalar:0"),
+        "--button",   L("Back:1","Atras:1"),
+        "--width=700", "--height=500",
+        "--center",
+        NULL
+    };
+    return yad_exec(a, NULL, 0) == 0;
+}
+
 static int screen_review(void) {
     char microcode[32]; detect_cpu(microcode,sizeof(microcode));
     if(!microcode[0]) strncpy(microcode,L("none detected","no detectado"),sizeof(microcode)-1);
@@ -3531,7 +3575,7 @@ static int screen_review(void) {
                  st.disk,
                  L(".\n\nProceed?",".\n\nProceder?"));
     }
-    return yesno_dlg(L("Review & Confirm","Revisar y confirmar"),confirm_msg);
+    return review_confirm_dlg(L("Review & Confirm","Revisar y confirmar"),confirm_msg);
 }
 
 
@@ -3560,7 +3604,12 @@ typedef struct {
 
 static int screen_welcome_wrap(void)  { screen_welcome();  return 1; }
 static int screen_language_wrap(void)  { screen_language(); return 1; }
-static int screen_network_wrap(void)   { screen_network();  return 1; }
+static int screen_network_wrap(void) {
+    g_fullscreen = 0;
+    screen_network();
+    g_fullscreen = 1;
+    return 1;
+}
 static int screen_finish_wrap(void)    { screen_finish();   return 1; }
 static int screen_install_wrap(void)   { return screen_install(); }
 static int screen_preflight_wrap(void) { return run_preflight(); }
