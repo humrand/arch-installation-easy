@@ -3680,7 +3680,7 @@ static void ensure_x11_deps(void) {
         "xorg-server", "xorg-xinit", "xorg-xinput",
         "xf86-input-libinput", "xf86-video-fbdev", "xf86-video-vesa",
         "xdotool", "xorg-xsetroot", "openbox", "yad",
-        "xterm", "pcmanfm", "feh", "imagemagick", "tint2",
+        "xterm", "pcmanfm", "feh", "imagemagick", "tint2", "falkon",
         NULL
     };
 
@@ -3700,7 +3700,7 @@ static void ensure_x11_deps(void) {
         if (system("pacman -Sy --noconfirm "
                    "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
                    "xf86-video-fbdev xf86-video-vesa xdotool xorg-xsetroot "
-                   "openbox yad xterm pcmanfm feh imagemagick tint2") != 0) {
+                   "openbox yad xterm pcmanfm feh imagemagick tint2 falkon") != 0) {
             fprintf(stderr,
                 "[!] WARNING: Some deps failed to install.\n"
                 "    The installer will try to continue anyway.\n");
@@ -3726,6 +3726,9 @@ static void write_openbox_env(void) {
         fprintf(m, "    </item>\n");
         fprintf(m, "    <item label=\"File Manager\">\n");
         fprintf(m, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
+        fprintf(m, "    </item>\n");
+        fprintf(m, "    <item label=\"Web Browser\">\n");
+        fprintf(m, "      <action name=\"Execute\"><command>falkon</command></action>\n");
         fprintf(m, "    </item>\n");
         fprintf(m, "    <separator/>\n");
         fprintf(m, "    <item label=\"Reconfigure Openbox\">\n");
@@ -3770,6 +3773,9 @@ static void write_openbox_env(void) {
         fprintf(r, "    </keybind>\n");
         fprintf(r, "    <keybind key=\"super-e\">\n");
         fprintf(r, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"super-b\">\n");
+        fprintf(r, "      <action name=\"Execute\"><command>falkon</command></action>\n");
         fprintf(r, "    </keybind>\n");
         fprintf(r, "    <keybind key=\"A-F4\">\n");
         fprintf(r, "      <action name=\"Close\"/>\n");
@@ -3827,7 +3833,7 @@ static void write_openbox_env(void) {
         fprintf(r, "    </context>\n");
         fprintf(r, "  </mouse>\n");
         fprintf(r, "  <applications>\n");
-     
+       
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
         fprintf(r, "      <maximized>yes</maximized>\n");
         fprintf(r, "      <decor>no</decor>\n");
@@ -3837,6 +3843,9 @@ static void write_openbox_env(void) {
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
         fprintf(r, "    <application class=\"Pcmanfm\" type=\"normal\">\n");
+        fprintf(r, "      <decor>yes</decor>\n");
+        fprintf(r, "    </application>\n");
+        fprintf(r, "    <application class=\"Falkon\" type=\"normal\">\n");
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
         fprintf(r, "  </applications>\n");
@@ -3937,6 +3946,15 @@ static void write_openbox_env(void) {
         fprintf(d, "Terminal=false\nCategories=System;FileManager;\n");
         fclose(d);
         (void)system("chmod +x /root/Desktop/files.desktop");
+    }
+    d = fopen("/root/Desktop/browser.desktop", "w");
+    if (d) {
+        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
+        fprintf(d, "Name=Web Browser\nComment=Browse the web\n");
+        fprintf(d, "Exec=falkon\nIcon=falkon\n");
+        fprintf(d, "Terminal=false\nCategories=Network;WebBrowser;\n");
+        fclose(d);
+        (void)system("chmod +x /root/Desktop/browser.desktop");
     }
 }
 
