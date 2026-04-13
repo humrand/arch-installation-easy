@@ -197,6 +197,78 @@ static int g_install_finished = 0;
 static void apply_dark_theme(void) {
     setenv("GTK_THEME", "Adwaita:dark", 1);
     setenv("ADW_DISABLE_PORTAL", "1", 1);
+    setenv("YAD_DISABLE_APPLICATION_INDICATOR", "1", 1);
+}
+
+static void shell_quote(const char *s, char *out, size_t sz);
+static void write_log_fmt(const char *fmt, ...);
+typedef void (*LineCallback)(const char *line, void *ud);
+static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_error);
+
+#define INSTALLER_WALLPAPER_DIR "/tmp/arch-easy-wallpapers"
+
+static const struct {
+    const char *url;
+    const char *name;
+} k_installer_wallpapers[] = {
+    {"https://www.x.org/wiki/logo.png", "xorg-logo.png"},
+    {"https://openbox.org/help/images/180px-LoginOptions.png", "openbox-loginoptions.png"},
+    {NULL, NULL}
+};
+
+static int mkdir_p_simple(const char *path) {
+    if (!path || !*path) return -1;
+    if (mkdir(path, 0755) == 0 || errno == EEXIST) return 0;
+    return -1;
+}
+
+static int file_is_readable(const char *path) {
+    return path && access(path, R_OK) == 0;
+}
+
+static int download_to_file(const char *url, const char *dst) {
+    char q_url[MAX_CMD], q_dst[MAX_CMD], cmd[MAX_CMD * 2];
+    shell_quote(url, q_url, sizeof(q_url));
+    shell_quote(dst, q_dst, sizeof(q_dst));
+    snprintf(cmd, sizeof(cmd),
+             "curl -L --fail --silent --show-error --retry 2 -o %s %s",
+             q_dst, q_url);
+    return run_stream(cmd, NULL, NULL, 1) == 0;
+}
+
+static int prepare_installer_wallpaper(char *chosen, size_t chosen_sz) {
+    if (mkdir_p_simple(INSTALLER_WALLPAPER_DIR) != 0) {
+        write_log_fmt("Wallpaper cache directory unavailable: %s", INSTALLER_WALLPAPER_DIR);
+        return 0;
+    }
+
+    char available[8][MAX_CMD];
+    int n = 0;
+
+    for (int i = 0; k_installer_wallpapers[i].url; i++) {
+        char dst[MAX_CMD];
+        snprintf(dst, sizeof(dst), "%s/%s", INSTALLER_WALLPAPER_DIR, k_installer_wallpapers[i].name);
+        if (!file_is_readable(dst)) {
+            (void)download_to_file(k_installer_wallpapers[i].url, dst);
+        }
+        if (file_is_readable(dst) && n < 8) {
+            strncpy(available[n], dst, sizeof(available[n]) - 1);
+            available[n][sizeof(available[n]) - 1] = '\0';
+            n++;
+        }
+    }
+
+    if (n <= 0) {
+        chosen[0] = '\0';
+        return 0;
+    }
+
+    srand((unsigned int)(time(NULL) ^ getpid()));
+    const char *pick = available[rand() % n];
+    strncpy(chosen, pick, chosen_sz - 1);
+    chosen[chosen_sz - 1] = '\0';
+    write_log_fmt("Installer wallpaper selected: %s", chosen);
+    return 1;
 }
 
 static void write_log(const char *msg) {
@@ -1686,50 +1758,29 @@ static void ib_install_wallpaper(IB *ib) {
 
     ib_stage(ib, L("Setting up desktop wallpaper...","Configurando fondo de escritorio..."));
     ib_pacman(ib,
-              "arch-chroot /mnt pacman -S --noconfirm --needed "
-              "archlinux-wallpaper feh",
+              "arch-chroot /mnt pacman -S --noconfirm --needed feh",
               96.5, 97.0, 1);
+
+    run_simple("install -d -m 755 /mnt/usr/share/arch-easy/wallpapers", 0);
+    run_simple("cp -f /tmp/arch-easy-wallpapers/* /mnt/usr/share/arch-easy/wallpapers/ 2>/dev/null || true", 0);
 
     char script[MAX_CMD * 2];
     char q_script[MAX_CMD * 3];
     char cmd[MAX_CMD * 3];
 
     snprintf(script, sizeof(script),
-             "wallpaper=$(find /usr/share/backgrounds /usr/share/archlinux-wallpaper "
-             "-type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \\) "
-             "2>/dev/null | head -n1); "
-             "if [ -z \"$wallpaper\" ]; then wallpaper=/usr/share/pixmaps/archlinux-logo.png; fi; "
              "install -d -m 755 /home/%s/.config; "
              "cat > /home/%s/.xprofile <<'EOF'\\n"
              "#!/bin/sh\\n"
              "[ -n \"$DISPLAY\" ] || exit 0\\n"
-             "wallpaper=\"$wallpaper\"\\n"
+             "wallpaper_dir=/usr/share/arch-easy/wallpapers\\n"
+             "wallpaper=$(find \"$wallpaper_dir\" -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \\) 2>/dev/null | shuf -n1)\\n"
+             "[ -n \"$wallpaper\" ] || wallpaper=/usr/share/pixmaps/archlinux-logo.png\\n"
              "if command -v feh >/dev/null 2>&1; then feh --no-fehbg --bg-fill \"$wallpaper\" >/dev/null 2>&1 & fi\\n"
              "EOF\\n"
              "chmod +x /home/%s/.xprofile; "
-             "chown -R %s:%s /home/%s/.config; "
-             "if [ \"%s\" = \"Hyprland\" ]; then "
-             "install -d -m 755 /home/%s/.config/hypr; "
-             "cat > /home/%s/.config/hypr/hyprpaper.conf <<'EOF'\\n"
-             "preload = $wallpaper\\n"
-             "wallpaper = ,$wallpaper\\n"
-             "EOF\\n"
-             "chown -R %s:%s /home/%s/.config/hypr; "
-             "fi; "
-             "if [ \"%s\" = \"Sway\" ]; then "
-             "install -d -m 755 /home/%s/.config/sway; "
-             "cat > /home/%s/.config/sway/config <<'EOF'\\n"
-             "output * bg $wallpaper fill\\n"
-             "EOF\\n"
-             "chown -R %s:%s /home/%s/.config/sway; "
-             "fi",
+             "chown -R %s:%s /home/%s/.config; ",
              st.username, st.username, st.username,
-             st.username, st.username, st.username,
-             st.desktop,
-             st.username, st.username,
-             st.username, st.username, st.username,
-             st.desktop,
-             st.username, st.username,
              st.username, st.username, st.username);
 
     shell_quote(script, q_script, sizeof(q_script));
@@ -2391,6 +2442,7 @@ static int screen_install(void) {
 
     pid_t yad_pid = fork();
     if (yad_pid == 0) {
+        apply_dark_theme();
         dup2(pfd[0], STDIN_FILENO);
         close(pfd[1]);
         int dn = open("/dev/null", O_RDWR);
@@ -3710,6 +3762,7 @@ static void ensure_x11_deps(void) {
         "xdotool",
         "xorg-xsetroot",
         "openbox",
+        "feh",
         "yad",
         NULL
     };
@@ -3730,7 +3783,7 @@ static void ensure_x11_deps(void) {
         if (system("pacman -Sy --noconfirm "
                    "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
                    "xf86-video-fbdev xf86-video-vesa "
-                   "xdotool xorg-xsetroot openbox yad") != 0) {
+                   "xdotool xorg-xsetroot openbox feh yad") != 0) {
             fprintf(stderr,
                 "[!] WARNING: Some X11 deps failed to install.\n"
                 "    The installer will try to continue anyway.\n");
@@ -3746,7 +3799,9 @@ static void ensure_display(void) {
 
     ensure_x11_deps();
 
-    
+    char wallpaper[MAX_CMD] = {0};
+    (void)prepare_installer_wallpaper(wallpaper, sizeof(wallpaper));
+
     char exepath[1024] = {0};
     ssize_t elen = readlink("/proc/self/exe", exepath, sizeof(exepath) - 1);
     if (elen <= 0) strncpy(exepath, "/usr/local/bin/arch_installer", sizeof(exepath)-1);
@@ -3765,6 +3820,14 @@ static void ensure_display(void) {
     fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
     fprintf(f, "openbox &\n");
     fprintf(f, "xsetroot -cursor_name left_ptr\n");
+    if (wallpaper[0]) {
+        char qwall[MAX_CMD];
+        shell_quote(wallpaper, qwall, sizeof(qwall));
+        fprintf(f, "sleep 1\n");
+        fprintf(f, "if command -v feh >/dev/null 2>&1; then feh --no-fehbg --bg-fill %s 2>/dev/null || xsetroot -solid '#101010'; else xsetroot -solid '#101010'; fi\n", qwall);
+    } else {
+        fprintf(f, "xsetroot -solid '#101010'\n");
+    }
     fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
     fprintf(f, "exec \"%s\"\n", exepath);
     fclose(f);
