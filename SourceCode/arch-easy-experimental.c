@@ -315,7 +315,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
             if (strncmp(argv[i], "--height=", 9) == 0) continue;
             fs_argv[j++] = argv[i];
         }
-        fs_argv[j++] = "--fullscreen";
+        fs_argv[j++] = "--maximize";
         fs_argv[j]   = NULL;
         exec_argv    = fs_argv;
     }
@@ -2374,7 +2374,7 @@ static int screen_install(void) {
             "--text",   L("Installing Arch Linux - please wait...",
                           "Instalando Arch Linux - por favor espere..."),
             "--percentage", "0",
-            "--fullscreen",
+            "--maximize",
             "--auto-kill",
             "--no-buttons",
             "--enable-log",
@@ -2390,7 +2390,7 @@ static int screen_install(void) {
             "--title",  TITLE "  " VERSION,
             "--text",   L("Installing Arch Linux...", "Instalando Arch Linux..."),
             "--percentage", "0",
-            "--fullscreen",
+            "--maximize",
             "--auto-kill",
             "--no-buttons",
             "--center",
@@ -3680,7 +3680,7 @@ static void ensure_x11_deps(void) {
         "xorg-server", "xorg-xinit", "xorg-xinput",
         "xf86-input-libinput", "xf86-video-fbdev", "xf86-video-vesa",
         "xdotool", "xorg-xsetroot", "openbox", "yad",
-        "xterm", "pcmanfm", "feh", "imagemagick",
+        "xterm", "pcmanfm", "feh", "imagemagick", "tint2",
         NULL
     };
 
@@ -3700,7 +3700,7 @@ static void ensure_x11_deps(void) {
         if (system("pacman -Sy --noconfirm "
                    "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
                    "xf86-video-fbdev xf86-video-vesa xdotool xorg-xsetroot "
-                   "openbox yad xterm pcmanfm feh imagemagick") != 0) {
+                   "openbox yad xterm pcmanfm feh imagemagick tint2") != 0) {
             fprintf(stderr,
                 "[!] WARNING: Some deps failed to install.\n"
                 "    The installer will try to continue anyway.\n");
@@ -3713,6 +3713,8 @@ static void ensure_x11_deps(void) {
 
 static void write_openbox_env(void) {
     (void)system("mkdir -p /root/.config/openbox");
+    (void)system("mkdir -p /root/.config/tint2");
+    (void)system("mkdir -p /root/Desktop");
 
     FILE *m = fopen("/root/.config/openbox/menu.xml", "w");
     if (m) {
@@ -3720,12 +3722,10 @@ static void write_openbox_env(void) {
         fprintf(m, "<openbox_menu xmlns=\"http://openbox.org/3.4/menu\">\n");
         fprintf(m, "  <menu id=\"root-menu\" label=\"Desktop\">\n");
         fprintf(m, "    <item label=\"Terminal\">\n");
-        fprintf(m, "      <action name=\"Execute\">"
-                   "<command>xterm</command></action>\n");
+        fprintf(m, "      <action name=\"Execute\"><command>xterm</command></action>\n");
         fprintf(m, "    </item>\n");
         fprintf(m, "    <item label=\"File Manager\">\n");
-        fprintf(m, "      <action name=\"Execute\">"
-                   "<command>pcmanfm</command></action>\n");
+        fprintf(m, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
         fprintf(m, "    </item>\n");
         fprintf(m, "    <separator/>\n");
         fprintf(m, "    <item label=\"Reconfigure Openbox\">\n");
@@ -3741,56 +3741,57 @@ static void write_openbox_env(void) {
         fprintf(r, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         fprintf(r, "<openbox_config xmlns=\"http://openbox.org/3.4/rc\"\n");
         fprintf(r, "  xmlns:xi=\"http://www.w3.org/2001/XInclude\">\n");
-
         fprintf(r, "  <theme>\n");
-        fprintf(r, "    <name>Clearlooks</name>\n");
+        fprintf(r, "    <n>Clearlooks</n>\n");
         fprintf(r, "    <titleLayout>NLIMC</titleLayout>\n");
-        fprintf(r, "    <keepBorder>no</keepBorder>\n");
+        fprintf(r, "    <keepBorder>yes</keepBorder>\n");
         fprintf(r, "    <animateIconify>no</animateIconify>\n");
         fprintf(r, "    <font place=\"ActiveWindow\">\n");
-        fprintf(r, "      <name>Sans</name><size>10</size>\n");
+        fprintf(r, "      <n>Sans Bold</n><size>10</size>\n");
         fprintf(r, "      <weight>Bold</weight><slant>Normal</slant>\n");
         fprintf(r, "    </font>\n");
+        fprintf(r, "    <font place=\"InactiveWindow\">\n");
+        fprintf(r, "      <n>Sans</n><size>10</size>\n");
+        fprintf(r, "      <weight>Normal</weight><slant>Normal</slant>\n");
+        fprintf(r, "    </font>\n");
         fprintf(r, "  </theme>\n");
-
-        fprintf(r, "  <desktops><number>1</number>"
-                   "<firstdesk>1</firstdesk></desktops>\n");
-
+        fprintf(r, "  <desktops><number>1</number><firstdesk>1</firstdesk>"
+                   "<names><n>Desktop</n></names></desktops>\n");
+        fprintf(r, "  <resize><drawContents>yes</drawContents></resize>\n");
         fprintf(r, "  <focus><focusNew>yes</focusNew>"
                    "<followMouse>no</followMouse></focus>\n");
-
         fprintf(r, "  <keyboard>\n");
         fprintf(r, "    <chainQuitKey>C-g</chainQuitKey>\n");
         fprintf(r, "    <keybind key=\"super-t\">\n");
-        fprintf(r, "      <action name=\"Execute\">"
-                   "<command>xterm</command></action>\n");
+        fprintf(r, "      <action name=\"Execute\"><command>xterm</command></action>\n");
         fprintf(r, "    </keybind>\n");
         fprintf(r, "    <keybind key=\"C-A-t\">\n");
-        fprintf(r, "      <action name=\"Execute\">"
-                   "<command>xterm</command></action>\n");
+        fprintf(r, "      <action name=\"Execute\"><command>xterm</command></action>\n");
         fprintf(r, "    </keybind>\n");
         fprintf(r, "    <keybind key=\"super-e\">\n");
-        fprintf(r, "      <action name=\"Execute\">"
-                   "<command>pcmanfm</command></action>\n");
+        fprintf(r, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
         fprintf(r, "    </keybind>\n");
         fprintf(r, "    <keybind key=\"A-F4\">\n");
         fprintf(r, "      <action name=\"Close\"/>\n");
         fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"super-Up\">\n");
+        fprintf(r, "      <action name=\"ToggleMaximizeFull\"/>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"super-Down\">\n");
+        fprintf(r, "      <action name=\"Unmaximize\"/>\n");
+        fprintf(r, "    </keybind>\n");
         fprintf(r, "  </keyboard>\n");
-
         fprintf(r, "  <mouse>\n");
         fprintf(r, "    <dragThreshold>1</dragThreshold>\n");
         fprintf(r, "    <doubleClickTime>200</doubleClickTime>\n");
         fprintf(r, "    <context name=\"Desktop\">\n");
         fprintf(r, "      <mousebind button=\"Right\" action=\"Press\">\n");
-        fprintf(r, "        <action name=\"ShowMenu\">"
-                   "<menu>root-menu</menu></action>\n");
+        fprintf(r, "        <action name=\"ShowMenu\"><menu>root-menu</menu></action>\n");
         fprintf(r, "      </mousebind>\n");
         fprintf(r, "    </context>\n");
         fprintf(r, "    <context name=\"Root\">\n");
         fprintf(r, "      <mousebind button=\"Right\" action=\"Press\">\n");
-        fprintf(r, "        <action name=\"ShowMenu\">"
-                   "<menu>root-menu</menu></action>\n");
+        fprintf(r, "        <action name=\"ShowMenu\"><menu>root-menu</menu></action>\n");
         fprintf(r, "      </mousebind>\n");
         fprintf(r, "    </context>\n");
         fprintf(r, "    <context name=\"Titlebar\">\n");
@@ -3810,43 +3811,112 @@ static void write_openbox_env(void) {
         fprintf(r, "      </mousebind>\n");
         fprintf(r, "    </context>\n");
         fprintf(r, "  </mouse>\n");
-
-        fprintf(r, "  <applications/>\n");
+        fprintf(r, "  <applications>\n");
+        fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
+        fprintf(r, "      <maximized>yes</maximized>\n");
+        fprintf(r, "      <decor>yes</decor>\n");
+        fprintf(r, "    </application>\n");
+        fprintf(r, "  </applications>\n");
         fprintf(r, "</openbox_config>\n");
         fclose(r);
     }
 
+    FILE *t = fopen("/root/.config/tint2/tint2rc", "w");
+    if (t) {
+        fprintf(t, "rounded = 0\nborder_width = 0\n"
+                   "background_color = #0d1117 100\n"
+                   "border_color = #30363d 0\n\n");
+        fprintf(t, "rounded = 4\nborder_width = 1\n"
+                   "background_color = #1f2d45 100\n"
+                   "border_color = #58a6ff 70\n\n");
+        fprintf(t, "rounded = 4\nborder_width = 0\n"
+                   "background_color = #161b22 90\n"
+                   "border_color = #30363d 40\n\n");
+        fprintf(t, "panel_items = TSC\n");
+        fprintf(t, "panel_size = 100%% 36\n");
+        fprintf(t, "panel_margin = 0 0\n");
+        fprintf(t, "panel_padding = 4 2 4\n");
+        fprintf(t, "panel_background_id = 1\n");
+        fprintf(t, "panel_position = bottom center horizontal\n");
+        fprintf(t, "panel_layer = normal\n");
+        fprintf(t, "panel_monitor = all\n");
+        fprintf(t, "autohide = 0\n");
+        fprintf(t, "wm_menu = 1\n");
+        fprintf(t, "taskbar_mode = single_desktop\n\n");
+        fprintf(t, "taskbar_padding = 0 2 4\n");
+        fprintf(t, "taskbar_background_id = 0\n");
+        fprintf(t, "taskbar_active_background_id = 0\n\n");
+        fprintf(t, "task_icon = 1\n");
+        fprintf(t, "task_text = 1\n");
+        fprintf(t, "task_maximum_size = 200 30\n");
+        fprintf(t, "task_centered = 1\n");
+        fprintf(t, "task_padding = 4 2 4\n");
+        fprintf(t, "task_font = Sans 9\n");
+        fprintf(t, "task_font_color = #c9d1d9 100\n");
+        fprintf(t, "task_active_font_color = #79c0ff 100\n");
+        fprintf(t, "task_icon_asb = 100 0 0\n");
+        fprintf(t, "task_background_id = 3\n");
+        fprintf(t, "task_active_background_id = 2\n\n");
+        fprintf(t, "systray_padding = 4 4 6\n");
+        fprintf(t, "systray_background_id = 0\n");
+        fprintf(t, "systray_sort = ascending\n");
+        fprintf(t, "systray_icon_size = 22\n");
+        fprintf(t, "systray_icon_asb = 100 0 0\n\n");
+        fprintf(t, "time1_format = %%H:%%M\n");
+        fprintf(t, "time2_format = %%d/%%m/%%Y\n");
+        fprintf(t, "time1_font = Sans Bold 10\n");
+        fprintf(t, "time2_font = Sans 8\n");
+        fprintf(t, "clock_font_color = #c9d1d9 100\n");
+        fprintf(t, "clock_padding = 8 0\n");
+        fprintf(t, "clock_background_id = 0\n");
+        fprintf(t, "clock_tooltip = %%A %%d %%B %%Y\n");
+        fclose(t);
+    }
+
     FILE *xr = fopen("/root/.Xresources", "w");
     if (xr) {
-        fprintf(xr, "XTerm*background:         #0d1117\n");
-        fprintf(xr, "XTerm*foreground:         #c9d1d9\n");
-        fprintf(xr, "XTerm*cursorColor:        #58a6ff\n");
-        fprintf(xr, "XTerm*color0:             #161b22\n");
-        fprintf(xr, "XTerm*color1:             #ff7b72\n");
-        fprintf(xr, "XTerm*color2:             #3fb950\n");
-        fprintf(xr, "XTerm*color3:             #d29922\n");
-        fprintf(xr, "XTerm*color4:             #58a6ff\n");
-        fprintf(xr, "XTerm*color5:             #bc8cff\n");
-        fprintf(xr, "XTerm*color6:             #39c5cf\n");
-        fprintf(xr, "XTerm*color7:             #b1bac4\n");
-        fprintf(xr, "XTerm*color8:             #6e7681\n");
-        fprintf(xr, "XTerm*color9:             #ffa198\n");
-        fprintf(xr, "XTerm*color10:            #56d364\n");
-        fprintf(xr, "XTerm*color11:            #e3b341\n");
-        fprintf(xr, "XTerm*color12:            #79c0ff\n");
-        fprintf(xr, "XTerm*color13:            #d2a8ff\n");
-        fprintf(xr, "XTerm*color14:            #56d4dd\n");
-        fprintf(xr, "XTerm*color15:            #f0f6fc\n");
-        fprintf(xr, "XTerm*faceName:           Monospace\n");
-        fprintf(xr, "XTerm*faceSize:           11\n");
-        fprintf(xr, "XTerm*geometry:           100x28\n");
-        fprintf(xr, "XTerm*scrollBar:          false\n");
-        fprintf(xr, "XTerm*borderWidth:        0\n");
-        fprintf(xr, "XTerm*internalBorder:     8\n");
-        fprintf(xr, "XTerm*title:              Terminal\n");
+        fprintf(xr, "XTerm*background:   #0d1117\n");
+        fprintf(xr, "XTerm*foreground:   #c9d1d9\n");
+        fprintf(xr, "XTerm*cursorColor:  #58a6ff\n");
+        fprintf(xr, "XTerm*color0:  #161b22\nXTerm*color1:  #ff7b72\n");
+        fprintf(xr, "XTerm*color2:  #3fb950\nXTerm*color3:  #d29922\n");
+        fprintf(xr, "XTerm*color4:  #58a6ff\nXTerm*color5:  #bc8cff\n");
+        fprintf(xr, "XTerm*color6:  #39c5cf\nXTerm*color7:  #b1bac4\n");
+        fprintf(xr, "XTerm*color8:  #6e7681\nXTerm*color9:  #ffa198\n");
+        fprintf(xr, "XTerm*color10: #56d364\nXTerm*color11: #e3b341\n");
+        fprintf(xr, "XTerm*color12: #79c0ff\nXTerm*color13: #d2a8ff\n");
+        fprintf(xr, "XTerm*color14: #56d4dd\nXTerm*color15: #f0f6fc\n");
+        fprintf(xr, "XTerm*faceName:     Monospace\n");
+        fprintf(xr, "XTerm*faceSize:     11\n");
+        fprintf(xr, "XTerm*geometry:     100x28\n");
+        fprintf(xr, "XTerm*scrollBar:    false\n");
+        fprintf(xr, "XTerm*borderWidth:  0\n");
+        fprintf(xr, "XTerm*internalBorder: 8\n");
+        fprintf(xr, "XTerm*title:        Terminal\n");
         fclose(xr);
     }
+
+    FILE *d;
+    d = fopen("/root/Desktop/terminal.desktop", "w");
+    if (d) {
+        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
+        fprintf(d, "Name=Terminal\nComment=Open a terminal window\n");
+        fprintf(d, "Exec=xterm\nIcon=utilities-terminal\n");
+        fprintf(d, "Terminal=false\nCategories=System;TerminalEmulator;\n");
+        fclose(d);
+        (void)system("chmod +x /root/Desktop/terminal.desktop");
+    }
+    d = fopen("/root/Desktop/files.desktop", "w");
+    if (d) {
+        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
+        fprintf(d, "Name=File Manager\nComment=Browse the file system\n");
+        fprintf(d, "Exec=pcmanfm\nIcon=system-file-manager\n");
+        fprintf(d, "Terminal=false\nCategories=System;FileManager;\n");
+        fclose(d);
+        (void)system("chmod +x /root/Desktop/files.desktop");
+    }
 }
+
 
 static void ensure_display(void) {
     if (getenv("DISPLAY") != NULL) return;
@@ -3886,11 +3956,18 @@ static void ensure_display(void) {
     fprintf(f, "\n");
 
     fprintf(f, "openbox &\n");
-    fprintf(f, "sleep 0.4\n");
+    fprintf(f, "sleep 0.5\n");
     fprintf(f, "\n");
 
     fprintf(f, "feh --bg-fill /tmp/arch_wp.png 2>/dev/null "
                "|| xsetroot -solid '#0d1117'\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "pcmanfm --desktop &\n");
+    fprintf(f, "sleep 0.2\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "tint2 &\n");
     fprintf(f, "\n");
 
     fprintf(f, "xsetroot -cursor_name left_ptr\n");
