@@ -296,6 +296,11 @@ static void dlg_strip(const char *src, char *dst, size_t n) {
     dst[i] = '\0';
 }
 
+static void set_dark_theme_env(void) {
+    setenv("GTK_THEME", "Adwaita:dark", 1);
+    setenv("YAD_DISABLE_APPLICATION_INDICATOR", "1", 1);
+}
+
 static int yad_exec(char **argv, char *out, size_t outsz) {
     char **exec_argv = argv;
     char **fs_argv   = NULL;
@@ -324,6 +329,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
 
     pid_t pid = fork();
     if (pid == 0) {
+        set_dark_theme_env();
         close(pfd[0]);
         dup2(pfd[1], STDOUT_FILENO);
         close(pfd[1]);
@@ -518,6 +524,7 @@ static void infobox_dlg(const char *title, const char *text) {
                  "--timeout=60","--no-buttons", YAD_WS, NULL};
     pid_t pid = fork();
     if (pid == 0) {
+        set_dark_theme_env();
         int dn = open("/dev/null", O_RDWR);
         if (dn >= 0) { dup2(dn, STDOUT_FILENO); dup2(dn, STDERR_FILENO); }
         execvp("yad", a);
@@ -527,14 +534,9 @@ static void infobox_dlg(const char *title, const char *text) {
 
 typedef void (*LineCallback)(const char *line, void *ud);
 
+static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_error);
 static int run_simple(const char *cmd, int ignore_error) {
-    write_log_fmt("$ %s", cmd);
-    char full[MAX_CMD];
-    snprintf(full,sizeof(full),"{ %s; } >/dev/null 2>&1",cmd);
-    int rc = system(full);
-    rc = (rc==-1)?-1:WEXITSTATUS(rc);
-    if (rc!=0 && !ignore_error) write_log_fmt("ERROR (rc=%d): %s",rc,cmd);
-    return rc;
+    return run_stream(cmd, NULL, NULL, ignore_error);
 }
 
 static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_error) {
@@ -542,7 +544,10 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     char full[MAX_CMD];
     snprintf(full,sizeof(full),"{ %s; } 2>&1",cmd);
     FILE *fp = popen(full,"r");
-    if (!fp) { write_log_fmt("ERROR: popen failed: %s",cmd); return -1; }
+    if (!fp) {
+        write_log_fmt("ERROR: popen failed: %s", cmd);
+        return -1;
+    }
     char line[4096];
     while (fgets(line,sizeof(line),fp)) {
         size_t len = strlen(line);
@@ -554,7 +559,10 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     }
     int rc = pclose(fp);
     rc = (rc==-1)?-1:WEXITSTATUS(rc);
-    if (rc!=0 && !ignore_error) write_log_fmt("ERROR (rc=%d): %s",rc,cmd);
+    if (rc!=0) {
+        write_log_fmt("ERROR (rc=%d): %s", rc, cmd);
+        if (ignore_error) write_log("Command failure was ignored by the caller.");
+    }
     return rc;
 }
 
@@ -1113,6 +1121,8 @@ typedef struct {
     void (*on_done)(int ok, const char *reason, void *ud);
     void  *ud;
     double progress;
+    int    had_error;
+    char   first_error[1024];
     pthread_mutex_t lock;
 } IB;
 
@@ -1153,6 +1163,17 @@ static void ib_stage(IB *ib, const char *msg) {
     ib->on_stage(msg, ib->ud);
 }
 
+static void ib_note_error(IB *ib, const char *cmd, int rc) {
+    if (!ib || rc == 0) return;
+    pthread_mutex_lock(&ib->lock);
+    if (!ib->had_error) {
+        snprintf(ib->first_error, sizeof(ib->first_error),
+                 "%s failed (rc=%d). Check %s.", cmd, rc, LOG_FILE);
+    }
+    ib->had_error = 1;
+    pthread_mutex_unlock(&ib->lock);
+}
+
 typedef struct {
     IB    *ib;
     double start, end;
@@ -1186,6 +1207,7 @@ static void pacman_cb(const char *line, void *ud) {
 static int ib_pacman(IB *ib, const char *cmd, double start, double end, int ignore_error) {
     PacmanCbS ps = {ib, start, end, 0};
     int rc = run_stream(cmd, pacman_cb, &ps, ignore_error);
+    ib_note_error(ib, cmd, rc);
     ib_pct(ib, end);
     return rc;
 }
@@ -1205,6 +1227,7 @@ static void ib_pacman_critical(IB *ib, const char *cmd,
 
 static void ib_run(IB *ib, const char *cmd, const char *label) {
     int rc = run_stream(cmd, NULL, NULL, 0);
+    ib_note_error(ib, cmd, rc);
     if (rc!=0) {
         char msg[512];
         snprintf(msg,sizeof(msg),
@@ -1216,15 +1239,17 @@ static void ib_run(IB *ib, const char *cmd, const char *label) {
 }
 
 static int ib_chroot(IB *ib, const char *cmd, int ignore_error) {
-    (void)ib;
     char q[MAX_CMD], full[MAX_CMD];
     shell_quote(cmd,q,sizeof(q));
     snprintf(full,sizeof(full),"arch-chroot /mnt /bin/bash -c %s",q);
-    return run_stream(full, NULL, NULL, ignore_error);
+    int rc = run_stream(full, NULL, NULL, ignore_error);
+    ib_note_error(ib, full, rc);
+    return rc;
 }
 
 static void ib_chroot_c(IB *ib, const char *cmd, const char *label) {
     int rc = ib_chroot(ib,cmd,0);
+    ib_note_error(ib, cmd, rc);
     if (rc!=0) {
         char msg[512];
         snprintf(msg,sizeof(msg),
@@ -2261,6 +2286,22 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         }
     }
 
+    pthread_mutex_lock(&ib->lock);
+    int had_error = ib->had_error;
+    char first_error[sizeof(ib->first_error)];
+    strncpy(first_error, ib->first_error, sizeof(first_error)-1);
+    first_error[sizeof(first_error)-1] = '\0';
+    pthread_mutex_unlock(&ib->lock);
+
+    if (had_error) {
+        if (!first_error[0]) {
+            snprintf(first_error, sizeof(first_error),
+                     "An installation command failed. Check %s.", LOG_FILE);
+        }
+        ib->on_done(0, first_error, ib->ud);
+        return NULL;
+    }
+
     ib_pct(ib,100);
     ib_stage(ib, L("Installation complete!","Instalacion completa!"));
     ib->on_done(1,"",ib->ud);
@@ -2300,7 +2341,10 @@ static void on_done_cb(int ok, const char *reason, void *ud) {
     InstallState *iss = ud;
     pthread_mutex_lock(&iss->mu);
     iss->success = ok;
-    strncpy(iss->reason, reason ? reason : "", sizeof(iss->reason) - 1);
+    if (reason && *reason) {
+        strncpy(iss->reason, reason, sizeof(iss->reason) - 1);
+        iss->reason[sizeof(iss->reason) - 1] = '\0';
+    }
     iss->done = 1;
     pthread_cond_signal(&iss->cv);
     pthread_mutex_unlock(&iss->mu);
@@ -2392,6 +2436,10 @@ static int screen_install(void) {
 
     if (!iss.success) {
         char msg[1536];
+        if (!iss.reason[0]) {
+            snprintf(iss.reason, sizeof(iss.reason),
+                     "Installation failed. Check %s for details.", LOG_FILE);
+        }
         snprintf(msg, sizeof(msg),
                  L("Installation failed.\n\n%s\n\nCheck %s for details.",
                    "La instalacion fallo.\n\n%s\n\nRevisa %s para detalles."),
