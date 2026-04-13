@@ -191,85 +191,7 @@ static const char *get_desktop_dm(const char *name) {
 }
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int g_fullscreen = 0;
-static int g_install_finished = 0;
-
-static void apply_dark_theme(void) {
-    setenv("GTK_THEME", "Adwaita:dark", 1);
-    setenv("ADW_DISABLE_PORTAL", "1", 1);
-    setenv("YAD_DISABLE_APPLICATION_INDICATOR", "1", 1);
-}
-
-static void shell_quote(const char *s, char *out, size_t sz);
-static void write_log_fmt(const char *fmt, ...);
-typedef void (*LineCallback)(const char *line, void *ud);
-static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_error);
-
-#define INSTALLER_WALLPAPER_DIR "/tmp/arch-easy-wallpapers"
-
-static const struct {
-    const char *url;
-    const char *name;
-} k_installer_wallpapers[] = {
-    {"https://www.x.org/wiki/logo.png", "xorg-logo.png"},
-    {"https://openbox.org/help/images/180px-LoginOptions.png", "openbox-loginoptions.png"},
-    {NULL, NULL}
-};
-
-static int mkdir_p_simple(const char *path) {
-    if (!path || !*path) return -1;
-    if (mkdir(path, 0755) == 0 || errno == EEXIST) return 0;
-    return -1;
-}
-
-static int file_is_readable(const char *path) {
-    return path && access(path, R_OK) == 0;
-}
-
-static int download_to_file(const char *url, const char *dst) {
-    char q_url[MAX_CMD], q_dst[MAX_CMD], cmd[MAX_CMD * 2];
-    shell_quote(url, q_url, sizeof(q_url));
-    shell_quote(dst, q_dst, sizeof(q_dst));
-    snprintf(cmd, sizeof(cmd),
-             "curl -L --fail --silent --show-error --retry 2 -o %s %s",
-             q_dst, q_url);
-    return run_stream(cmd, NULL, NULL, 1) == 0;
-}
-
-static int prepare_installer_wallpaper(char *chosen, size_t chosen_sz) {
-    if (mkdir_p_simple(INSTALLER_WALLPAPER_DIR) != 0) {
-        write_log_fmt("Wallpaper cache directory unavailable: %s", INSTALLER_WALLPAPER_DIR);
-        return 0;
-    }
-
-    char available[8][MAX_CMD];
-    int n = 0;
-
-    for (int i = 0; k_installer_wallpapers[i].url; i++) {
-        char dst[MAX_CMD];
-        snprintf(dst, sizeof(dst), "%s/%s", INSTALLER_WALLPAPER_DIR, k_installer_wallpapers[i].name);
-        if (!file_is_readable(dst)) {
-            (void)download_to_file(k_installer_wallpapers[i].url, dst);
-        }
-        if (file_is_readable(dst) && n < 8) {
-            strncpy(available[n], dst, sizeof(available[n]) - 1);
-            available[n][sizeof(available[n]) - 1] = '\0';
-            n++;
-        }
-    }
-
-    if (n <= 0) {
-        chosen[0] = '\0';
-        return 0;
-    }
-
-    srand((unsigned int)(time(NULL) ^ getpid()));
-    const char *pick = available[rand() % n];
-    strncpy(chosen, pick, chosen_sz - 1);
-    chosen[chosen_sz - 1] = '\0';
-    write_log_fmt("Installer wallpaper selected: %s", chosen);
-    return 1;
-}
+static int g_fullscreen = 1;
 
 static void write_log(const char *msg) {
     time_t t = time(NULL);
@@ -374,6 +296,11 @@ static void dlg_strip(const char *src, char *dst, size_t n) {
     dst[i] = '\0';
 }
 
+static void set_dark_theme_env(void) {
+    setenv("GTK_THEME", "Adwaita:dark", 1);
+    setenv("YAD_DISABLE_APPLICATION_INDICATOR", "1", 1);
+}
+
 static int yad_exec(char **argv, char *out, size_t outsz) {
     char **exec_argv = argv;
     char **fs_argv   = NULL;
@@ -402,6 +329,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
 
     pid_t pid = fork();
     if (pid == 0) {
+        set_dark_theme_env();
         close(pfd[0]);
         dup2(pfd[1], STDOUT_FILENO);
         close(pfd[1]);
@@ -436,9 +364,9 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-#define YAD_W   "--width=640", "--height=300", "--center", "--borders=14"
-#define YAD_WS  "--width=760", "--height=260", "--center", "--borders=14"
-#define YAD_WL  "--width=980", "--height=460", "--center", "--borders=16"
+#define YAD_W   "--width=580", "--center"
+#define YAD_WS  "--width=420", "--center"
+#define YAD_WL  "--width=700", "--center"
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
@@ -459,8 +387,7 @@ static int inputbox_dlg(const char *title, const char *text,
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
     char *a[] = {"yad","--entry","--title",(char*)title,"--text",clean,
                  "--entry-text",(char*)(init?init:""),
-                 "--text-align=left",
-                 "--button=OK:0","--button=Cancel:1", YAD_WL, NULL};
+                 "--button=OK:0","--button=Cancel:1", YAD_W, NULL};
     return yad_exec(a, out, outsz) == 0;
 }
 
@@ -469,19 +396,9 @@ static int passwordbox_dlg(const char *title, const char *text,
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
     char *a[] = {"yad","--entry","--hide-text","--title",(char*)title,
                  "--text",clean,
-                 "--text-align=left",
-                 "--button=OK:0","--button=Cancel:1", YAD_WL, NULL};
+                 "--button=OK:0","--button=Cancel:1", YAD_WS, NULL};
     return yad_exec(a, out, outsz) == 0;
 }
-
-static int confirm_reboot_dlg(const char *title, const char *text) {
-    char clean[4096]; dlg_strip(text, clean, sizeof(clean));
-    char *a[] = {"yad","--question","--title",(char*)title,"--text",clean,
-                 "--text-align=left",
-                 "--button=Reboot:0","--button=Close:1", YAD_WL, NULL};
-    return yad_exec(a, NULL, 0) == 0;
-}
-
 
 static int menu_dlg(const char *title, const char *text,
                      MenuItem *items, int n, char *out, size_t outsz) {
@@ -604,9 +521,10 @@ static int checklist_dlg(const char *title, const char *text,
 static void infobox_dlg(const char *title, const char *text) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
     char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
-                 "--timeout=60","--no-buttons","--text-align=left", YAD_WS, NULL};
+                 "--timeout=60","--no-buttons", YAD_WS, NULL};
     pid_t pid = fork();
     if (pid == 0) {
+        set_dark_theme_env();
         int dn = open("/dev/null", O_RDWR);
         if (dn >= 0) { dup2(dn, STDOUT_FILENO); dup2(dn, STDERR_FILENO); }
         execvp("yad", a);
@@ -617,7 +535,6 @@ static void infobox_dlg(const char *title, const char *text) {
 typedef void (*LineCallback)(const char *line, void *ud);
 
 static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_error);
-
 static int run_simple(const char *cmd, int ignore_error) {
     return run_stream(cmd, NULL, NULL, ignore_error);
 }
@@ -627,7 +544,10 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     char full[MAX_CMD];
     snprintf(full,sizeof(full),"{ %s; } 2>&1",cmd);
     FILE *fp = popen(full,"r");
-    if (!fp) { write_log_fmt("ERROR: popen failed: %s",cmd); return -1; }
+    if (!fp) {
+        write_log_fmt("ERROR: popen failed: %s", cmd);
+        return -1;
+    }
     char line[4096];
     while (fgets(line,sizeof(line),fp)) {
         size_t len = strlen(line);
@@ -639,7 +559,10 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     }
     int rc = pclose(fp);
     rc = (rc==-1)?-1:WEXITSTATUS(rc);
-    if (rc!=0 && !ignore_error) write_log_fmt("ERROR (rc=%d): %s",rc,cmd);
+    if (rc!=0) {
+        write_log_fmt("ERROR (rc=%d): %s", rc, cmd);
+        if (ignore_error) write_log("Command failure was ignored by the caller.");
+    }
     return rc;
 }
 
@@ -1198,6 +1121,8 @@ typedef struct {
     void (*on_done)(int ok, const char *reason, void *ud);
     void  *ud;
     double progress;
+    int    had_error;
+    char   first_error[1024];
     pthread_mutex_t lock;
 } IB;
 
@@ -1238,6 +1163,17 @@ static void ib_stage(IB *ib, const char *msg) {
     ib->on_stage(msg, ib->ud);
 }
 
+static void ib_note_error(IB *ib, const char *cmd, int rc) {
+    if (!ib || rc == 0) return;
+    pthread_mutex_lock(&ib->lock);
+    if (!ib->had_error) {
+        snprintf(ib->first_error, sizeof(ib->first_error),
+                 "%s failed (rc=%d). Check %s.", cmd, rc, LOG_FILE);
+    }
+    ib->had_error = 1;
+    pthread_mutex_unlock(&ib->lock);
+}
+
 typedef struct {
     IB    *ib;
     double start, end;
@@ -1271,6 +1207,7 @@ static void pacman_cb(const char *line, void *ud) {
 static int ib_pacman(IB *ib, const char *cmd, double start, double end, int ignore_error) {
     PacmanCbS ps = {ib, start, end, 0};
     int rc = run_stream(cmd, pacman_cb, &ps, ignore_error);
+    ib_note_error(ib, cmd, rc);
     ib_pct(ib, end);
     return rc;
 }
@@ -1290,6 +1227,7 @@ static void ib_pacman_critical(IB *ib, const char *cmd,
 
 static void ib_run(IB *ib, const char *cmd, const char *label) {
     int rc = run_stream(cmd, NULL, NULL, 0);
+    ib_note_error(ib, cmd, rc);
     if (rc!=0) {
         char msg[512];
         snprintf(msg,sizeof(msg),
@@ -1301,15 +1239,17 @@ static void ib_run(IB *ib, const char *cmd, const char *label) {
 }
 
 static int ib_chroot(IB *ib, const char *cmd, int ignore_error) {
-    (void)ib;
     char q[MAX_CMD], full[MAX_CMD];
     shell_quote(cmd,q,sizeof(q));
     snprintf(full,sizeof(full),"arch-chroot /mnt /bin/bash -c %s",q);
-    return run_stream(full, NULL, NULL, ignore_error);
+    int rc = run_stream(full, NULL, NULL, ignore_error);
+    ib_note_error(ib, full, rc);
+    return rc;
 }
 
 static void ib_chroot_c(IB *ib, const char *cmd, const char *label) {
     int rc = ib_chroot(ib,cmd,0);
+    ib_note_error(ib, cmd, rc);
     if (rc!=0) {
         char msg[512];
         snprintf(msg,sizeof(msg),
@@ -1749,44 +1689,6 @@ static void ib_install_laptop(IB *ib) {
     ib_chroot(ib,"systemctl enable acpid",1);
     ib_chroot(ib,"systemctl mask systemd-rfkill.service systemd-rfkill.socket 2>/dev/null || true",1);
     write_log("Laptop: TLP + powertop + acpi installed and enabled.");
-}
-
-
-
-static void ib_install_wallpaper(IB *ib) {
-    if (!strcmp(st.desktop,"None")) return;
-
-    ib_stage(ib, L("Setting up desktop wallpaper...","Configurando fondo de escritorio..."));
-    ib_pacman(ib,
-              "arch-chroot /mnt pacman -S --noconfirm --needed feh",
-              96.5, 97.0, 1);
-
-    run_simple("install -d -m 755 /mnt/usr/share/arch-easy/wallpapers", 0);
-    run_simple("cp -f /tmp/arch-easy-wallpapers/* /mnt/usr/share/arch-easy/wallpapers/ 2>/dev/null || true", 0);
-
-    char script[MAX_CMD * 2];
-    char q_script[MAX_CMD * 3];
-    char cmd[MAX_CMD * 3];
-
-    snprintf(script, sizeof(script),
-             "install -d -m 755 /home/%s/.config; "
-             "cat > /home/%s/.xprofile <<'EOF'\\n"
-             "#!/bin/sh\\n"
-             "[ -n \"$DISPLAY\" ] || exit 0\\n"
-             "wallpaper_dir=/usr/share/arch-easy/wallpapers\\n"
-             "wallpaper=$(find \"$wallpaper_dir\" -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \\) 2>/dev/null | shuf -n1)\\n"
-             "[ -n \"$wallpaper\" ] || wallpaper=/usr/share/pixmaps/archlinux-logo.png\\n"
-             "if command -v feh >/dev/null 2>&1; then feh --no-fehbg --bg-fill \"$wallpaper\" >/dev/null 2>&1 & fi\\n"
-             "EOF\\n"
-             "chmod +x /home/%s/.xprofile; "
-             "chown -R %s:%s /home/%s/.config; ",
-             st.username, st.username, st.username,
-             st.username, st.username, st.username);
-
-    shell_quote(script, q_script, sizeof(q_script));
-    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt /bin/bash -lc %s", q_script);
-    ib_chroot(ib, cmd, 1);
-    write_log_fmt("Wallpaper configured for desktop: %s", st.desktop);
 }
 
 static void ib_enable_multilib(IB *ib) {
@@ -2384,6 +2286,22 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         }
     }
 
+    pthread_mutex_lock(&ib->lock);
+    int had_error = ib->had_error;
+    char first_error[sizeof(ib->first_error)];
+    strncpy(first_error, ib->first_error, sizeof(first_error)-1);
+    first_error[sizeof(first_error)-1] = '\0';
+    pthread_mutex_unlock(&ib->lock);
+
+    if (had_error) {
+        if (!first_error[0]) {
+            snprintf(first_error, sizeof(first_error),
+                     "An installation command failed. Check %s.", LOG_FILE);
+        }
+        ib->on_done(0, first_error, ib->ud);
+        return NULL;
+    }
+
     ib_pct(ib,100);
     ib_stage(ib, L("Installation complete!","Instalacion completa!"));
     ib->on_done(1,"",ib->ud);
@@ -2423,7 +2341,10 @@ static void on_done_cb(int ok, const char *reason, void *ud) {
     InstallState *iss = ud;
     pthread_mutex_lock(&iss->mu);
     iss->success = ok;
-    strncpy(iss->reason, reason ? reason : "", sizeof(iss->reason) - 1);
+    if (reason && *reason) {
+        strncpy(iss->reason, reason, sizeof(iss->reason) - 1);
+        iss->reason[sizeof(iss->reason) - 1] = '\0';
+    }
     iss->done = 1;
     pthread_cond_signal(&iss->cv);
     pthread_mutex_unlock(&iss->mu);
@@ -2442,11 +2363,11 @@ static int screen_install(void) {
 
     pid_t yad_pid = fork();
     if (yad_pid == 0) {
-        apply_dark_theme();
         dup2(pfd[0], STDIN_FILENO);
         close(pfd[1]);
         int dn = open("/dev/null", O_RDWR);
         if (dn >= 0) dup2(dn, STDERR_FILENO);
+        set_dark_theme_env();
         char *a[] = {
             "yad", "--progress",
             "--title",  TITLE "  " VERSION,
@@ -2516,25 +2437,16 @@ static int screen_install(void) {
 
     if (!iss.success) {
         char msg[1536];
+        if (!iss.reason[0]) {
+            snprintf(iss.reason, sizeof(iss.reason),
+                     "Installation failed. Check %s for details.", LOG_FILE);
+        }
         snprintf(msg, sizeof(msg),
                  L("Installation failed.\n\n%s\n\nCheck %s for details.",
                    "La instalacion fallo.\n\n%s\n\nRevisa %s para detalles."),
                  iss.reason, LOG_FILE);
         msgbox(L("Installation Failed", "Instalacion fallida"), msg);
         return 0;
-    }
-
-    g_install_finished = 1;
-    if (confirm_reboot_dlg(L("Installation complete","Instalacion completada"),
-                           L("Arch Linux has been installed successfully.\n\n"
-                             "Do you want to reboot now?",
-                             "Arch Linux se ha instalado correctamente.\n\n"
-                             "¿Quieres reiniciar ahora?"))) {
-        infobox_dlg(L("Rebooting","Reiniciando"),
-                    L("Unmounting filesystems and rebooting...",
-                      "Desmontando sistemas de archivos y reiniciando..."));
-        (void)system("umount -R /mnt 2>/dev/null");
-        (void)system("reboot");
     }
     return 1;
 }
@@ -3717,14 +3629,24 @@ static int screen_review(void) {
 
 
 static void screen_finish(void) {
-    if (yesno_dlg(L("Reboot?","¿Reiniciar?"),
-                  L("Arch Linux has been installed!\n\n"
-                    "Remove the installation media.\n\n"
+    msgbox(L("Installation Complete!", "Instalacion Completa!"),
+           L("Arch Linux has been successfully installed!\n\n"
+             "Before rebooting, make sure to remove the\n"
+             "installation media (USB / DVD).",
+             "Arch Linux se ha instalado correctamente!\n\n"
+             "Antes de reiniciar, extrae el\n"
+             "medio de instalacion (USB / DVD)."));
+
+    if (yesno_dlg(L("Reboot now?", "Reiniciar ahora?"),
+                  L("Your system is ready.\n\n"
+                    "Remove the installation media and reboot\n"
+                    "to start using your new Arch Linux installation.\n\n"
                     "Reboot now?",
-                    "¡Arch Linux se ha instalado!\n\n"
-                    "Extrae el medio de instalaci\xc3\xb3n.\n\n"
-                    "¿Reiniciar ahora?"))) {
-        infobox_dlg(L("Rebooting","Reiniciando"),
+                    "Tu sistema esta listo.\n\n"
+                    "Extrae el medio de instalacion y reinicia\n"
+                    "para usar tu nueva instalacion de Arch Linux.\n\n"
+                    "Reiniciar ahora?"))) {
+        infobox_dlg(L("Rebooting...", "Reiniciando..."),
                     L("Unmounting filesystems and rebooting...",
                       "Desmontando sistemas de archivos y reiniciando..."));
         (void)system("umount -R /mnt 2>/dev/null");
@@ -3742,10 +3664,12 @@ typedef struct {
 static int screen_welcome_wrap(void)  { screen_welcome();  return 1; }
 static int screen_language_wrap(void)  { screen_language(); return 1; }
 static int screen_network_wrap(void) {
+    g_fullscreen = 0;
     screen_network();
+    g_fullscreen = 1;
     return 1;
 }
-static int screen_finish_wrap(void)    { if (g_install_finished) return 1; screen_finish(); return 1; }
+static int screen_finish_wrap(void)    { screen_finish();   return 1; }
 static int screen_install_wrap(void)   { return screen_install(); }
 static int screen_preflight_wrap(void) { return run_preflight(); }
 
@@ -3753,17 +3677,10 @@ static int screen_preflight_wrap(void) { return run_preflight(); }
 
 static void ensure_x11_deps(void) {
     static const char *deps[] = {
-        "xorg-server",
-        "xorg-xinit",
-        "xorg-xinput",
-        "xf86-input-libinput",
-        "xf86-video-fbdev",
-        "xf86-video-vesa",
-        "xdotool",
-        "xorg-xsetroot",
-        "openbox",
-        "feh",
-        "yad",
+        "xorg-server", "xorg-xinit", "xorg-xinput",
+        "xf86-input-libinput", "xf86-video-fbdev", "xf86-video-vesa",
+        "xdotool", "xorg-xsetroot", "openbox", "yad",
+        "xterm", "pcmanfm", "feh", "imagemagick",
         NULL
     };
 
@@ -3778,29 +3695,165 @@ static void ensure_x11_deps(void) {
     }
 
     if (missing) {
-        printf("[*] Installing X11 + yad dependencies via pacman...\n");
+        printf("[*] Installing desktop session dependencies...\n");
         fflush(stdout);
         if (system("pacman -Sy --noconfirm "
                    "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
-                   "xf86-video-fbdev xf86-video-vesa "
-                   "xdotool xorg-xsetroot openbox feh yad") != 0) {
+                   "xf86-video-fbdev xf86-video-vesa xdotool xorg-xsetroot "
+                   "openbox yad xterm pcmanfm feh imagemagick") != 0) {
             fprintf(stderr,
-                "[!] WARNING: Some X11 deps failed to install.\n"
+                "[!] WARNING: Some deps failed to install.\n"
                 "    The installer will try to continue anyway.\n");
         } else {
-            printf("[+] X11 dependencies installed.\n");
+            printf("[+] Desktop dependencies installed.\n");
         }
         fflush(stdout);
     }
 }
 
+static void write_openbox_env(void) {
+    (void)system("mkdir -p /root/.config/openbox");
+
+    FILE *m = fopen("/root/.config/openbox/menu.xml", "w");
+    if (m) {
+        fprintf(m, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        fprintf(m, "<openbox_menu xmlns=\"http://openbox.org/3.4/menu\">\n");
+        fprintf(m, "  <menu id=\"root-menu\" label=\"Desktop\">\n");
+        fprintf(m, "    <item label=\"Terminal\">\n");
+        fprintf(m, "      <action name=\"Execute\">"
+                   "<command>xterm</command></action>\n");
+        fprintf(m, "    </item>\n");
+        fprintf(m, "    <item label=\"File Manager\">\n");
+        fprintf(m, "      <action name=\"Execute\">"
+                   "<command>pcmanfm</command></action>\n");
+        fprintf(m, "    </item>\n");
+        fprintf(m, "    <separator/>\n");
+        fprintf(m, "    <item label=\"Reconfigure Openbox\">\n");
+        fprintf(m, "      <action name=\"Reconfigure\"/>\n");
+        fprintf(m, "    </item>\n");
+        fprintf(m, "  </menu>\n");
+        fprintf(m, "</openbox_menu>\n");
+        fclose(m);
+    }
+
+    FILE *r = fopen("/root/.config/openbox/rc.xml", "w");
+    if (r) {
+        fprintf(r, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        fprintf(r, "<openbox_config xmlns=\"http://openbox.org/3.4/rc\"\n");
+        fprintf(r, "  xmlns:xi=\"http://www.w3.org/2001/XInclude\">\n");
+
+        fprintf(r, "  <theme>\n");
+        fprintf(r, "    <name>Clearlooks</name>\n");
+        fprintf(r, "    <titleLayout>NLIMC</titleLayout>\n");
+        fprintf(r, "    <keepBorder>no</keepBorder>\n");
+        fprintf(r, "    <animateIconify>no</animateIconify>\n");
+        fprintf(r, "    <font place=\"ActiveWindow\">\n");
+        fprintf(r, "      <name>Sans</name><size>10</size>\n");
+        fprintf(r, "      <weight>Bold</weight><slant>Normal</slant>\n");
+        fprintf(r, "    </font>\n");
+        fprintf(r, "  </theme>\n");
+
+        fprintf(r, "  <desktops><number>1</number>"
+                   "<firstdesk>1</firstdesk></desktops>\n");
+
+        fprintf(r, "  <focus><focusNew>yes</focusNew>"
+                   "<followMouse>no</followMouse></focus>\n");
+
+        fprintf(r, "  <keyboard>\n");
+        fprintf(r, "    <chainQuitKey>C-g</chainQuitKey>\n");
+        fprintf(r, "    <keybind key=\"super-t\">\n");
+        fprintf(r, "      <action name=\"Execute\">"
+                   "<command>xterm</command></action>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"C-A-t\">\n");
+        fprintf(r, "      <action name=\"Execute\">"
+                   "<command>xterm</command></action>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"super-e\">\n");
+        fprintf(r, "      <action name=\"Execute\">"
+                   "<command>pcmanfm</command></action>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"A-F4\">\n");
+        fprintf(r, "      <action name=\"Close\"/>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "  </keyboard>\n");
+
+        fprintf(r, "  <mouse>\n");
+        fprintf(r, "    <dragThreshold>1</dragThreshold>\n");
+        fprintf(r, "    <doubleClickTime>200</doubleClickTime>\n");
+        fprintf(r, "    <context name=\"Desktop\">\n");
+        fprintf(r, "      <mousebind button=\"Right\" action=\"Press\">\n");
+        fprintf(r, "        <action name=\"ShowMenu\">"
+                   "<menu>root-menu</menu></action>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Root\">\n");
+        fprintf(r, "      <mousebind button=\"Right\" action=\"Press\">\n");
+        fprintf(r, "        <action name=\"ShowMenu\">"
+                   "<menu>root-menu</menu></action>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Titlebar\">\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"Drag\">\n");
+        fprintf(r, "        <action name=\"Move\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"DoubleClick\">\n");
+        fprintf(r, "        <action name=\"ToggleMaximizeFull\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Frame\">\n");
+        fprintf(r, "      <mousebind button=\"A-Left\" action=\"Drag\">\n");
+        fprintf(r, "        <action name=\"Move\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "      <mousebind button=\"A-Right\" action=\"Drag\">\n");
+        fprintf(r, "        <action name=\"Resize\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "  </mouse>\n");
+
+        fprintf(r, "  <applications/>\n");
+        fprintf(r, "</openbox_config>\n");
+        fclose(r);
+    }
+
+    FILE *xr = fopen("/root/.Xresources", "w");
+    if (xr) {
+        fprintf(xr, "XTerm*background:         #0d1117\n");
+        fprintf(xr, "XTerm*foreground:         #c9d1d9\n");
+        fprintf(xr, "XTerm*cursorColor:        #58a6ff\n");
+        fprintf(xr, "XTerm*color0:             #161b22\n");
+        fprintf(xr, "XTerm*color1:             #ff7b72\n");
+        fprintf(xr, "XTerm*color2:             #3fb950\n");
+        fprintf(xr, "XTerm*color3:             #d29922\n");
+        fprintf(xr, "XTerm*color4:             #58a6ff\n");
+        fprintf(xr, "XTerm*color5:             #bc8cff\n");
+        fprintf(xr, "XTerm*color6:             #39c5cf\n");
+        fprintf(xr, "XTerm*color7:             #b1bac4\n");
+        fprintf(xr, "XTerm*color8:             #6e7681\n");
+        fprintf(xr, "XTerm*color9:             #ffa198\n");
+        fprintf(xr, "XTerm*color10:            #56d364\n");
+        fprintf(xr, "XTerm*color11:            #e3b341\n");
+        fprintf(xr, "XTerm*color12:            #79c0ff\n");
+        fprintf(xr, "XTerm*color13:            #d2a8ff\n");
+        fprintf(xr, "XTerm*color14:            #56d4dd\n");
+        fprintf(xr, "XTerm*color15:            #f0f6fc\n");
+        fprintf(xr, "XTerm*faceName:           Monospace\n");
+        fprintf(xr, "XTerm*faceSize:           11\n");
+        fprintf(xr, "XTerm*geometry:           100x28\n");
+        fprintf(xr, "XTerm*scrollBar:          false\n");
+        fprintf(xr, "XTerm*borderWidth:        0\n");
+        fprintf(xr, "XTerm*internalBorder:     8\n");
+        fprintf(xr, "XTerm*title:              Terminal\n");
+        fclose(xr);
+    }
+}
+
 static void ensure_display(void) {
-    if (getenv("DISPLAY") != NULL) return;  
+    if (getenv("DISPLAY") != NULL) return;
 
     ensure_x11_deps();
 
-    char wallpaper[MAX_CMD] = {0};
-    (void)prepare_installer_wallpaper(wallpaper, sizeof(wallpaper));
+    write_openbox_env();
 
     char exepath[1024] = {0};
     ssize_t elen = readlink("/proc/self/exe", exepath, sizeof(exepath) - 1);
@@ -3818,16 +3871,29 @@ static void ensure_display(void) {
     fprintf(f, "export LIBINPUT_ENABLE_DEVICE_GROUP=1\n");
     fprintf(f, "xrandr --auto 2>/dev/null || true\n");
     fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "xrdb -merge /root/.Xresources 2>/dev/null || true\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "convert -size 1920x1080 "
+               "gradient:'#0d1117-#0f2040' "
+               "/tmp/arch_wp.png 2>/dev/null || true\n");
+    fprintf(f, "RES=$(xrandr 2>/dev/null | awk '/\\*/{print $1}' | head -1)\n");
+    fprintf(f, "[ -n \"$RES\" ] && convert /tmp/arch_wp.png "
+               "-resize \"${RES}^\" -gravity Center "
+               "-extent \"$RES\" /tmp/arch_wp.png 2>/dev/null || true\n");
+    fprintf(f, "\n");
+
     fprintf(f, "openbox &\n");
+    fprintf(f, "sleep 0.4\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "feh --bg-fill /tmp/arch_wp.png 2>/dev/null "
+               "|| xsetroot -solid '#0d1117'\n");
+    fprintf(f, "\n");
+
     fprintf(f, "xsetroot -cursor_name left_ptr\n");
-    if (wallpaper[0]) {
-        char qwall[MAX_CMD];
-        shell_quote(wallpaper, qwall, sizeof(qwall));
-        fprintf(f, "sleep 1\n");
-        fprintf(f, "if command -v feh >/dev/null 2>&1; then feh --no-fehbg --bg-fill %s 2>/dev/null || xsetroot -solid '#101010'; else xsetroot -solid '#101010'; fi\n", qwall);
-    } else {
-        fprintf(f, "xsetroot -solid '#101010'\n");
-    }
     fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
     fprintf(f, "exec \"%s\"\n", exepath);
     fclose(f);
@@ -3837,7 +3903,6 @@ static void ensure_display(void) {
     printf("    Log: /tmp/xorg_installer.log\n");
     fflush(stdout);
 
-    
     char cmd[2048];
     snprintf(cmd, sizeof(cmd),
              "startx %s -- :0 -nolisten tcp "
@@ -3859,7 +3924,6 @@ int main(void) {
     }
 
     ensure_display();
-    apply_dark_theme();
 
     if (system("which yad >/dev/null 2>&1") != 0) {
         printf("[*] yad not found - installing...\n");
