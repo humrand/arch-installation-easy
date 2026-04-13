@@ -3810,10 +3810,33 @@ static void write_openbox_env(void) {
         fprintf(r, "        <action name=\"Resize\"/>\n");
         fprintf(r, "      </mousebind>\n");
         fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Close\">\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
+        fprintf(r, "        <action name=\"Close\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Maximize\">\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
+        fprintf(r, "        <action name=\"ToggleMaximizeFull\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Iconify\">\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
+        fprintf(r, "        <action name=\"Iconify\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
         fprintf(r, "  </mouse>\n");
         fprintf(r, "  <applications>\n");
+     
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
         fprintf(r, "      <maximized>yes</maximized>\n");
+        fprintf(r, "      <decor>no</decor>\n");
+        fprintf(r, "    </application>\n");
+      
+        fprintf(r, "    <application class=\"XTerm\" type=\"normal\">\n");
+        fprintf(r, "      <decor>yes</decor>\n");
+        fprintf(r, "    </application>\n");
+        fprintf(r, "    <application class=\"Pcmanfm\" type=\"normal\">\n");
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
         fprintf(r, "  </applications>\n");
