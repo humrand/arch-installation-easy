@@ -3576,6 +3576,8 @@ static void ensure_x11_deps(void) {
         "xf86-video-fbdev",
         "xf86-video-vesa",
         "xdotool",
+        "xorg-xsetroot",
+        "openbox",
         "yad",
         NULL
     };
@@ -3596,7 +3598,7 @@ static void ensure_x11_deps(void) {
         if (system("pacman -Sy --noconfirm "
                    "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
                    "xf86-video-fbdev xf86-video-vesa "
-                   "xdotool yad") != 0) {
+                   "xdotool xorg-xsetroot openbox yad") != 0) {
             fprintf(stderr,
                 "[!] WARNING: Some X11 deps failed to install.\n"
                 "    The installer will try to continue anyway.\n");
@@ -3629,6 +3631,8 @@ static void ensure_display(void) {
     fprintf(f, "export LIBINPUT_ENABLE_DEVICE_GROUP=1\n");
     fprintf(f, "xrandr --auto 2>/dev/null || true\n");
     fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
+    fprintf(f, "openbox &\n");
+    fprintf(f, "xsetroot -cursor_name left_ptr\n");
     fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
     fprintf(f, "exec \"%s\"\n", exepath);
     fclose(f);
