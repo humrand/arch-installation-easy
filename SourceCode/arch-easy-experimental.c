@@ -2376,6 +2376,7 @@ static int screen_install(void) {
             "--percentage", "0",
             "--maximize",
             "--auto-kill",
+            "--auto-close",
             "--no-buttons",
             "--enable-log",
             "--log-expanded",
@@ -2392,6 +2393,7 @@ static int screen_install(void) {
             "--percentage", "0",
             "--maximize",
             "--auto-kill",
+            "--auto-close",
             "--no-buttons",
             "--center",
             NULL
