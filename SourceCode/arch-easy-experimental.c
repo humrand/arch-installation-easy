@@ -20,7 +20,7 @@
 #include <signal.h>
 #include <sys/statvfs.h>
 
-#define VERSION   "V2.1.0"
+#define VERSION   "V3.0.0"
 #define LOG_FILE  "/tmp/arch_install.log"
 #define TITLE     "Arch Linux Installer"
 
