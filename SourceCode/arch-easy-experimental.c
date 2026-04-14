@@ -2427,6 +2427,12 @@ static int screen_install(void) {
 
     pthread_join(install_tid, NULL);
 
+    if (iss.success && g_prog_fd >= 0) {
+        const char *final_msg = "100\n# Installation complete!\n";
+        (void)write(g_prog_fd, final_msg, strlen(final_msg));
+        sleep(1);
+    }
+
     if (g_prog_fd >= 0) { close(g_prog_fd); g_prog_fd = -1; }
     if (g_prog_pid > 0) { waitpid(g_prog_pid, NULL, 0); g_prog_pid = -1; }
 
@@ -3629,29 +3635,59 @@ static int screen_review(void) {
 
 
 static void screen_finish(void) {
-    msgbox(L("Installation Complete!", "Instalacion Completa!"),
-           L("Arch Linux has been successfully installed!\n\n"
-             "Before rebooting, make sure to remove the\n"
-             "installation media (USB / DVD).",
-             "Arch Linux se ha instalado correctamente!\n\n"
-             "Antes de reiniciar, extrae el\n"
-             "medio de instalacion (USB / DVD)."));
-
-    if (yesno_dlg(L("Reboot now?", "Reiniciar ahora?"),
-                  L("Your system is ready.\n\n"
-                    "Remove the installation media and reboot\n"
-                    "to start using your new Arch Linux installation.\n\n"
-                    "Reboot now?",
-                    "Tu sistema esta listo.\n\n"
-                    "Extrae el medio de instalacion y reinicia\n"
-                    "para usar tu nueva instalacion de Arch Linux.\n\n"
-                    "Reiniciar ahora?"))) {
-        infobox_dlg(L("Rebooting...", "Reiniciando..."),
-                    L("Unmounting filesystems and rebooting...",
-                      "Desmontando sistemas de archivos y reiniciando..."));
+    int cfd[2];
+    if (pipe(cfd) != 0) {
+        sleep(5);
         (void)system("umount -R /mnt 2>/dev/null");
         (void)system("reboot");
+        exit(0);
     }
+
+    pid_t yad_pid = fork();
+    if (yad_pid == 0) {
+        dup2(cfd[0], STDIN_FILENO);
+        close(cfd[1]);
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) dup2(dn, STDERR_FILENO);
+        set_dark_theme_env();
+        char *a[] = {
+            "yad", "--progress",
+            "--title",      L("Installation Complete!", "Instalacion Completa!"),
+            "--text",       L("Arch Linux installed successfully!\n\n"
+                              "<b>Remove the USB / installation media now.</b>\n\n"
+                              "The system will reboot automatically...",
+                              "Arch Linux instalado correctamente!\n\n"
+                              "<b>Extrae ahora el USB / medio de instalacion.</b>\n\n"
+                              "El sistema se reiniciara automaticamente..."),
+            "--percentage", "0",
+            "--maximize",
+            "--no-buttons",
+            "--auto-close",
+            "--center",
+            NULL
+        };
+        execvp("yad", a);
+        _exit(0);
+    }
+    close(cfd[0]);
+
+    for (int i = 1; i <= 10; i++) {
+        usleep(500000);
+        char buf[128];
+        int pct = i * 10;
+        int secs_left = 5 - (i / 2);
+        snprintf(buf, sizeof(buf),
+                 "# %s %d...\n%d\n",
+                 L("Rebooting in", "Reiniciando en"),
+                 secs_left > 0 ? secs_left : 0,
+                 pct);
+        (void)write(cfd[1], buf, strlen(buf));
+    }
+    close(cfd[1]);
+    if (yad_pid > 0) waitpid(yad_pid, NULL, 0);
+
+    (void)system("umount -R /mnt 2>/dev/null");
+    (void)system("reboot");
     exit(0);
 }
 
@@ -3680,7 +3716,7 @@ static void ensure_x11_deps(void) {
         "xorg-server", "xorg-xinit", "xorg-xinput",
         "xf86-input-libinput", "xf86-video-fbdev", "xf86-video-vesa",
         "xdotool", "xorg-xsetroot", "openbox", "yad",
-        "xterm", "pcmanfm", "feh", "imagemagick", "tint2", "epiphany", "dbus",
+        "xterm", "pcmanfm", "feh", "imagemagick", "tint2",
         NULL
     };
 
@@ -3700,7 +3736,7 @@ static void ensure_x11_deps(void) {
         if (system("pacman -Sy --noconfirm "
                    "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
                    "xf86-video-fbdev xf86-video-vesa xdotool xorg-xsetroot "
-                   "openbox yad xterm pcmanfm feh imagemagick tint2 epiphany dbus") != 0) {
+                   "openbox yad xterm pcmanfm feh imagemagick tint2") != 0) {
             fprintf(stderr,
                 "[!] WARNING: Some deps failed to install.\n"
                 "    The installer will try to continue anyway.\n");
@@ -3721,18 +3757,11 @@ static void write_openbox_env(void) {
         fprintf(m, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         fprintf(m, "<openbox_menu xmlns=\"http://openbox.org/3.4/menu\">\n");
         fprintf(m, "  <menu id=\"root-menu\" label=\"Desktop\">\n");
-        fprintf(m, "    <item label=\"Arch Installer\">\n");
-        fprintf(m, "      <action name=\"Execute\"><command>/tmp/start-installer.sh</command></action>\n");
-        fprintf(m, "    </item>\n");
-        fprintf(m, "    <separator/>\n");
         fprintf(m, "    <item label=\"Terminal\">\n");
         fprintf(m, "      <action name=\"Execute\"><command>xterm</command></action>\n");
         fprintf(m, "    </item>\n");
         fprintf(m, "    <item label=\"File Manager\">\n");
         fprintf(m, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
-        fprintf(m, "    </item>\n");
-        fprintf(m, "    <item label=\"Web Browser\">\n");
-        fprintf(m, "      <action name=\"Execute\"><command>epiphany</command></action>\n");
         fprintf(m, "    </item>\n");
         fprintf(m, "    <separator/>\n");
         fprintf(m, "    <item label=\"Reconfigure Openbox\">\n");
@@ -3777,9 +3806,6 @@ static void write_openbox_env(void) {
         fprintf(r, "    </keybind>\n");
         fprintf(r, "    <keybind key=\"super-e\">\n");
         fprintf(r, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
-        fprintf(r, "    </keybind>\n");
-        fprintf(r, "    <keybind key=\"super-b\">\n");
-        fprintf(r, "      <action name=\"Execute\"><command>epiphany</command></action>\n");
         fprintf(r, "    </keybind>\n");
         fprintf(r, "    <keybind key=\"A-F4\">\n");
         fprintf(r, "      <action name=\"Close\"/>\n");
@@ -3837,19 +3863,16 @@ static void write_openbox_env(void) {
         fprintf(r, "    </context>\n");
         fprintf(r, "  </mouse>\n");
         fprintf(r, "  <applications>\n");
-      
+     
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
         fprintf(r, "      <maximized>yes</maximized>\n");
         fprintf(r, "      <decor>no</decor>\n");
         fprintf(r, "    </application>\n");
-     
+      
         fprintf(r, "    <application class=\"XTerm\" type=\"normal\">\n");
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
         fprintf(r, "    <application class=\"Pcmanfm\" type=\"normal\">\n");
-        fprintf(r, "      <decor>yes</decor>\n");
-        fprintf(r, "    </application>\n");
-        fprintf(r, "    <application class=\"Epiphany\" type=\"normal\">\n");
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
         fprintf(r, "  </applications>\n");
@@ -3862,40 +3885,23 @@ static void write_openbox_env(void) {
         fprintf(t, "rounded = 0\nborder_width = 0\n"
                    "background_color = #0d1117 100\n"
                    "border_color = #30363d 0\n\n");
-        fprintf(t, "rounded = 6\nborder_width = 1\n"
+        fprintf(t, "rounded = 4\nborder_width = 1\n"
                    "background_color = #1f2d45 100\n"
-                   "border_color = #58a6ff 80\n\n");
+                   "border_color = #58a6ff 70\n\n");
         fprintf(t, "rounded = 4\nborder_width = 0\n"
                    "background_color = #161b22 90\n"
                    "border_color = #30363d 40\n\n");
-        fprintf(t, "rounded = 6\nborder_width = 0\n"
-                   "background_color = #1a2332 80\n"
-                   "border_color = #58a6ff 0\n\n");
-
-        fprintf(t, "panel_items = LTSC\n");
-        fprintf(t, "panel_size = 100%% 40\n");
+        fprintf(t, "panel_items = TSC\n");
+        fprintf(t, "panel_size = 100%% 36\n");
         fprintf(t, "panel_margin = 0 0\n");
-        fprintf(t, "panel_padding = 6 2 6\n");
+        fprintf(t, "panel_padding = 4 2 4\n");
         fprintf(t, "panel_background_id = 1\n");
         fprintf(t, "panel_position = bottom center horizontal\n");
         fprintf(t, "panel_layer = normal\n");
         fprintf(t, "panel_monitor = all\n");
         fprintf(t, "autohide = 0\n");
-        fprintf(t, "wm_menu = 0\n");
+        fprintf(t, "wm_menu = 1\n");
         fprintf(t, "taskbar_mode = single_desktop\n\n");
-
-        fprintf(t, "launcher_padding = 4 4 4\n");
-        fprintf(t, "launcher_background_id = 0\n");
-        fprintf(t, "launcher_icon_background_id = 4\n");
-        fprintf(t, "launcher_icon_size = 26\n");
-        fprintf(t, "launcher_icon_asb = 100 0 0\n");
-        fprintf(t, "launcher_icon_theme_override = 0\n");
-        fprintf(t, "startup_notifications = 0\n");
-        fprintf(t, "launcher_item_app = /root/Desktop/installer.desktop\n");
-        fprintf(t, "launcher_item_app = /root/Desktop/browser.desktop\n");
-        fprintf(t, "launcher_item_app = /root/Desktop/terminal.desktop\n");
-        fprintf(t, "launcher_item_app = /root/Desktop/files.desktop\n\n");
-
         fprintf(t, "taskbar_padding = 0 2 4\n");
         fprintf(t, "taskbar_background_id = 0\n");
         fprintf(t, "taskbar_active_background_id = 0\n\n");
@@ -3910,13 +3916,11 @@ static void write_openbox_env(void) {
         fprintf(t, "task_icon_asb = 100 0 0\n");
         fprintf(t, "task_background_id = 3\n");
         fprintf(t, "task_active_background_id = 2\n\n");
-
         fprintf(t, "systray_padding = 4 4 6\n");
         fprintf(t, "systray_background_id = 0\n");
         fprintf(t, "systray_sort = ascending\n");
         fprintf(t, "systray_icon_size = 22\n");
         fprintf(t, "systray_icon_asb = 100 0 0\n\n");
-
         fprintf(t, "time1_format = %%H:%%M\n");
         fprintf(t, "time2_format = %%d/%%m/%%Y\n");
         fprintf(t, "time1_font = Sans Bold 10\n");
@@ -3952,24 +3956,6 @@ static void write_openbox_env(void) {
     }
 
     FILE *d;
-    d = fopen("/root/Desktop/installer.desktop", "w");
-    if (d) {
-        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
-        fprintf(d, "Name=Arch Installer\nComment=Install Arch Linux\n");
-        fprintf(d, "Exec=/tmp/start-installer.sh\nIcon=system-software-install\n");
-        fprintf(d, "Terminal=false\nCategories=System;\n");
-        fclose(d);
-        (void)system("chmod +x /root/Desktop/installer.desktop");
-    }
-    d = fopen("/root/Desktop/browser.desktop", "w");
-    if (d) {
-        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
-        fprintf(d, "Name=Web Browser\nComment=Browse the web\n");
-        fprintf(d, "Exec=epiphany\nIcon=org.gnome.Epiphany\n");
-        fprintf(d, "Terminal=false\nCategories=Network;WebBrowser;\n");
-        fclose(d);
-        (void)system("chmod +x /root/Desktop/browser.desktop");
-    }
     d = fopen("/root/Desktop/terminal.desktop", "w");
     if (d) {
         fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
@@ -4019,10 +4005,6 @@ static void ensure_display(void) {
     fprintf(f, "xrdb -merge /root/.Xresources 2>/dev/null || true\n");
     fprintf(f, "\n");
 
-    fprintf(f, "eval $(dbus-launch --sh-syntax --exit-with-session) 2>/dev/null || true\n");
-    fprintf(f, "export DBUS_SESSION_BUS_ADDRESS\n");
-    fprintf(f, "\n");
-
     fprintf(f, "convert -size 1920x1080 "
                "gradient:'#0d1117-#0f2040' "
                "/tmp/arch_wp.png 2>/dev/null || true\n");
@@ -4049,8 +4031,6 @@ static void ensure_display(void) {
 
     fprintf(f, "xsetroot -cursor_name left_ptr\n");
     fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
-    fprintf(f, "printf '#!/bin/sh\\nexec \"%s\"\\n' > /tmp/start-installer.sh\n", exepath);
-    fprintf(f, "chmod +x /tmp/start-installer.sh\n");
     fprintf(f, "exec \"%s\"\n", exepath);
     fclose(f);
     chmod(xinitrc, 0755);
