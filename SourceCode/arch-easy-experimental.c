@@ -3833,12 +3833,12 @@ static void write_openbox_env(void) {
         fprintf(r, "    </context>\n");
         fprintf(r, "  </mouse>\n");
         fprintf(r, "  <applications>\n");
-       
+     
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
         fprintf(r, "      <maximized>yes</maximized>\n");
         fprintf(r, "      <decor>no</decor>\n");
         fprintf(r, "    </application>\n");
-      
+   
         fprintf(r, "    <application class=\"XTerm\" type=\"normal\">\n");
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
@@ -3987,7 +3987,6 @@ static void ensure_display(void) {
     fprintf(f, "xrdb -merge /root/.Xresources 2>/dev/null || true\n");
     fprintf(f, "\n");
 
-     * We export the address so every child process inherits it.       */
     fprintf(f, "eval $(dbus-launch --sh-syntax --exit-with-session) 2>/dev/null || true\n");
     fprintf(f, "export DBUS_SESSION_BUS_ADDRESS\n");
     fprintf(f, "\n");
