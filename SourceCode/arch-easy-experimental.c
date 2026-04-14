@@ -191,7 +191,7 @@ static const char *get_desktop_dm(const char *name) {
 }
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int g_fullscreen = 0;
+static int g_fullscreen = 1;
 
 static void write_log(const char *msg) {
     time_t t = time(NULL);
@@ -315,6 +315,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
             if (strncmp(argv[i], "--height=", 9) == 0) continue;
             fs_argv[j++] = argv[i];
         }
+        fs_argv[j++] = "--maximize";
         fs_argv[j]   = NULL;
         exec_argv    = fs_argv;
     }
@@ -363,9 +364,9 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-#define YAD_W   "--width=980", "--height=680", "--center"
-#define YAD_WS  "--width=980", "--height=680", "--center"
-#define YAD_WL  "--width=980", "--height=680", "--center"
+#define YAD_W   "--width=580", "--center"
+#define YAD_WS  "--width=420", "--center"
+#define YAD_WL  "--width=700", "--center"
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
@@ -520,7 +521,7 @@ static int checklist_dlg(const char *title, const char *text,
 static void infobox_dlg(const char *title, const char *text) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
     char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
-                 "--timeout=60","--no-buttons", YAD_W, NULL};
+                 "--timeout=60","--no-buttons", YAD_WS, NULL};
     pid_t pid = fork();
     if (pid == 0) {
         set_dark_theme_env();
@@ -2373,6 +2374,7 @@ static int screen_install(void) {
             "--text",   L("Installing Arch Linux - please wait...",
                           "Instalando Arch Linux - por favor espere..."),
             "--percentage", "0",
+            "--maximize",
             "--auto-kill",
             "--no-buttons",
             "--enable-log",
@@ -2388,6 +2390,7 @@ static int screen_install(void) {
             "--title",  TITLE "  " VERSION,
             "--text",   L("Installing Arch Linux...", "Instalando Arch Linux..."),
             "--percentage", "0",
+            "--maximize",
             "--auto-kill",
             "--no-buttons",
             "--center",
@@ -3626,16 +3629,24 @@ static int screen_review(void) {
 
 
 static void screen_finish(void) {
-    msgbox(L("Instalación completada", "Instalacion completada"),
-           L("Se ha instalado Arch Linux correctamente.\n\n"
-             "Antes de reiniciar, extrae el medio de instalación (USB / DVD).",
-             "Se ha instalado Arch Linux correctamente.\n\n"
-             "Antes de reiniciar, extrae el medio de instalacion (USB / DVD)."));
+    msgbox(L("Installation Complete!", "Instalacion Completa!"),
+           L("Arch Linux has been successfully installed!\n\n"
+             "Before rebooting, make sure to remove the\n"
+             "installation media (USB / DVD).",
+             "Arch Linux se ha instalado correctamente!\n\n"
+             "Antes de reiniciar, extrae el\n"
+             "medio de instalacion (USB / DVD)."));
 
-    if (yesno_dlg(L("Reiniciar?", "Reiniciar?"),
-                  L("Se ha instalado Arch Linux, ¿reiniciar ahora?",
-                    "Se ha instalado Arch Linux, reiniciar ahora?"))) {
-        infobox_dlg(L("Reiniciando...", "Reiniciando..."),
+    if (yesno_dlg(L("Reboot now?", "Reiniciar ahora?"),
+                  L("Your system is ready.\n\n"
+                    "Remove the installation media and reboot\n"
+                    "to start using your new Arch Linux installation.\n\n"
+                    "Reboot now?",
+                    "Tu sistema esta listo.\n\n"
+                    "Extrae el medio de instalacion y reinicia\n"
+                    "para usar tu nueva instalacion de Arch Linux.\n\n"
+                    "Reiniciar ahora?"))) {
+        infobox_dlg(L("Rebooting...", "Reiniciando..."),
                     L("Unmounting filesystems and rebooting...",
                       "Desmontando sistemas de archivos y reiniciando..."));
         (void)system("umount -R /mnt 2>/dev/null");
@@ -3653,7 +3664,9 @@ typedef struct {
 static int screen_welcome_wrap(void)  { screen_welcome();  return 1; }
 static int screen_language_wrap(void)  { screen_language(); return 1; }
 static int screen_network_wrap(void) {
+    g_fullscreen = 0;
     screen_network();
+    g_fullscreen = 1;
     return 1;
 }
 static int screen_finish_wrap(void)    { screen_finish();   return 1; }
@@ -3807,6 +3820,7 @@ static void write_openbox_env(void) {
         fprintf(r, "        <action name=\"Resize\"/>\n");
         fprintf(r, "      </mousebind>\n");
         fprintf(r, "    </context>\n");
+        /* Titlebar button contexts: Close, Maximize, Iconify */
         fprintf(r, "    <context name=\"Close\">\n");
         fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
         fprintf(r, "        <action name=\"Close\"/>\n");
@@ -3824,12 +3838,19 @@ static void write_openbox_env(void) {
         fprintf(r, "    </context>\n");
         fprintf(r, "  </mouse>\n");
         fprintf(r, "  <applications>\n");
-      
+        /*
+         * Yad (installer dialogs + progress bar): no WM titlebar so
+         * the OS-provided close button never appears – the installer
+         * handles its own navigation. Yad provides its own header/buttons.
+         */
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
-        fprintf(r, "      <maximized>no</maximized>\n");
-        fprintf(r, "      <decor>yes</decor>\n");
+        fprintf(r, "      <maximized>yes</maximized>\n");
+        fprintf(r, "      <decor>no</decor>\n");
         fprintf(r, "    </application>\n");
-       
+        /*
+         * Terminal and file manager get full WM decorations so the
+         * user can move, resize and close them normally.
+         */
         fprintf(r, "    <application class=\"XTerm\" type=\"normal\">\n");
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
@@ -3846,15 +3867,19 @@ static void write_openbox_env(void) {
 
     FILE *t = fopen("/root/.config/tint2/tint2rc", "w");
     if (t) {
+        /* bg 1: panel bar */
         fprintf(t, "rounded = 0\nborder_width = 0\n"
                    "background_color = #0d1117 100\n"
                    "border_color = #30363d 0\n\n");
+        /* bg 2: active task / launcher hover */
         fprintf(t, "rounded = 6\nborder_width = 1\n"
                    "background_color = #1f2d45 100\n"
                    "border_color = #58a6ff 80\n\n");
+        /* bg 3: inactive task */
         fprintf(t, "rounded = 4\nborder_width = 0\n"
                    "background_color = #161b22 90\n"
                    "border_color = #30363d 40\n\n");
+        /* bg 4: launcher icon normal */
         fprintf(t, "rounded = 6\nborder_width = 0\n"
                    "background_color = #1a2332 80\n"
                    "border_color = #58a6ff 0\n\n");
@@ -3871,6 +3896,7 @@ static void write_openbox_env(void) {
         fprintf(t, "wm_menu = 0\n");
         fprintf(t, "taskbar_mode = single_desktop\n\n");
 
+        /* ── Launcher ─────────────────────────────────── */
         fprintf(t, "launcher_padding = 4 4 4\n");
         fprintf(t, "launcher_background_id = 0\n");
         fprintf(t, "launcher_icon_background_id = 4\n");
@@ -3883,6 +3909,7 @@ static void write_openbox_env(void) {
         fprintf(t, "launcher_item_app = /root/Desktop/terminal.desktop\n");
         fprintf(t, "launcher_item_app = /root/Desktop/files.desktop\n\n");
 
+        /* ── Taskbar ──────────────────────────────────── */
         fprintf(t, "taskbar_padding = 0 2 4\n");
         fprintf(t, "taskbar_background_id = 0\n");
         fprintf(t, "taskbar_active_background_id = 0\n\n");
@@ -3898,12 +3925,14 @@ static void write_openbox_env(void) {
         fprintf(t, "task_background_id = 3\n");
         fprintf(t, "task_active_background_id = 2\n\n");
 
+        /* ── Systray ──────────────────────────────────── */
         fprintf(t, "systray_padding = 4 4 6\n");
         fprintf(t, "systray_background_id = 0\n");
         fprintf(t, "systray_sort = ascending\n");
         fprintf(t, "systray_icon_size = 22\n");
         fprintf(t, "systray_icon_asb = 100 0 0\n\n");
 
+        /* ── Clock ────────────────────────────────────── */
         fprintf(t, "time1_format = %%H:%%M\n");
         fprintf(t, "time2_format = %%d/%%m/%%Y\n");
         fprintf(t, "time1_font = Sans Bold 10\n");
@@ -4036,6 +4065,7 @@ static void ensure_display(void) {
 
     fprintf(f, "xsetroot -cursor_name left_ptr\n");
     fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
+    /* Write a launcher script so the Desktop shortcut can re-open the installer */
     fprintf(f, "printf '#!/bin/sh\\nexec \"%s\"\\n' > /tmp/start-installer.sh\n", exepath);
     fprintf(f, "chmod +x /tmp/start-installer.sh\n");
     fprintf(f, "exec \"%s\"\n", exepath);
