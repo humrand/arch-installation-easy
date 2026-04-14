@@ -191,10 +191,7 @@ static const char *get_desktop_dm(const char *name) {
 }
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int   g_fullscreen   = 1;
-static int   g_plug_key     = 0;
-static pid_t g_nb_pid       = -1;
-static char  g_plug_key_str[40] = {0};
+static int g_fullscreen = 1;
 
 static void write_log(const char *msg) {
     time_t t = time(NULL);
@@ -304,90 +301,29 @@ static void set_dark_theme_env(void) {
     setenv("YAD_DISABLE_APPLICATION_INDICATOR", "1", 1);
 }
 
-static void notebook_stop(void) {
-    if (g_nb_pid > 0) {
-        kill(g_nb_pid, SIGTERM);
-        waitpid(g_nb_pid, NULL, WNOHANG);
-        g_nb_pid = -1;
-    }
-    g_plug_key = 0;
-    g_plug_key_str[0] = '\0';
-}
-
-static void notebook_atexit(void) { notebook_stop(); }
-
-static void notebook_start(void) {
-    g_plug_key = (int)getpid();
-    snprintf(g_plug_key_str, sizeof(g_plug_key_str), "--plug=%d", g_plug_key);
-
-    char key_str[32];
-    snprintf(key_str, sizeof(key_str), "%d", g_plug_key);
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        set_dark_theme_env();
-        int dn = open("/dev/null", O_RDWR);
-        if (dn >= 0) dup2(dn, STDERR_FILENO);
-        char *a[] = {
-            "yad", "--notebook",
-            "--key",      key_str,
-            "--maximize",
-            "--no-buttons",
-            "--title",    TITLE "  " VERSION,
-            "--tab",      " ",
-            NULL
-        };
-        execvp("yad", a);
-        _exit(1);
-    }
-    g_nb_pid = pid;
-    atexit(notebook_atexit);
-    usleep(700000);
-}
-
 static int yad_exec(char **argv, char *out, size_t outsz) {
-    int n = 0;
-    while (argv[n]) n++;
-
     char **exec_argv = argv;
-    char **mod_argv  = NULL;
+    char **fs_argv   = NULL;
 
-    if (g_plug_key > 0) {
-      
-        mod_argv = calloc((size_t)(n + 5), sizeof(char*));
-        if (mod_argv) {
-            int j = 0;
-            for (int i = 0; i < n; i++) {
-                if (strncmp(argv[i], "--width=",  8) == 0) continue;
-                if (strncmp(argv[i], "--height=", 9) == 0) continue;
-                if (strcmp (argv[i], "--maximize")   == 0) continue;
-                if (strcmp (argv[i], "--center")     == 0) continue;
-                mod_argv[j++] = argv[i];
-            }
-            mod_argv[j++] = g_plug_key_str; 
-            mod_argv[j++] = "--tabnum=1";
-            mod_argv[j]   = NULL;
-            exec_argv = mod_argv;
+    if (g_fullscreen) {
+        int n = 0;
+        while (argv[n]) n++;
+        fs_argv = calloc((size_t)(n + 3), sizeof(char*));
+        int j = 0;
+        for (int i = 0; i < n; i++) {
+            if (strncmp(argv[i], "--width=", 8) == 0) continue;
+            if (strncmp(argv[i], "--height=", 9) == 0) continue;
+            fs_argv[j++] = argv[i];
         }
-    } else if (g_fullscreen) {
-        mod_argv = calloc((size_t)(n + 3), sizeof(char*));
-        if (mod_argv) {
-            int j = 0;
-            for (int i = 0; i < n; i++) {
-                if (strncmp(argv[i], "--width=",  8) == 0) continue;
-                if (strncmp(argv[i], "--height=", 9) == 0) continue;
-                mod_argv[j++] = argv[i];
-            }
-            mod_argv[j++] = "--maximize";
-            mod_argv[j]   = NULL;
-            exec_argv = mod_argv;
-        }
+        fs_argv[j++] = "--maximize";
+        fs_argv[j]   = NULL;
+        exec_argv    = fs_argv;
     }
 
     int pfd[2];
     if (pipe(pfd) != 0) {
         if (out && outsz) out[0] = '\0';
-        if (mod_argv) free(mod_argv);
+        if (fs_argv) free(fs_argv);
         return -1;
     }
 
@@ -407,11 +343,11 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     if (out && outsz > 0) {
         size_t total = 0;
         char buf[512];
-        ssize_t rd;
-        while ((rd = read(pfd[0], buf, sizeof(buf))) > 0) {
-            if (total + (size_t)rd < outsz) {
-                memcpy(out + total, buf, (size_t)rd);
-                total += (size_t)rd;
+        ssize_t n;
+        while ((n = read(pfd[0], buf, sizeof(buf))) > 0) {
+            if (total + (size_t)n < outsz) {
+                memcpy(out + total, buf, (size_t)n);
+                total += (size_t)n;
             }
         }
         out[total] = '\0';
@@ -424,7 +360,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
 
     int status;
     waitpid(pid, &status, 0);
-    if (mod_argv) free(mod_argv);
+    if (fs_argv) free(fs_argv);
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
@@ -3884,6 +3820,7 @@ static void write_openbox_env(void) {
         fprintf(r, "        <action name=\"Resize\"/>\n");
         fprintf(r, "      </mousebind>\n");
         fprintf(r, "    </context>\n");
+        /* Titlebar button contexts: Close, Maximize, Iconify */
         fprintf(r, "    <context name=\"Close\">\n");
         fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
         fprintf(r, "        <action name=\"Close\"/>\n");
@@ -3901,12 +3838,19 @@ static void write_openbox_env(void) {
         fprintf(r, "    </context>\n");
         fprintf(r, "  </mouse>\n");
         fprintf(r, "  <applications>\n");
-      
+        /*
+         * Yad (installer dialogs + progress bar): no WM titlebar so
+         * the OS-provided close button never appears – the installer
+         * handles its own navigation. Yad provides its own header/buttons.
+         */
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
         fprintf(r, "      <maximized>yes</maximized>\n");
         fprintf(r, "      <decor>no</decor>\n");
         fprintf(r, "    </application>\n");
-       
+        /*
+         * Terminal and file manager get full WM decorations so the
+         * user can move, resize and close them normally.
+         */
         fprintf(r, "    <application class=\"XTerm\" type=\"normal\">\n");
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
@@ -3923,15 +3867,19 @@ static void write_openbox_env(void) {
 
     FILE *t = fopen("/root/.config/tint2/tint2rc", "w");
     if (t) {
+        /* bg 1: panel bar */
         fprintf(t, "rounded = 0\nborder_width = 0\n"
                    "background_color = #0d1117 100\n"
                    "border_color = #30363d 0\n\n");
+        /* bg 2: active task / launcher hover */
         fprintf(t, "rounded = 6\nborder_width = 1\n"
                    "background_color = #1f2d45 100\n"
                    "border_color = #58a6ff 80\n\n");
+        /* bg 3: inactive task */
         fprintf(t, "rounded = 4\nborder_width = 0\n"
                    "background_color = #161b22 90\n"
                    "border_color = #30363d 40\n\n");
+        /* bg 4: launcher icon normal */
         fprintf(t, "rounded = 6\nborder_width = 0\n"
                    "background_color = #1a2332 80\n"
                    "border_color = #58a6ff 0\n\n");
@@ -3948,19 +3896,20 @@ static void write_openbox_env(void) {
         fprintf(t, "wm_menu = 0\n");
         fprintf(t, "taskbar_mode = single_desktop\n\n");
 
+        /* ── Launcher ─────────────────────────────────── */
         fprintf(t, "launcher_padding = 4 4 4\n");
         fprintf(t, "launcher_background_id = 0\n");
         fprintf(t, "launcher_icon_background_id = 4\n");
         fprintf(t, "launcher_icon_size = 26\n");
         fprintf(t, "launcher_icon_asb = 100 0 0\n");
-        fprintf(t, "launcher_icon_theme = hicolor\n");
-        fprintf(t, "launcher_icon_theme_override = 1\n");
+        fprintf(t, "launcher_icon_theme_override = 0\n");
         fprintf(t, "startup_notifications = 0\n");
         fprintf(t, "launcher_item_app = /root/Desktop/installer.desktop\n");
         fprintf(t, "launcher_item_app = /root/Desktop/browser.desktop\n");
         fprintf(t, "launcher_item_app = /root/Desktop/terminal.desktop\n");
         fprintf(t, "launcher_item_app = /root/Desktop/files.desktop\n\n");
 
+        /* ── Taskbar ──────────────────────────────────── */
         fprintf(t, "taskbar_padding = 0 2 4\n");
         fprintf(t, "taskbar_background_id = 0\n");
         fprintf(t, "taskbar_active_background_id = 0\n\n");
@@ -3976,12 +3925,14 @@ static void write_openbox_env(void) {
         fprintf(t, "task_background_id = 3\n");
         fprintf(t, "task_active_background_id = 2\n\n");
 
+        /* ── Systray ──────────────────────────────────── */
         fprintf(t, "systray_padding = 4 4 6\n");
         fprintf(t, "systray_background_id = 0\n");
         fprintf(t, "systray_sort = ascending\n");
         fprintf(t, "systray_icon_size = 22\n");
         fprintf(t, "systray_icon_asb = 100 0 0\n\n");
 
+        /* ── Clock ────────────────────────────────────── */
         fprintf(t, "time1_format = %%H:%%M\n");
         fprintf(t, "time2_format = %%d/%%m/%%Y\n");
         fprintf(t, "time1_font = Sans Bold 10\n");
@@ -4114,6 +4065,7 @@ static void ensure_display(void) {
 
     fprintf(f, "xsetroot -cursor_name left_ptr\n");
     fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
+    /* Write a launcher script so the Desktop shortcut can re-open the installer */
     fprintf(f, "printf '#!/bin/sh\\nexec \"%s\"\\n' > /tmp/start-installer.sh\n", exepath);
     fprintf(f, "chmod +x /tmp/start-installer.sh\n");
     fprintf(f, "exec \"%s\"\n", exepath);
@@ -4144,30 +4096,6 @@ int main(void) {
         return 1;
     }
 
-    {
-        int lfd = open("/tmp/arch-installer.lock", O_CREAT | O_RDWR, 0600);
-        if (lfd >= 0) {
-            struct flock fl;
-            memset(&fl, 0, sizeof(fl));
-            fl.l_type   = F_WRLCK;
-            fl.l_whence = SEEK_SET;
-            if (fcntl(lfd, F_SETLK, &fl) == -1) {
-                if (getenv("DISPLAY")) {
-                    char *a[] = {"yad", "--error",
-                        "--title",  "Already running",
-                        "--text",   "The Arch Linux Installer is already running.\n"
-                                    "Only one instance can run at a time.",
-                        "--button=OK:0", NULL};
-                    set_dark_theme_env();
-                    pid_t p = fork();
-                    if (p == 0) { execvp("yad", a); _exit(0); }
-                    if (p > 0)  waitpid(p, NULL, 0);
-                }
-                return 0;
-            }
-        }
-    }
-
     ensure_display();
 
     if (system("which yad >/dev/null 2>&1") != 0) {
@@ -4177,8 +4105,6 @@ int main(void) {
             return 1;
         }
     }
-
-    notebook_start();
 
     screen_welcome_wrap();
     screen_language_wrap();
@@ -4243,6 +4169,5 @@ int main(void) {
             idx++;
         }
     }
-    notebook_stop();
     return 0;
 }
