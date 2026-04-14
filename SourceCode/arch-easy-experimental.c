@@ -315,7 +315,6 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
             if (strncmp(argv[i], "--height=", 9) == 0) continue;
             fs_argv[j++] = argv[i];
         }
-        fs_argv[j++] = "--maximize";
         fs_argv[j]   = NULL;
         exec_argv    = fs_argv;
     }
@@ -364,9 +363,9 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-#define YAD_W   "--width=580", "--center"
-#define YAD_WS  "--width=420", "--center"
-#define YAD_WL  "--width=700", "--center"
+#define YAD_W   "--width=980", "--center"
+#define YAD_WS  "--width=980", "--center"
+#define YAD_WL  "--width=980", "--center"
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
@@ -521,7 +520,7 @@ static int checklist_dlg(const char *title, const char *text,
 static void infobox_dlg(const char *title, const char *text) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
     char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
-                 "--timeout=60","--no-buttons", YAD_WS, NULL};
+                 "--timeout=60","--no-buttons", YAD_W, NULL};
     pid_t pid = fork();
     if (pid == 0) {
         set_dark_theme_env();
@@ -2303,7 +2302,7 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
     }
 
     ib_pct(ib,100);
-    ib_stage(ib, L("Installation completed","Instalación completada"));
+    ib_stage(ib, L("Installation complete!","Instalacion completa!"));
     ib->on_done(1,"",ib->ud);
     return NULL;
 }
@@ -3627,19 +3626,17 @@ static int screen_review(void) {
 
 
 static void screen_finish(void) {
-    msgbox(L("Instalación completada", "Instalación completada"),
-           L("Se ha instalado Arch Linux.\n\n"
-             "Antes de reiniciar, asegúrate de retirar\n"
-             "el medio de instalación (USB / DVD).",
-             "Se ha instalado Arch Linux.\n\n"
-             "Antes de reiniciar, asegúrate de retirar\n"
-             "el medio de instalación (USB / DVD)."));
+    msgbox(L("Instalación completada", "Instalacion completada"),
+           L("Se ha instalado Arch Linux correctamente.\n\n"
+             "Antes de reiniciar, extrae el medio de instalación (USB / DVD).",
+             "Se ha instalado Arch Linux correctamente.\n\n"
+             "Antes de reiniciar, extrae el medio de instalacion (USB / DVD)."));
 
-    if (yesno_dlg(L("Reiniciar ahora?", "Reiniciar ahora?"),
-                  L("Se ha instalado Arch Linux.\n\n¿Reiniciar?",
-                    "Se ha instalado Arch Linux.\n\n¿Reiniciar?"))) {
+    if (yesno_dlg(L("Reiniciar?", "Reiniciar?"),
+                  L("Se ha instalado Arch Linux, ¿reiniciar ahora?",
+                    "Se ha instalado Arch Linux, reiniciar ahora?"))) {
         infobox_dlg(L("Reiniciando...", "Reiniciando..."),
-                    L("Desmontando sistemas de archivos y reiniciando...",
+                    L("Unmounting filesystems and rebooting...",
                       "Desmontando sistemas de archivos y reiniciando..."));
         (void)system("umount -R /mnt 2>/dev/null");
         (void)system("reboot");
@@ -3834,8 +3831,8 @@ static void write_openbox_env(void) {
          * handles its own navigation. Yad provides its own header/buttons.
          */
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
-        fprintf(r, "      <maximized>no</maximized>\n");
-        fprintf(r, "      <decor>yes</decor>\n");
+        fprintf(r, "      <maximized>yes</maximized>\n");
+        fprintf(r, "      <decor>no</decor>\n");
         fprintf(r, "    </application>\n");
         /*
          * Terminal and file manager get full WM decorations so the
