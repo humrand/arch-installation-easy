@@ -363,9 +363,9 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-#define YAD_W   "--width=1100", "--height=760", "--center"
-#define YAD_WS  "--width=1100", "--height=760", "--center"
-#define YAD_WL  "--width=1100", "--height=760", "--center"
+#define YAD_W   "--width=980", "--height=680", "--center"
+#define YAD_WS  "--width=980", "--height=680", "--center"
+#define YAD_WL  "--width=980", "--height=680", "--center"
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
@@ -3831,8 +3831,8 @@ static void write_openbox_env(void) {
          * handles its own navigation. Yad provides its own header/buttons.
          */
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
-        fprintf(r, "      <maximized>yes</maximized>\n");
-        fprintf(r, "      <decor>no</decor>\n");
+        fprintf(r, "      <maximized>no</maximized>\n");
+        fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
         /*
          * Terminal and file manager get full WM decorations so the
