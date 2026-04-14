@@ -363,9 +363,9 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-#define YAD_W   "--width=980", "--center"
-#define YAD_WS  "--width=980", "--center"
-#define YAD_WL  "--width=980", "--center"
+#define YAD_W   "--width=1100", "--height=760", "--center"
+#define YAD_WS  "--width=1100", "--height=760", "--center"
+#define YAD_WL  "--width=1100", "--height=760", "--center"
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
