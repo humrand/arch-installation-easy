@@ -1207,7 +1207,7 @@ static void pacman_cb(const char *line, void *ud) {
 static int ib_pacman(IB *ib, const char *cmd, double start, double end, int ignore_error) {
     PacmanCbS ps = {ib, start, end, 0};
     int rc = run_stream(cmd, pacman_cb, &ps, ignore_error);
-    ib_note_error(ib, cmd, rc);
+    if (!ignore_error) ib_note_error(ib, cmd, rc);
     ib_pct(ib, end);
     return rc;
 }
@@ -1243,7 +1243,7 @@ static int ib_chroot(IB *ib, const char *cmd, int ignore_error) {
     shell_quote(cmd,q,sizeof(q));
     snprintf(full,sizeof(full),"arch-chroot /mnt /bin/bash -c %s",q);
     int rc = run_stream(full, NULL, NULL, ignore_error);
-    ib_note_error(ib, full, rc);
+    if (!ignore_error) ib_note_error(ib, full, rc);
     return rc;
 }
 
@@ -1778,7 +1778,7 @@ static void *ib_run_thread(void *arg) {
     strncpy(st.kernel, pkernel, sizeof(st.kernel)-1);
 
     char pdesktop[64]; strncpy(pdesktop, st.desktop_list, sizeof(pdesktop)-1);
-    { char *sp = strchr(pdesktop,' '); if(sp) *sp='\0'; }
+    { char *sp = strchr(pdesktop,'|'); if(sp) *sp='\0'; }
     strncpy(st.desktop, pdesktop, sizeof(st.desktop)-1);
 
     char disk[256];
@@ -2079,15 +2079,15 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
 
     {
         char dlist[512]; strncpy(dlist, st.desktop_list, sizeof(dlist)-1);
-        char *dtok = strtok(dlist, " ");
+        char *dtok = strtok(dlist, "|");
         int any_desktop = 0;
         int dm_enabled  = 0;
         double de_start = 77.0, de_end = 91.0;
         int de_count = 0;
         {
             char tmp2[512]; strncpy(tmp2, st.desktop_list, sizeof(tmp2)-1);
-            char *t2 = strtok(tmp2, " ");
-            while (t2) { if (strcmp(t2,"None")) de_count++; t2 = strtok(NULL," "); }
+            char *t2 = strtok(tmp2, "|");
+            while (t2) { if (strcmp(t2,"None")) de_count++; t2 = strtok(NULL,"|"); }
         }
         if (de_count == 0) de_count = 1;
         double de_step = (de_end - de_start) / de_count;
@@ -2128,7 +2128,7 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
                 }
                 de_idx++;
             }
-            dtok = strtok(NULL, " ");
+            dtok = strtok(NULL, "|");
         }
 
         if (any_desktop) {
@@ -3222,8 +3222,8 @@ static int screen_desktop(void) {
 
     char dl_copy[512]; strncpy(dl_copy, st.desktop_list, sizeof(dl_copy)-1);
     const char *defs[8]={0}; int ndefs=0;
-    char *tok = strtok(dl_copy," ");
-    while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL," "); }
+    char *tok = strtok(dl_copy,"|");
+    while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL,"|"); }
 
     char sel[8][256]; int nsel = -1;
     while (nsel < 1) {
@@ -3256,7 +3256,7 @@ static int screen_desktop(void) {
 
     st.desktop_list[0] = '\0';
     for (int i=0;i<nc;i++) {
-        if(i) strncat(st.desktop_list," ",sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
+        if(i) strncat(st.desktop_list,"|",sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
         strncat(st.desktop_list, cleaned[i], sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
     }
     strncpy(st.desktop, cleaned[0], sizeof(st.desktop)-1);
