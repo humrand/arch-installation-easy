@@ -2079,8 +2079,8 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
     ib_pct(ib,77);
 
     {
-        char dlist[512]; strncpy(dlist, st.desktop_list, sizeof(dlist)-1);
-        char *dtok = strtok(dlist, "|");
+        /* Count DEs first, before starting the outer strtok, to avoid
+           clobbering strtok's global state (strtok is not reentrant). */
         int any_desktop = 0;
         int dm_enabled  = 0;
         double de_start = 77.0, de_end = 91.0;
@@ -2093,6 +2093,9 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         if (de_count == 0) de_count = 1;
         double de_step = (de_end - de_start) / de_count;
         int de_idx = 0;
+
+        char dlist[512]; strncpy(dlist, st.desktop_list, sizeof(dlist)-1);
+        char *dtok = strtok(dlist, "|");
 
         while (dtok) {
             if (strcmp(dtok,"None") != 0) {
