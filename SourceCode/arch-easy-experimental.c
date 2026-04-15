@@ -494,26 +494,20 @@ static int checklist_dlg(const char *title, const char *text,
     if (rc != 0) return -1;
 
     int count = 0;
-    char *p = raw;
+    char copy[4096]; strncpy(copy, raw, sizeof(copy)-1);
+    char *p = copy;
     while (*p && count < maxout) {
-        char *nl = strchr(p, '\n');
-        int len = nl ? (int)(nl - p) : (int)strlen(p);
-        if (len > 0 && len < 255) {
-            strncpy(out[count], p, (size_t)len);
-            out[count][len] = '\0';
-            count++;
+        char *sep = p;
+        while (*sep && *sep != '|' && *sep != '\n') sep++;
+        int slen = (int)(sep - p);
+        if (slen > 0 && slen < 255) {
+            strncpy(out[count], p, slen);
+            out[count][slen] = '\0';
+            trim_nl(out[count]);
+            if (out[count][0]) count++;
         }
-        if (!nl) break;
-        p = nl + 1;
-    }
-    if (count == 0 && raw[0]) {
-        char copy[4096]; strncpy(copy, raw, sizeof(copy)-1);
-        char *tok = strtok(copy, "|");
-        while (tok && count < maxout) {
-            trim_nl(tok);
-            if (tok[0]) { strncpy(out[count++], tok, 255); }
-            tok = strtok(NULL, "|");
-        }
+        if (*sep) p = sep + 1;
+        else break;
     }
     return count;
 }
@@ -1660,8 +1654,15 @@ static void ib_add_cachyos_repo(IB *ib, int chroot) {
              conf, q, conf);
     run_stream(cmd,NULL,NULL,1);
     if (!chroot) {
+        run_stream("pacman-key --recv-keys F3B607488DB35A47 "
+                   "--keyserver keyserver.ubuntu.com",NULL,NULL,1);
+        run_stream("pacman-key --lsign-key F3B607488DB35A47",NULL,NULL,1);
         int rc = run_stream("pacman -Sy --noconfirm",NULL,NULL,1);
         if (rc) run_stream("pacman -Sy --noconfirm",NULL,NULL,1);
+    } else {
+        ib_chroot(ib,"pacman-key --recv-keys F3B607488DB35A47 "
+                     "--keyserver keyserver.ubuntu.com",1);
+        ib_chroot(ib,"pacman-key --lsign-key F3B607488DB35A47",1);
     }
     write_log_fmt("CachyOS repo added to %s",conf);
 }
