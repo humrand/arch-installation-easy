@@ -58,6 +58,7 @@ typedef struct {
     char db_root[128];
     char db_efi[128];
     char db_swap[128];
+    int  db_size_gb;
     char profile[32];
     int  laptop;
     char optimus_mode[16];
@@ -94,6 +95,7 @@ static State st = {
     .db_root      = "",
     .db_efi       = "",
     .db_swap      = "",
+    .db_size_gb   = 30,
     .profile      = "none",
     .laptop       = 0,
     .optimus_mode = "hybrid",
@@ -103,7 +105,6 @@ static State st = {
 };
 
 #define L(en, es) (strcmp(st.lang,"en")==0 ? (en) : (es))
-
 
 typedef struct { const char *key; const char *val; } KV;
 
@@ -193,7 +194,7 @@ static const char *get_desktop_dm(const char *name) {
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_fullscreen = 1;
 
-static int g_home_requested = 0;
+static int g_home_requested = 0;   
 
 static int password_strength(const char *p) {
     if (!p || !p[0]) return 0;
@@ -211,6 +212,7 @@ static int password_strength(const char *p) {
     if (len < 12 || score < 3) return 2;
     return 3;
 }
+
 static void password_strength_label(const char *p, char *out, size_t sz,
                                     const char *lang) {
     int s = password_strength(p);
@@ -305,9 +307,6 @@ static int validate_swap(const char *s) {
     int v = atoi(s);
     return v >= 1 && v <= 128;
 }
-
-
-
 
 typedef struct { char tag[256]; char desc[512]; } MenuItem;
 
@@ -427,7 +426,7 @@ static int inputbox_dlg(const char *title, const char *text,
 static int passwordbox_dlg(const char *title, const char *text,
                             char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-    int show = 0;
+    int show = 0; 
     while (1) {
         char *hide_arg = show ? NULL : (char*)"--hide-text";
         char *eye_btn  = show
@@ -622,8 +621,6 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     return rc;
 }
 
-
-
 static int is_laptop(void) {
     return access("/sys/class/power_supply/BAT0", F_OK) == 0 ||
            access("/sys/class/power_supply/BAT1", F_OK) == 0;
@@ -686,7 +683,6 @@ static double measure_mirror_speed(const char *url) {
     pclose(fp);
     return speed;
 }
-
 
 static int is_uefi(void) {
     struct stat st2;
@@ -847,7 +843,6 @@ static int list_disks(DiskInfo *out, int max) {
     return n;
 }
 
-
 typedef struct {
     char path[128];
     char fstype[32];
@@ -898,9 +893,11 @@ static int list_partitions_on_disk(const char *disk, PartEntry *out, int max) {
         while (n < max && fgets(line, sizeof(line), fp)) {
             char name[128]={0}, fstype[64]={0}, label[64]={0}, type[16]={0};
             long long sz = 0;
+
             int r = sscanf(line, "%127s %lld %63s %63s %15s",
                            name, &sz, fstype, label, type);
             if (r < 2) continue;
+
             int is_part = 0;
             if (r >= 5 && strcmp(type,"part")==0) is_part=1;
             else if (r >= 5 && strcmp(type,"disk")==0) is_part=0;
@@ -985,7 +982,7 @@ static int screen_wifi_connect(void) {
     }
     const char *iface = ifaces[0];
 
-rescan_wifi:; 
+rescan_wifi:;   
 
     {
         char info_msg[256];
@@ -1092,6 +1089,7 @@ rescan_wifi:;
             nnets, iface);
         inputbox_dlg(L(" Filter networks"," Filtrar redes"),
                      filter_hdr, "", filter, sizeof(filter));
+
     }
 
     char ssid_sel[128]={0};
@@ -1132,6 +1130,7 @@ rescan_wifi:;
                 return -1; 
             }
         } else {
+
             char hdr[512];
             snprintf(hdr,sizeof(hdr),
                      L("Interface: %s\nNo networks found%s.\nEnter SSID manually or Cancel:",
@@ -1186,7 +1185,7 @@ rescan_wifi:;
                    "Pulsa OK para intentar de nuevo o Cancelar para volver."),
                  ssid_sel);
         if (yesno_dlg(L(" WiFi Failed"," WiFi fallido"),fail_msg))
-            goto rescan_wifi;
+            goto rescan_wifi; 
         return 0;
     }
     return 1;
@@ -1218,6 +1217,7 @@ static void screen_network(void) {
         }
 
         if (!strcmp(choice,"wired")) {
+
             while (1) {
                 infobox_dlg(L(" Checking..."," Verificando..."),
                             L("Testing wired connection...","Probando conexión por cable..."));
@@ -1227,6 +1227,7 @@ static void screen_network(void) {
                              "Conexión por cable detectada. Listo para continuar."));
                     return;
                 }
+
                 if (!yesno_dlg(
                         L(" No connection"," Sin conexión"),
                         L("Could not reach the internet over the wired connection.\n\n"
@@ -1680,7 +1681,6 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
             "mkdir -p /boot/EFI/BOOT && "
             "cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI",1);
 
-
         char p1[256]; char p2[256]; char p3[256];
         char disk_dev[256]; snprintf(disk_dev,sizeof(disk_dev),"/dev/%s",st.disk);
         partition_paths(disk_dev,p1,p2,p3,sizeof(p1));
@@ -1933,7 +1933,6 @@ static void ib_configure_grub_cmdline(IB *ib) {
     }
 }
 
-
 typedef struct {
     IB *ib;
 } IBRunArg;
@@ -1953,18 +1952,7 @@ static void *ib_run_thread(void *arg) {
     strncpy(st.desktop, pdesktop, sizeof(st.desktop)-1);
 
     char disk[256];
-    if (st.dualboot) {
-        strncpy(disk, st.db_root, sizeof(disk)-1);
-        char *end = disk + strlen(disk) - 1;
-        if (strstr(disk,"nvme") || strstr(disk,"mmcblk")) {
-            while (end > disk && isdigit((unsigned char)*end)) end--;
-            if (*end == 'p') *end = '\0';
-        } else {
-            while (end > disk && isdigit((unsigned char)*end)) *end-- = '\0';
-        }
-    } else {
-        snprintf(disk, sizeof(disk), "/dev/%s", st.disk);
-    }
+    snprintf(disk, sizeof(disk), "/dev/%s", st.disk);
 
     char p1[256],p2[256],p3[256];
     if (!st.dualboot) partition_paths(disk,p1,p2,p3,sizeof(p1));
@@ -1973,7 +1961,7 @@ static void *ib_run_thread(void *arg) {
     int  uefi       = is_uefi();
     const char *bl  = st.bootloader;
     const char *fs  = st.filesystem;
-    const char *root_dev = st.dualboot ? st.db_root : p3;
+    const char *root_dev = st.dualboot ? (const char*)st.db_root : (const char*)p3;
 
     if (!strcmp(fs,"zfs")) {
         strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
@@ -2059,25 +2047,55 @@ static void *ib_run_thread(void *arg) {
 
     } else {
         char cmd[MAX_CMD];
-        ib_stage(ib, L("Formatting root partition (dual-boot)...",
-                       "Formateando particion raiz (dual-boot)..."));
-        ib_gradual(ib,10,15,0.04);
 
-if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
-        else if (!strcmp(fs,"xfs")) ib_setup_xfs(ib, st.db_root);
-        else if (!strcmp(fs,"zfs")) ib_setup_zfs(ib, st.db_root);
+        ib_stage(ib, L("Creating new Arch partition (dual-boot)...",
+                       "Creando nueva particion para Arch (dual-boot)..."));
+        ib_gradual(ib,8,14,0.04);
+
+        snprintf(cmd, sizeof(cmd),
+            "sgdisk -n 0:0:+%dG -t 0:8300 %s",
+            st.db_size_gb, disk);
+        ib_run(ib, cmd, "sgdisk new partition");
+        settle_partitions(disk);
+
+        {
+            char part_cmd[256];
+            snprintf(part_cmd, sizeof(part_cmd),
+                "sgdisk -p %s 2>/dev/null | awk '/^ *[0-9]/{last=$1} END{print last}'",
+                disk);
+            FILE *fp_pt = popen(part_cmd, "r");
+            if (fp_pt) {
+                char pnum[16]={0};
+                if (fgets(pnum, sizeof(pnum), fp_pt)) {
+                    trim_nl(pnum);
+                    int n = atoi(pnum);
+                    if (n > 0) {
+                        if (strstr(disk,"nvme") || strstr(disk,"mmcblk"))
+                            snprintf(st.db_root, sizeof(st.db_root), "%sp%d", disk, n);
+                        else
+                            snprintf(st.db_root, sizeof(st.db_root), "%s%d", disk, n);
+                        write_log_fmt("Dual-boot new partition: %s", st.db_root);
+                    }
+                }
+                pclose(fp_pt);
+            }
+        }
+
+        settle_partitions(disk);
+        root_dev = st.db_root;
+
+        ib_stage(ib, L("Formatting new Arch partition (dual-boot)...",
+                       "Formateando nueva particion de Arch (dual-boot)..."));
+
+        if (!strcmp(fs,"btrfs"))     ib_setup_btrfs(ib, st.db_root, disk);
+        else if (!strcmp(fs,"xfs"))  ib_setup_xfs(ib, st.db_root);
+        else if (!strcmp(fs,"zfs"))  ib_setup_zfs(ib, st.db_root);
         else {
             snprintf(cmd,sizeof(cmd),"mkfs.ext4 -F %s", st.db_root);
             ib_run(ib, cmd, "mkfs.ext4 dual-boot");
             run_simple("udevadm settle --timeout=10", 1);
             snprintf(cmd,sizeof(cmd),"mount %s /mnt", st.db_root);
             ib_run(ib, cmd, "mount root dual-boot");
-        }
-
-        if (st.db_swap[0]) {
-            snprintf(cmd,sizeof(cmd),"swapon %s", st.db_swap);
-            run_stream(cmd, NULL, NULL, 1);
-            write_log_fmt("Swap enabled: %s", st.db_swap);
         }
 
         if (uefi && st.db_efi[0]) {
@@ -2249,6 +2267,7 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
     ib_pct(ib,77);
 
     {
+
         int any_desktop = 0;
         int dm_enabled  = 0;
         double de_start = 77.0, de_end = 91.0;
@@ -2480,8 +2499,6 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
     return NULL;
 }
 
-
-
 static int   g_prog_fd  = -1;
 static pid_t g_prog_pid = -1;
 
@@ -2631,7 +2648,6 @@ static int screen_install(void) {
     return 1;
 }
 
-
 static void screen_welcome(void) {
     char text[1024];
     snprintf(text,sizeof(text),
@@ -2693,6 +2709,7 @@ static int screen_mode(void) {
 
 static int screen_identity(void) {
     while(1) {
+
         char summary[256];
         snprintf(summary, sizeof(summary),
             L(" Summary: disk=%s  fs=%s  kernel=%s",
@@ -2785,6 +2802,7 @@ static int screen_identity(void) {
 }
 
 static int screen_passwords(void) {
+
     char summary[256];
     snprintf(summary,sizeof(summary),
         L(" Summary: user=%s  hostname=%s",
@@ -2793,6 +2811,7 @@ static int screen_passwords(void) {
         st.hostname[0]?st.hostname:"?");
 
     while(1) {
+
         char rp_hdr[2048];
         snprintf(rp_hdr,sizeof(rp_hdr),
             L("%s\n\n"
@@ -2923,6 +2942,7 @@ static int screen_passwords(void) {
 }
 
 static int screen_disk(void) {
+
     char summary[256];
     snprintf(summary,sizeof(summary),
         L(" Summary: mode=%s  fs=%s  kernel=%s",
@@ -2950,11 +2970,10 @@ static int screen_disk(void) {
               "  DUAL BOOT (keep another OS)\n"
               "    -> You already have Windows or another Linux on the disk.\n"
               "    -> You want to keep it and ALSO install Arch alongside it.\n"
-              "    -> You will manually select an empty partition for Arch.\n"
+              "    -> A new partition is created automatically in the free space.\n"
               "    -> At boot, a menu will let you choose which OS to start.\n"
-              "      You must have created a free/empty partition first\n"
-              "       using a tool like GParted or Windows Disk Management.\n"
-              "      Only the Arch partition will be formatted — other OS is safe.",
+              "      You only need free unpartitioned space on the disk.\n"
+              "      Only the new Arch partition is touched — other OS is safe.",
               " ¿Cómo quieres instalar Arch Linux?\n\n"
               "  INSTALACIÓN COMPLETA (recomendado para instalaciones nuevas)\n"
               "    -> Todo el disco seleccionado se borra y Arch se instala en él.\n"
@@ -2963,11 +2982,10 @@ static int screen_disk(void) {
               "  DUAL BOOT (conservar otro sistema operativo)\n"
               "    -> Ya tienes Windows u otro Linux en el disco.\n"
               "    -> Quieres conservarlo E instalar Arch al lado.\n"
-              "    -> Seleccionarás manualmente una partición vacía para Arch.\n"
+              "    -> Se crea una nueva particion automaticamente en el espacio libre.\n"
               "    -> Al arrancar, un menú te dejará elegir qué sistema iniciar.\n"
-              "      Debes haber creado antes una partición libre/vacía\n"
-              "       con una herramienta como GParted o Administración de discos.\n"
-              "      Solo se formateará la partición de Arch — el otro SO estará seguro."));
+              "      Solo necesitas espacio libre sin particionar en el disco.\n"
+              "      Solo se toca la nueva particion de Arch — el otro SO esta seguro."));
 
         char mode_out[16]={0};
         if (!radiolist_dlg(
@@ -3031,6 +3049,7 @@ static int screen_disk(void) {
 
         {
             const char *dname2 = sel; if (!strncmp(dname2,"/dev/",5)) dname2+=5;
+
             long long dsize_gb = 0; char dmodel[128]="";
             int ssd2 = -1;
             for (int i=0;i<nd;i++) {
@@ -3086,6 +3105,7 @@ static int screen_disk(void) {
 
         int sug_gb = suggest_swap_gb();
         {
+
             long long disk_gb = 0;
             for (int i=0;i<nd;i++)
                 if (!strcmp(disks[i].name,st.disk)) { disk_gb=disks[i].size_gb; break; }
@@ -3119,6 +3139,7 @@ static int screen_disk(void) {
         char sug_str[8]; snprintf(sug_str,sizeof(sug_str),"%d",sug_gb);
         while(1) {
             char swap_hdr[512];
+
             snprintf(swap_hdr,sizeof(swap_hdr),
                 L(" Swap size\n\n"
                   "   Swap is extra 'emergency memory' on disk.\n"
@@ -3165,15 +3186,15 @@ static int screen_disk(void) {
             char overview[MAX_OUT];
             snprintf(overview, sizeof(overview),
                 L("DUAL BOOT — current disk layout:\n\n%s\n\n"
-                  "Step 1 of 3: Select the disk that contains your existing OS\n"
+                  "Step 1 of 2: Select the disk that contains your existing OS\n"
                   "(Windows, another Linux, etc.)\n\n"
-                  "[!] Only the partition you choose in step 2 will be formatted.\n"
-                  "    All other data on the disk stays untouched.",
+                  "A new partition for Arch will be created automatically\n"
+                  "in the free space of the selected disk.",
                   "DUAL BOOT — esquema actual de discos:\n\n%s\n\n"
-                  "Paso 1 de 3: Selecciona el disco que contiene tu sistema actual\n"
+                  "Paso 1 de 2: Selecciona el disco que contiene tu sistema actual\n"
                   "(Windows, otro Linux, etc.)\n\n"
-                  "[!] Solo la particion que elijas en el paso 2 sera formateada.\n"
-                  "    El resto de datos del disco quedaran intactos."),
+                  "Se creara automaticamente una nueva particion para Arch\n"
+                  "en el espacio libre del disco seleccionado."),
                 lsblk_out);
             msgbox(L("Dual Boot — Disk Overview","Dual Boot — Vista de discos"), overview);
         }
@@ -3192,14 +3213,16 @@ static int screen_disk(void) {
 
         char sel_disk[128]={0};
         if (!radiolist_dlg(
-                L("Dual Boot — Step 1/3: Select disk",
-                  "Dual Boot — Paso 1/3: Selecciona el disco"),
+                L("Dual Boot — Step 1/2: Select disk",
+                  "Dual Boot — Paso 1/2: Selecciona el disco"),
                 L("Which disk contains the OS you want to keep?\n"
-                  "(This is the disk where you will also install Arch.)\n\n"
-                  "None of the existing data will be touched yet.",
-                  "¿En qué disco está el sistema operativo que quieres conservar?\n"
-                  "(En este disco también instalarás Arch.)\n\n"
-                  "Todavia no se modificará nada."),
+                  "(Arch Linux will also be installed on this disk.)\n\n"
+                  "A new partition will be created automatically\n"
+                  "in the available free space. Nothing is modified yet.",
+                  "¿En que disco esta el sistema operativo que quieres conservar?\n"
+                  "(Arch Linux tambien se instalara en este disco.)\n\n"
+                  "Se creara automaticamente una nueva particion\n"
+                  "en el espacio libre disponible. Todavia no se modifica nada."),
                 disk_items, nd,
                 cur_dev[0] ? cur_dev : disk_items[0].tag,
                 sel_disk, sizeof(sel_disk))) {
@@ -3211,128 +3234,74 @@ static int screen_disk(void) {
         if (!strncmp(dname_db,"/dev/",5)) dname_db += 5;
         strncpy(st.disk, dname_db, sizeof(st.disk)-1);
 
-        PartEntry parts[64];
-        int np = list_partitions_on_disk(sel_disk, parts, 64);
-
-        if (np == 0) {
-            char no_part_msg[512];
-            snprintf(no_part_msg, sizeof(no_part_msg),
-                L("No partitions found on %s.\n\n"
-                  "For dual boot you need a free/empty partition already created\n"
-                  "on that disk.\n\n"
-                  "Options:\n"
-                  "  - Boot Windows -> shrink its partition with Disk Management\n"
-                  "  - Use GParted from a live USB to create a free partition\n\n"
-                  "Then rerun this installer and choose Dual Boot again.",
-                  "No se encontraron particiones en %s.\n\n"
-                  "Para dual boot necesitas una partición libre/vacía ya creada\n"
-                  "en ese disco.\n\n"
-                  "Opciones:\n"
-                  "  - Arranca Windows -> reduce su partición con Administración de discos\n"
-                  "  - Usa GParted desde un USB live para crear una partición libre\n\n"
-                  "Luego vuelve a ejecutar el instalador y elige Dual Boot."),
-                sel_disk);
-            msgbox(L("No partitions found","Sin particiones"), no_part_msg);
-            st.dualboot = 0;
-            st.disk[0] = '\0';
-            return 0;
-        }
-
         {
             char lsblk2[4096]={0};
             char lsblk_cmd[256];
-            snprintf(lsblk_cmd, sizeof(lsblk_cmd),
-                     "lsblk %s 2>/dev/null", sel_disk);
+            snprintf(lsblk_cmd, sizeof(lsblk_cmd), "lsblk %s 2>/dev/null", sel_disk);
             FILE *fp2 = popen(lsblk_cmd, "r");
             if (fp2) { (void)fread(lsblk2,1,sizeof(lsblk2)-1,fp2); pclose(fp2); }
+
+            char free_info[512]={0};
+            char free_cmd[256];
+            snprintf(free_cmd, sizeof(free_cmd),
+                "parted -s %s unit GB print free 2>/dev/null"
+                " | grep 'Free Space' | tail -1", sel_disk);
+            FILE *fp3 = popen(free_cmd, "r");
+            if (fp3) { (void)fread(free_info,1,sizeof(free_info)-1,fp3); pclose(fp3); trim_nl(free_info); }
 
             char txt[MAX_OUT];
             snprintf(txt, sizeof(txt),
                 L("Partitions on %s:\n\n%s\n\n"
-                  "Step 2 of 3: Choose which partition Arch will be installed on.\n\n"
-                  "[!] That partition will be FORMATTED (all data on it will be erased).\n"
-                  "[+] All other partitions (Windows, etc.) stay completely untouched.\n\n"
-                  "Tip: choose a partition without a filesystem (shown as '-' or '?'),\n"
-                  "     or one you deliberately freed up for Arch.",
+                  "Step 2 of 2: Choose the size for the new Arch Linux partition.\n\n"
+                  "[+] A NEW partition will be created in the free space.\n"
+                  "[+] All existing partitions (Windows, etc.) stay untouched.\n\n"
+                  "Available free space: %s",
                   "Particiones en %s:\n\n%s\n\n"
-                  "Paso 2 de 3: Elige qué partición usará Arch Linux.\n\n"
-                  "[!] Esa partición será FORMATEADA (todos sus datos se borrarán).\n"
-                  "[+] Las demás particiones (Windows, etc.) quedan completamente intactas.\n\n"
-                  "Consejo: elige una partición sin sistema de archivos (que aparezca como '-' o '?'),\n"
-                  "         o una que hayas vaciado expresamente para Arch."),
-                sel_disk, lsblk2);
+                  "Paso 2 de 2: Elige el tamaño de la nueva particion de Arch Linux.\n\n"
+                  "[+] Se creara una NUEVA particion en el espacio libre.\n"
+                  "[+] Todas las particiones existentes (Windows, etc.) quedan intactas.\n\n"
+                  "Espacio libre disponible: %s"),
+                sel_disk, lsblk2,
+                free_info[0] ? free_info : L("unknown","desconocido"));
             msgbox(L("Dual Boot — Partition Overview",
                      "Dual Boot — Vista de particiones"), txt);
         }
 
-        MenuItem *part_items = malloc(np * sizeof(MenuItem));
-        for (int i = 0; i < np; i++) {
-            strncpy(part_items[i].tag, parts[i].path, 255);
-            snprintf(part_items[i].desc, 511, "%5lld MB  [%-6s]  %s",
-                     parts[i].size_mb,
-                     parts[i].fstype[0] ? parts[i].fstype : "-",
-                     parts[i].label[0]  ? parts[i].label  : "");
-        }
-
-        char sel_root[128]={0};
-        int ok = radiolist_dlg(
-            L("Dual Boot — Step 2/3: Root partition",
-              "Dual Boot — Paso 2/3: Partición raíz"),
-            L("Select the partition where Arch Linux (/) will be installed.\n\n"
-              "[!] THIS PARTITION WILL BE ERASED.\n"
-              "[+] Windows and all other partitions are safe.\n\n"
-              "A partition with no filesystem ('-') is ideal.\n"
-              "Do NOT pick your Windows partition (usually NTFS, large).\n"
-              "Do NOT pick the EFI partition (usually FAT32, small ~100-500 MB).",
-              "Selecciona la partición donde se instalará Arch Linux (/).\n\n"
-              "[!] ESTA PARTICIÓN SE BORRARÁ.\n"
-              "[+] Windows y las demás particiones están seguras.\n\n"
-              "Una partición sin sistema de archivos ('-') es ideal.\n"
-              "NO elijas la partición de Windows (suele ser NTFS, grande).\n"
-              "NO elijas la partición EFI (suele ser FAT32, pequeña ~100-500 MB)."),
-            part_items, np,
-            st.db_root[0] ? st.db_root : part_items[0].tag,
-            sel_root, sizeof(sel_root));
-        free(part_items);
-
-        if (!ok || !sel_root[0]) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-
-        {
-            long long sel_mb = 0;
-            char sel_fs[32]="?";
-            for (int i = 0; i < np; i++) {
-                if (!strcmp(parts[i].path, sel_root)) {
-                    sel_mb = parts[i].size_mb;
-                    strncpy(sel_fs, parts[i].fstype, sizeof(sel_fs)-1);
-                    break;
-                }
-            }
-            char conf[512];
-            snprintf(conf, sizeof(conf),
-                L("Confirm: format %s for Arch Linux root (/)\n\n"
-                  "  Partition: %s\n"
-                  "  Size:      %lld MB\n"
-                  "  Current:   %s\n"
-                  "  New FS:    %s\n\n"
-                  "All data on this partition will be permanently lost.\n"
-                  "Your other partitions (Windows etc.) are NOT affected.\n\n"
-                  "Continue?",
-                  "Confirmar: formatear %s como raíz (/) de Arch Linux\n\n"
-                  "  Partición: %s\n"
-                  "  Tamaño:    %lld MB\n"
-                  "  Actual:    %s\n"
-                  "  Nuevo FS:  %s\n\n"
-                  "Todos los datos de esta partición se perderán definitivamente.\n"
-                  "Las demás particiones (Windows etc.) NO se ven afectadas.\n\n"
-                  "¿Continuar?"),
-                sel_root, sel_root, sel_mb, sel_fs, st.filesystem);
-            if (!yesno_dlg(L("Confirm partition format","Confirmar formateo de partición"), conf))
+        while (1) {
+            char size_prompt[512];
+            snprintf(size_prompt, sizeof(size_prompt),
+                L("How many GB should the new Arch Linux partition be?\n\n"
+                  "   Minimum recommended: 20 GB\n"
+                  "   Typical desktop install: 40-80 GB\n\n"
+                  "   The partition will be created in the free space of %s.\n"
+                  "   Your existing OS data will NOT be touched.\n\n"
+                  "   Enter size in GB (10-2000):",
+                  "¿Cuantos GB debe tener la nueva particion de Arch Linux?\n\n"
+                  "   Minimo recomendado: 20 GB\n"
+                  "   Instalacion de escritorio tipica: 40-80 GB\n\n"
+                  "   La particion se creara en el espacio libre de %s.\n"
+                  "   Los datos de tu OS actual NO seran tocados.\n\n"
+                  "   Introduce el tamaño en GB (10-2000):"),
+                sel_disk);
+            char size_str[16]={0};
+            char init_size[8]; snprintf(init_size,sizeof(init_size),"%d",st.db_size_gb>0?st.db_size_gb:30);
+            if (!inputbox_dlg(
+                    L("Dual Boot — Step 2/2: Partition size",
+                      "Dual Boot — Paso 2/2: Tamaño de la particion"),
+                    size_prompt, init_size, size_str, sizeof(size_str))) {
+                if (g_home_requested) { g_home_requested=0; return 2; }
                 return 0;
+            }
+            trim_nl(size_str);
+            int gb = atoi(size_str);
+            if (gb >= 10 && gb <= 2000) {
+                st.db_size_gb = gb;
+                break;
+            }
+            msgbox(L("Invalid size","Tamaño invalido"),
+                   L("Please enter a number between 10 and 2000.\nExample: 40",
+                     "Por favor introduce un numero entre 10 y 2000.\nEjemplo: 40"));
         }
-        strncpy(st.db_root, sel_root, sizeof(st.db_root)-1);
 
         if (is_uefi()) {
             char auto_efi[128]={0};
@@ -3364,49 +3333,7 @@ static int screen_disk(void) {
                 }
             }
 
-            PartEntry parts2[64];
-            int np2 = list_partitions_on_disk(sel_disk, parts2, 64);
-            MenuItem *efi_items = malloc((np2+1) * sizeof(MenuItem));
-            strncpy(efi_items[0].tag, "none", 255);
-            snprintf(efi_items[0].desc, 511, "%s",
-                     L("None / Auto-detect (recommended if unsure)",
-                       "Ninguna / Autodetectar (recomendado si no sabes cuál es)"));
-            int ni2 = 1;
-            for (int i = 0; i < np2; i++) {
-                if (!strcmp(parts2[i].path, st.db_root)) continue;
-                strncpy(efi_items[ni2].tag, parts2[i].path, 255);
-                snprintf(efi_items[ni2].desc, 511, "%5lld MB  [%-6s]  %s%s",
-                         parts2[i].size_mb,
-                         parts2[i].fstype[0] ? parts2[i].fstype : "-",
-                         parts2[i].label[0]  ? parts2[i].label  : "",
-                         (!strcmp(parts2[i].path, auto_efi)) ? " <- likely EFI" : "");
-                ni2++;
-            }
-
-            char sel_efi[128]={0};
-            radiolist_dlg(
-                L("Dual Boot — Step 3a/3: EFI Partition",
-                  "Dual Boot — Paso 3a/3: Partición EFI"),
-                L("Select the EFI System Partition (ESP) to share with your existing OS.\n\n"
-                  "This is the small FAT32 partition (~100-500 MB) that the PC uses to boot.\n"
-                  "It will NOT be formatted — the bootloader for Arch will simply be added.\n"
-                  "Your Windows boot entry will still be there after installation.\n\n"
-                  "If 'Auto-detect' is selected, the installer will find it automatically.\n"
-                  "Partitions marked '<- likely EFI' are good candidates.",
-                  "Selecciona la partición EFI del sistema (ESP) que compartirás con tu OS actual.\n\n"
-                  "Es la pequeña partición FAT32 (~100-500 MB) que el PC usa para arrancar.\n"
-                  "NO se formateará — solo se añadirá el arranque de Arch a ella.\n"
-                  "La entrada de arranque de Windows seguirá ahí tras la instalación.\n\n"
-                  "Si eliges 'Autodetectar', el instalador la encontrará solo.\n"
-                  "Las particiones marcadas '<- likely EFI' son buenas candidatas."),
-                efi_items, ni2,
-                st.db_efi[0] ? st.db_efi : "none",
-                sel_efi, sizeof(sel_efi));
-            free(efi_items);
-
-            if (sel_efi[0] && strcmp(sel_efi,"none") != 0) {
-                strncpy(st.db_efi, sel_efi, sizeof(st.db_efi)-1);
-            } else if (auto_efi[0]) {
+            if (auto_efi[0]) {
                 strncpy(st.db_efi, auto_efi, sizeof(st.db_efi)-1);
             } else {
                 char efi_scan[256];
@@ -3422,59 +3349,15 @@ static int screen_disk(void) {
             }
         }
 
-        {
-            PartEntry parts3[64];
-            int np3 = list_partitions_on_disk(sel_disk, parts3, 64);
-            MenuItem *sw_items = malloc((np3+1) * sizeof(MenuItem));
-            strncpy(sw_items[0].tag, "none", 255);
-            snprintf(sw_items[0].desc, 511, "%s",
-                     L("None - no swap (Arch will use a swapfile if needed)",
-                       "Ninguna - sin swap (Arch usará un swapfile si hace falta)"));
-            int ni3 = 1;
-            for (int i = 0; i < np3; i++) {
-                if (!strcmp(parts3[i].path, st.db_root)) continue;
-                if (!strcmp(parts3[i].path, st.db_efi))  continue;
-                strncpy(sw_items[ni3].tag, parts3[i].path, 255);
-                int likely_swap = (!strcmp(parts3[i].fstype,"swap") ||
-                                   !strcmp(parts3[i].fstype,"linux-swap"));
-                snprintf(sw_items[ni3].desc, 511, "%5lld MB  [%-6s]  %s%s",
-                         parts3[i].size_mb,
-                         parts3[i].fstype[0] ? parts3[i].fstype : "-",
-                         parts3[i].label[0]  ? parts3[i].label  : "",
-                         likely_swap         ? " <- swap"        : "");
-                ni3++;
-            }
-
-            char sel_swap[128]={0};
-            radiolist_dlg(
-                L("Dual Boot — Step 3b/3: Swap (optional)",
-                  "Dual Boot — Paso 3b/3: Swap (opcional)"),
-                L("Do you have an existing swap partition on this disk to reuse?\n\n"
-                  "Swap is emergency memory used when RAM fills up.\n"
-                  "If you don't have one, choose 'None' — the installer can create\n"
-                  "a swapfile automatically inside the Arch partition instead.\n\n"
-                  "Partitions marked '<- swap' are already formatted as swap.",
-                  "¿Tienes una partición swap existente en este disco que reutilizar?\n\n"
-                  "El swap es memoria de emergencia que se usa cuando la RAM se llena.\n"
-                  "Si no tienes una, elige 'Ninguna' — el instalador puede crear\n"
-                  "un swapfile automáticamente dentro de la partición de Arch.\n\n"
-                  "Las particiones marcadas '<- swap' ya están formateadas como swap."),
-                sw_items, ni3,
-                st.db_swap[0] ? st.db_swap : "none",
-                sel_swap, sizeof(sel_swap));
-            free(sw_items);
-
-            if (sel_swap[0] && strcmp(sel_swap,"none") != 0)
-                strncpy(st.db_swap, sel_swap, sizeof(st.db_swap)-1);
-            else
-                st.db_swap[0] = '\0';
-        }
+        st.db_swap[0] = '\0';
 
         return 1;
+    } 
     return 1;
 } 
 
 static int screen_filesystem(void) {
+
     char summary[256];
     snprintf(summary,sizeof(summary),
         L(" Summary: disk=%s  kernel=%s",
@@ -3564,6 +3447,7 @@ static int screen_filesystem(void) {
 }
 
 static int screen_kernel(void) {
+
     char summary[256];
     snprintf(summary,sizeof(summary),
         L(" Summary: disk=%s  fs=%s",
@@ -3664,6 +3548,7 @@ static int screen_kernel(void) {
 
 static int screen_bootloader(void) {
     int uefi = is_uefi();
+
     char summary[256];
     snprintf(summary,sizeof(summary),
         L(" Summary: fs=%s  kernel=%s  mode=%s",
@@ -4102,6 +3987,7 @@ static int screen_gpu(void) {
 }
 
 static int screen_yay(void) {
+
     char summary[256];
     snprintf(summary,sizeof(summary),
         L(" Summary: user=%s  desktop=%s  fs=%s",
@@ -4415,7 +4301,6 @@ static int screen_extra_packages(void) {
     return 1;
 }
 
-
 static int review_confirm_dlg(const char *title, const char *text) {
     const char *tmpfile = "/tmp/arch_review.txt";
     FILE *f = fopen(tmpfile, "w");
@@ -4461,9 +4346,11 @@ static int screen_review(void) {
     ROW("Bootloader",     st.bootloader);
     ROW("Microcode",      microcode);
     if (st.dualboot) {
-        ROW("Root part",  st.db_root[0]?st.db_root:"NOT SET");
+        char disk_str[128]; snprintf(disk_str,sizeof(disk_str),"/dev/%s",st.disk);
+        ROW("Disk (dual)",  st.disk[0]?disk_str:"NOT SET");
+        char sz_str[32]; snprintf(sz_str,sizeof(sz_str),"%d GB (new partition)", st.db_size_gb);
+        ROW("Arch size",    sz_str);
         if (is_uefi()) ROW("EFI part", st.db_efi[0]?st.db_efi:"auto-detect");
-        ROW("Swap part",  st.db_swap[0]?st.db_swap:"none");
     } else {
         char disk_str[128]; snprintf(disk_str,sizeof(disk_str),"/dev/%s",st.disk);
         ROW("Disk",       st.disk[0]?disk_str:"NOT SET");
@@ -4488,8 +4375,10 @@ static int screen_review(void) {
     if(!st.username[0]) strncat(missing,"username, ",sizeof(missing)-strlen(missing)-1);
     if (!st.dualboot && !st.disk[0])
         strncat(missing,"disk, ",sizeof(missing)-strlen(missing)-1);
-    if (st.dualboot && !st.db_root[0])
-        strncat(missing,"root partition, ",sizeof(missing)-strlen(missing)-1);
+    if (st.dualboot && !st.disk[0])
+        strncat(missing,"disk, ",sizeof(missing)-strlen(missing)-1);
+    if (st.dualboot && st.db_size_gb <= 0)
+        strncat(missing,"partition size, ",sizeof(missing)-strlen(missing)-1);
     if(!st.root_pass[0]) strncat(missing,L("root password","contrasena root"),sizeof(missing)-strlen(missing)-1);
 
     if(missing[0]) {
@@ -4505,11 +4394,12 @@ static int screen_review(void) {
     strncat(text,L("\nAll settings look good.","Todo listo."),sizeof(text)-strlen(text)-1);
     char confirm_msg[6144];
     if (st.dualboot) {
-        snprintf(confirm_msg,sizeof(confirm_msg),"%s%s%s%s",
-                 text,
-                 L("\n\nWARNING: THIS WILL FORMAT ","\n\nADVERTENCIA: SE FORMATEARA "),
-                 st.db_root,
-                 L(".\n\nProceed?",".\n\nProceder?"));
+        char dual_warn[256];
+        snprintf(dual_warn, sizeof(dual_warn),
+            L("\n\nWARNING: A new %d GB partition will be created on /dev/%s.\n\nProceed?",
+              "\n\nADVERTENCIA: Se creara una nueva particion de %d GB en /dev/%s.\n\nProceder?"),
+            st.db_size_gb, st.disk);
+        snprintf(confirm_msg,sizeof(confirm_msg),"%s%s", text, dual_warn);
     } else {
         snprintf(confirm_msg,sizeof(confirm_msg),"%s%s%s%s",
                  text,
@@ -4519,7 +4409,6 @@ static int screen_review(void) {
     }
     return review_confirm_dlg(L("Review & Confirm","Revisar y confirmar"),confirm_msg);
 }
-
 
 static void screen_finish(void) {
     int cfd[2];
@@ -4595,8 +4484,6 @@ static int screen_network_wrap(void) {
 static int screen_finish_wrap(void)    { screen_finish();   return 1; }
 static int screen_install_wrap(void)   { return screen_install(); }
 static int screen_preflight_wrap(void) { return run_preflight(); }
-
-
 
 static void ensure_x11_deps(void) {
     static const char *deps[] = {
@@ -4750,12 +4637,12 @@ static void write_openbox_env(void) {
         fprintf(r, "    </context>\n");
         fprintf(r, "  </mouse>\n");
         fprintf(r, "  <applications>\n");
-     
+
         fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
         fprintf(r, "      <maximized>yes</maximized>\n");
         fprintf(r, "      <decor>no</decor>\n");
         fprintf(r, "    </application>\n");
-      
+
         fprintf(r, "    <application class=\"XTerm\" type=\"normal\">\n");
         fprintf(r, "      <decor>yes</decor>\n");
         fprintf(r, "    </application>\n");
@@ -4863,7 +4750,6 @@ static void write_openbox_env(void) {
     }
 }
 
-
 static void ensure_display(void) {
     if (getenv("DISPLAY") != NULL) return;
 
@@ -4937,7 +4823,6 @@ static void ensure_display(void) {
     fprintf(stderr, "    Continuing in terminal mode (no X).\n");
 }
 
-
 int main(void) {
     if (geteuid() != 0) {
         fprintf(stderr,
@@ -5008,6 +4893,7 @@ int main(void) {
     while (steps[idx].fn) {
         int result = steps[idx].fn();
         if (result == 2) {
+
             idx = 0;
         } else if (result == 0 && steps[idx].can_go_back) {
             if (idx == 0) {
