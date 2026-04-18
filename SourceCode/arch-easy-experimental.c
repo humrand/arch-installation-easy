@@ -193,7 +193,7 @@ static const char *get_desktop_dm(const char *name) {
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_fullscreen = 1;
 
-static int g_home_requested = 0;   
+static int g_home_requested = 0;
 
 static int password_strength(const char *p) {
     if (!p || !p[0]) return 0;
@@ -901,7 +901,6 @@ static int list_partitions_on_disk(const char *disk, PartEntry *out, int max) {
             int r = sscanf(line, "%127s %lld %63s %63s %15s",
                            name, &sz, fstype, label, type);
             if (r < 2) continue;
-          
             int is_part = 0;
             if (r >= 5 && strcmp(type,"part")==0) is_part=1;
             else if (r >= 5 && strcmp(type,"disk")==0) is_part=0;
@@ -1128,7 +1127,7 @@ rescan_wifi:;
             if (!rc) {
                 if (g_home_requested) {
                     g_home_requested = 0;
-                    goto rescan_wifi;
+                    goto rescan_wifi; 
                 }
                 return -1; 
             }
@@ -1242,7 +1241,7 @@ static void screen_network(void) {
                           "  - ¿Está encendido el router/switch?\n"
                           "  - ¿Tu router asignó una IP? (prueba: dhclient eth0)\n\n"
                           "¿Reintentar ahora?")))
-                    break;
+                    break; 
             }
             continue;
         }
@@ -3472,9 +3471,8 @@ static int screen_disk(void) {
         }
 
         return 1;
-    } /
     return 1;
-}
+} 
 
 static int screen_filesystem(void) {
     char summary[256];
