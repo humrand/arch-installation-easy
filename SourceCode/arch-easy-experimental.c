@@ -193,7 +193,8 @@ static const char *get_desktop_dm(const char *name) {
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_fullscreen = 1;
 
-static int g_home_requested = 0;
+static int g_home_requested = 0;   
+
 
 static int password_strength(const char *p) {
     if (!p || !p[0]) return 0;
@@ -391,7 +392,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     if (fs_argv) free(fs_argv);
     if (WIFEXITED(status) && WEXITSTATUS(status) == 77) {
         g_home_requested = 1;
-        return 1;
+        return 1; 
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
@@ -419,7 +420,7 @@ static int inputbox_dlg(const char *title, const char *text,
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
     char *a[] = {"yad","--entry","--title",(char*)title,"--text",clean,
                  "--entry-text",(char*)(init?init:""),
-                 "--button=OK:0","--button=Cancel:1","--button=🏠 Home:77",
+                 "--button=OK:0","--button=Cancel:1","--button=Home:77",
                  YAD_W, NULL};
     return yad_exec(a, out, outsz) == 0;
 }
@@ -427,12 +428,12 @@ static int inputbox_dlg(const char *title, const char *text,
 static int passwordbox_dlg(const char *title, const char *text,
                             char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-    int show = 0; 
+    int show = 0;
     while (1) {
         char *hide_arg = show ? NULL : (char*)"--hide-text";
         char *eye_btn  = show
-            ? (char*)"--button=🙈 Ocultar:3"
-            : (char*)"--button=👁 Mostrar:3";
+            ? (char*)"--button=Ocultar:3"
+            : (char*)"--button=Mostrar:3";
         char *argv[32]; int ai = 0;
         argv[ai++] = "yad";
         argv[ai++] = "--entry";
@@ -443,7 +444,7 @@ static int passwordbox_dlg(const char *title, const char *text,
         argv[ai++] = "--button=OK:0";
         argv[ai++] = "--button=Cancel:1";
         argv[ai++] = eye_btn;
-        argv[ai++] = "--button=🏠 Home:77";
+        argv[ai++] = "--button=Home:77";
         argv[ai++] = (char*)YAD_WS;
         argv[ai] = NULL;
         char tmp[outsz > 0 ? outsz : 256];
@@ -475,7 +476,7 @@ static int menu_dlg(const char *title, const char *text,
     a[argc++] = YAD_WL;
     a[argc++] = "--button=OK:0";
     a[argc++] = "--button=Cancel:1";
-    a[argc++] = "--button=🏠 Home:77";
+    a[argc++] = "--button=Home:77";
     for (int i = 0; i < n; i++) {
         a[argc++] = items[i].tag;
         a[argc++] = items[i].desc;
@@ -506,7 +507,7 @@ static int radiolist_dlg(const char *title, const char *text,
     a[argc++] = YAD_WL;
     a[argc++] = "--button=OK:0";
     a[argc++] = "--button=Cancel:1";
-    a[argc++] = "--button=🏠 Home:77";
+    a[argc++] = "--button=Home:77";
     for (int i = 0; i < n; i++) {
         a[argc++] = (def && strcmp(items[i].tag, def) == 0) ? "TRUE" : "FALSE";
         a[argc++] = items[i].tag;
@@ -539,7 +540,7 @@ static int checklist_dlg(const char *title, const char *text,
     a[argc++] = YAD_WL;
     a[argc++] = "--button=OK:0";
     a[argc++] = "--button=Cancel:1";
-    a[argc++] = "--button=🏠 Home:77";
+    a[argc++] = "--button=Home:77";
     for (int i = 0; i < n; i++) {
         int on = 0;
         for (int j = 0; j < ndef; j++)
@@ -720,48 +721,48 @@ static int run_preflight(void) {
     int ok = 1;
 
     if (geteuid() != 0) {
-        strncat(report, L("  ✗ Not running as root\n",
-                          "  ✗ No se esta ejecutando como root\n"),
+        strncat(report, L("   Not running as root\n",
+                          "   No se esta ejecutando como root\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("  ✓ Running as root\n","  ✓ Ejecutando como root\n"),
+        strncat(report, L("   Running as root\n","   Ejecutando como root\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (!check_connectivity()) {
-        strncat(report, L("  ✗ No internet connection\n",
-                          "  ✗ Sin conexion a internet\n"),
+        strncat(report, L("   No internet connection\n",
+                          "   Sin conexion a internet\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("  ✓ Internet connection OK\n","  ✓ Conexion a internet OK\n"),
+        strncat(report, L("   Internet connection OK\n","   Conexion a internet OK\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (system("which pacstrap >/dev/null 2>&1") != 0) {
-        strncat(report, L("  ✗ pacstrap not found (are you in the Arch ISO?)\n",
-                          "  ✗ pacstrap no encontrado (estas en la ISO de Arch?)\n"),
+        strncat(report, L("   pacstrap not found (are you in the Arch ISO?)\n",
+                          "   pacstrap no encontrado (estas en la ISO de Arch?)\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("  ✓ pacstrap found\n","  ✓ pacstrap encontrado\n"),
+        strncat(report, L("   pacstrap found\n","   pacstrap encontrado\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (system("mountpoint -q /mnt 2>/dev/null") == 0) {
-        strncat(report, L("  ⚠ /mnt is already mounted (may conflict)\n",
-                          "  ⚠ /mnt ya esta montado (puede haber conflicto)\n"),
+        strncat(report, L("  [!] /mnt is already mounted (may conflict)\n",
+                          "  [!] /mnt ya esta montado (puede haber conflicto)\n"),
                 sizeof(report)-strlen(report)-1);
     } else {
-        strncat(report, L("  ✓ /mnt is free\n","  ✓ /mnt libre\n"),
+        strncat(report, L("   /mnt is free\n","   /mnt libre\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     st.laptop = is_laptop();
     if (st.laptop) {
-        strncat(report, L("  ✓ Laptop detected (will install TLP power management)\n",
-                          "  ✓ Laptop detectada (se instalara gestion de energia TLP)\n"),
+        strncat(report, L("   Laptop detected (will install TLP power management)\n",
+                          "   Laptop detectada (se instalara gestion de energia TLP)\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
@@ -771,8 +772,8 @@ static int run_preflight(void) {
             long long free_mb = ((long long)vfs.f_bavail * vfs.f_frsize) / (1024*1024);
             char line[128];
             snprintf(line,sizeof(line),
-                     L("  ✓ Installer free space: %lld MB\n",
-                       "  ✓ Espacio libre en instalador: %lld MB\n"), free_mb);
+                     L("   Installer free space: %lld MB\n",
+                       "   Espacio libre en instalador: %lld MB\n"), free_mb);
             strncat(report,line,sizeof(report)-strlen(report)-1);
         }
     }
@@ -932,14 +933,14 @@ static int screen_wifi_connect(void) {
     }
     const char *iface = ifaces[0];
 
-rescan_wifi:;  
+rescan_wifi:;   
 
     {
         char info_msg[256];
         snprintf(info_msg,sizeof(info_msg),
                  L("Scanning for networks on %s...\nThis may take up to 12 seconds.",
                    "Buscando redes en %s...\nEsto puede tardar hasta 12 segundos."), iface);
-        infobox_dlg(L("🔍 Scanning...","🔍 Escaneando..."), info_msg);
+        infobox_dlg(L(" Scanning..."," Escaneando..."), info_msg);
     }
 
     char scan_cmd[256];
@@ -1037,7 +1038,7 @@ rescan_wifi:;
               "Escribe parte del nombre de una red para filtrar la lista,\n"
               "o deja en blanco para mostrar todas:"),
             nnets, iface);
-        inputbox_dlg(L("🔍 Filter networks","🔍 Filtrar redes"),
+        inputbox_dlg(L(" Filter networks"," Filtrar redes"),
                      filter_hdr, "", filter, sizeof(filter));
     }
 
@@ -1063,20 +1064,20 @@ rescan_wifi:;
             snprintf(hdr,sizeof(hdr),
                      L("Interface: %s%s\n"
                        "Sorted by signal strength.\n"
-                       "Press 🏠 Home to rescan, Cancel to go back.",
+                       "Press Home to rescan, Cancel to go back.",
                        "Interfaz: %s%s\n"
                        "Ordenado por señal.\n"
-                       "Pulsa 🏠 Home para reescanear, Cancelar para volver."),
+                       "Pulsa Home para reescanear, Cancelar para volver."),
                      iface, filter[0]?" (filtered)":"");
 
-            int rc = radiolist_dlg(L("📶 WiFi Networks","📶 Redes WiFi"), hdr,
+            int rc = radiolist_dlg(L(" WiFi Networks"," Redes WiFi"), hdr,
                                    filt_items, nf, NULL, ssid_sel, sizeof(ssid_sel));
             if (!rc) {
                 if (g_home_requested) {
                     g_home_requested = 0;
-                    goto rescan_wifi;
+                    goto rescan_wifi; 
                 }
-                return -1;
+                return -1; 
             }
         } else {
             char hdr[512];
@@ -1084,7 +1085,7 @@ rescan_wifi:;
                      L("Interface: %s\nNo networks found%s.\nEnter SSID manually or Cancel:",
                        "Interfaz: %s\nNo se hallaron redes%s.\nIntroduce el SSID manualmente o Cancela:"),
                      iface, filter[0]?" matching filter":"");
-            if (!inputbox_dlg(L("📶 WiFi — SSID","📶 WiFi — SSID"),hdr,"",ssid_sel,sizeof(ssid_sel))) {
+            if (!inputbox_dlg(L(" WiFi — SSID"," WiFi — SSID"),hdr,"",ssid_sel,sizeof(ssid_sel))) {
                 if (g_home_requested) { g_home_requested=0; goto rescan_wifi; }
                 return -1;
             }
@@ -1096,10 +1097,10 @@ rescan_wifi:;
     char pass[256]={0};
     char pass_hdr[512];
     snprintf(pass_hdr,sizeof(pass_hdr),
-             L("🔑 Password for '%s'\n(leave blank if the network is open, Cancel to go back):",
-               "🔑 Contraseña de '%s'\n(deja vacío si la red es abierta, Cancelar para volver):"),
+             L(" Password for '%s'\n(leave blank if the network is open, Cancel to go back):",
+               " Contraseña de '%s'\n(deja vacío si la red es abierta, Cancelar para volver):"),
              ssid_sel);
-    if (!passwordbox_dlg(L("📶 WiFi Password","📶 Contraseña WiFi"),pass_hdr,pass,sizeof(pass))) {
+    if (!passwordbox_dlg(L(" WiFi Password"," Contraseña WiFi"),pass_hdr,pass,sizeof(pass))) {
         if (g_home_requested) { g_home_requested=0; goto rescan_wifi; }
         return -1;
     }
@@ -1125,14 +1126,14 @@ rescan_wifi:;
     if (!check_connectivity()) {
         char fail_msg[512];
         snprintf(fail_msg,sizeof(fail_msg),
-                 L("❌ Could not connect to '%s'.\n\nPossible causes:\n"
-                   "  • Wrong password\n  • Network out of range\n  • DHCP not responding\n\n"
+                 L("[ERROR] Could not connect to '%s'.\n\nPossible causes:\n"
+                   "  - Wrong password\n  - Network out of range\n  - DHCP not responding\n\n"
                    "Press OK to try again or Cancel to go back.",
-                   "❌ No se pudo conectar a '%s'.\n\nPosibles causas:\n"
-                   "  • Contraseña incorrecta\n  • Red fuera de alcance\n  • DHCP sin respuesta\n\n"
+                   "[ERROR] No se pudo conectar a '%s'.\n\nPosibles causas:\n"
+                   "  - Contraseña incorrecta\n  - Red fuera de alcance\n  - DHCP sin respuesta\n\n"
                    "Pulsa OK para intentar de nuevo o Cancelar para volver."),
                  ssid_sel);
-        if (yesno_dlg(L("❌ WiFi Failed","❌ WiFi fallido"),fail_msg))
+        if (yesno_dlg(L("[ERROR] WiFi Failed","[ERROR] WiFi fallido"),fail_msg))
             goto rescan_wifi; 
         return 0;
     }
@@ -1144,15 +1145,15 @@ static void screen_network(void) {
         MenuItem items[2];
         strncpy(items[0].tag,"wired",255);
         snprintf(items[0].desc,511,"%s",
-            L("🔌 Wired (Ethernet)   — cable already plugged in",
-              "🔌 Cable (Ethernet)   — cable ya conectado"));
+            L(" Wired (Ethernet)   — cable already plugged in",
+              " Cable (Ethernet)   — cable ya conectado"));
         strncpy(items[1].tag,"wifi",255);
         snprintf(items[1].desc,511,"%s",
-            L("📶 WiFi               — connect to a wireless network",
-              "📶 WiFi               — conectar a una red inalámbrica"));
+            L(" WiFi               — connect to a wireless network",
+              " WiFi               — conectar a una red inalámbrica"));
 
         char choice[64]={0};
-        if (!menu_dlg(L("🌐 Network Connection","🌐 Conexión de red"),
+        if (!menu_dlg(L(" Network Connection"," Conexión de red"),
                       L("An internet connection is needed to download Arch Linux.\n\n"
                         "How are you connected to the internet?",
                         "Se necesita internet para descargar Arch Linux.\n\n"
@@ -1166,29 +1167,29 @@ static void screen_network(void) {
 
         if (!strcmp(choice,"wired")) {
             while (1) {
-                infobox_dlg(L("🔌 Checking...","🔌 Verificando..."),
+                infobox_dlg(L(" Checking..."," Verificando..."),
                             L("Testing wired connection...","Probando conexión por cable..."));
                 if (check_connectivity()) {
-                    msgbox(L("✔ Connected!","✔ ¡Conectado!"),
+                    msgbox(L("[+] Connected!","[+] ¡Conectado!"),
                            L("Wired connection detected. Ready to continue.",
                              "Conexión por cable detectada. Listo para continuar."));
                     return;
                 }
                 if (!yesno_dlg(
-                        L("❌ No connection","❌ Sin conexión"),
+                        L("[ERROR] No connection","[ERROR] Sin conexión"),
                         L("Could not reach the internet over the wired connection.\n\n"
                           "Check:\n"
-                          "  • Is the network cable plugged in?\n"
-                          "  • Is the router/switch turned on?\n"
-                          "  • Did your router assign an IP? (try: dhclient eth0)\n\n"
+                          "  - Is the network cable plugged in?\n"
+                          "  - Is the router/switch turned on?\n"
+                          "  - Did your router assign an IP? (try: dhclient eth0)\n\n"
                           "Try again now?",
                           "No se pudo alcanzar internet por cable.\n\n"
                           "Comprueba:\n"
-                          "  • ¿Está el cable de red conectado?\n"
-                          "  • ¿Está encendido el router/switch?\n"
-                          "  • ¿Tu router asignó una IP? (prueba: dhclient eth0)\n\n"
+                          "  - ¿Está el cable de red conectado?\n"
+                          "  - ¿Está encendido el router/switch?\n"
+                          "  - ¿Tu router asignó una IP? (prueba: dhclient eth0)\n\n"
                           "¿Reintentar ahora?")))
-                    break; 
+                    break;
             }
             continue;
         }
@@ -2642,20 +2643,20 @@ static int screen_identity(void) {
     while(1) {
         char summary[256];
         snprintf(summary, sizeof(summary),
-            L("📋 Summary: disk=%s  fs=%s  kernel=%s",
-              "📋 Resumen: disco=%s  fs=%s  kernel=%s"),
+            L("[RESUMEN] disk=%s  fs=%s  kernel=%s",
+              "[RESUMEN] disco=%s  fs=%s  kernel=%s"),
             st.disk[0]?st.disk:"?", st.filesystem, st.kernel);
 
         char hn_text[512];
         snprintf(hn_text, sizeof(hn_text),
             L("%s\n\n"
-              "💻 Computer name (hostname)\n"
+              " Computer name (hostname)\n"
               "   Used to identify this computer on the network.\n"
               "   Examples:  my-laptop   archpc   juan-desktop\n\n"
               "   Rules: letters, numbers, hyphens (-). Max 32 chars.\n"
               "          Must start with a letter.",
               "%s\n\n"
-              "💻 Nombre del equipo (hostname)\n"
+              " Nombre del equipo (hostname)\n"
               "   Se usa para identificar este equipo en la red.\n"
               "   Ejemplos:  mi-laptop   archpc   pc-de-juan\n\n"
               "   Reglas: letras, números, guiones (-). Máx 32 chars.\n"
@@ -2673,13 +2674,13 @@ static int screen_identity(void) {
         if (!validate_name(hn)) {
             char err[512];
             snprintf(err, sizeof(err),
-                L("❌ '%s' is not valid.\n\n"
-                  "✔ Good:  my-pc   arch   juan2\n"
-                  "✘ Bad:   123abc  my pc  -start\n\n"
+                L("[ERROR] '%s' is not valid.\n\n"
+                  "[+] Good:  my-pc   arch   juan2\n"
+                  "[-] Bad:   123abc  my pc  -start\n\n"
                   "Start with a letter, then letters/numbers/hyphens only.",
-                  "❌ '%s' no es válido.\n\n"
-                  "✔ Bien:  mi-pc   arch   juan2\n"
-                  "✘ Mal:   123abc  mi pc  -inicio\n\n"
+                  "[ERROR] '%s' no es válido.\n\n"
+                  "[+] Bien:  mi-pc   arch   juan2\n"
+                  "[-] Mal:   123abc  mi pc  -inicio\n\n"
                   "Empieza con letra, luego letras/números/guiones."),
                 hn);
             msgbox(L("Invalid hostname","Nombre de equipo inválido"), err);
@@ -2689,13 +2690,13 @@ static int screen_identity(void) {
         char un_text[512];
         snprintf(un_text, sizeof(un_text),
             L("%s\n\n"
-              "👤 Your username\n"
+              " Your username\n"
               "   This will be your personal account.\n"
               "   Examples:  alice   bob   juan   myuser\n\n"
               "   Rules: letters, numbers, hyphens (-). Max 32 chars.\n"
               "          Must start with a letter. Use lowercase.",
               "%s\n\n"
-              "👤 Tu nombre de usuario\n"
+              " Tu nombre de usuario\n"
               "   Esta será tu cuenta personal en el sistema.\n"
               "   Ejemplos:  alice   bob   juan   miusuario\n\n"
               "   Reglas: letras, números, guiones (-). Máx 32 chars.\n"
@@ -2713,13 +2714,13 @@ static int screen_identity(void) {
         if (!validate_name(un)) {
             char err[512];
             snprintf(err, sizeof(err),
-                L("❌ '%s' is not a valid username.\n\n"
-                  "✔ Good:  alice   bob2   my-user\n"
-                  "✘ Bad:   2bob   My User   root\n\n"
+                L("[ERROR] '%s' is not a valid username.\n\n"
+                  "[+] Good:  alice   bob2   my-user\n"
+                  "[-] Bad:   2bob   My User   root\n\n"
                   "Start with a lowercase letter. Letters/numbers/hyphens only.",
-                  "❌ '%s' no es un nombre de usuario válido.\n\n"
-                  "✔ Bien:  alice   bob2   mi-usuario\n"
-                  "✘ Mal:   2bob   Mi Usuario   root\n\n"
+                  "[ERROR] '%s' no es un nombre de usuario válido.\n\n"
+                  "[+] Bien:  alice   bob2   mi-usuario\n"
+                  "[-] Mal:   2bob   Mi Usuario   root\n\n"
                   "Empieza con letra minúscula. Solo letras/números/guiones."),
                 un);
             msgbox(L("Invalid username","Nombre de usuario inválido"), err);
@@ -2734,8 +2735,8 @@ static int screen_identity(void) {
 static int screen_passwords(void) {
     char summary[256];
     snprintf(summary,sizeof(summary),
-        L("📋 Summary: user=%s  hostname=%s",
-          "📋 Resumen: usuario=%s  hostname=%s"),
+        L("[RESUMEN] user=%s  hostname=%s",
+          "[RESUMEN] usuario=%s  hostname=%s"),
         st.username[0]?st.username:"?",
         st.hostname[0]?st.hostname:"?");
 
@@ -2743,17 +2744,17 @@ static int screen_passwords(void) {
         char rp_hdr[2048];
         snprintf(rp_hdr,sizeof(rp_hdr),
             L("%s\n\n"
-              "🔑 ROOT password (administrator / superuser)\n"
+              " ROOT password (administrator / superuser)\n"
               "   This is the most powerful account on the system.\n"
               "   Choose something strong and write it down.",
               "%s\n\n"
-              "🔑 Contraseña de ROOT (administrador)\n"
+              " Contraseña de ROOT (administrador)\n"
               "   Es la cuenta más poderosa del sistema.\n"
               "   Elige algo seguro y guárdalo en un lugar seguro."),
             summary);
 
         char rp1[256]={0},rp2[256]={0};
-        if (!passwordbox_dlg(L("🔑 Root password (1/2)","🔑 Contraseña root (1/2)"),
+        if (!passwordbox_dlg(L(" Root password (1/2)"," Contraseña root (1/2)"),
                              rp_hdr, rp1, sizeof(rp1))) {
             if (g_home_requested) { g_home_requested=0; return 2; }
             return 0;
@@ -2765,19 +2766,19 @@ static int screen_passwords(void) {
             if (s == 1) {
                 char warn[512];
                 snprintf(warn,sizeof(warn),
-                    L("⚠  Password strength: %s\n\n"
+                    L("[!]  Password strength: %s\n\n"
                       "Your root password is WEAK.\n\n"
                       "Tips:\n"
-                      "  • Use at least 8 characters\n"
-                      "  • Mix UPPERCASE, lowercase, numbers and symbols\n"
-                      "  • Example: Arch!2025secured\n\n"
+                      "  - Use at least 8 characters\n"
+                      "  - Mix UPPERCASE, lowercase, numbers and symbols\n"
+                      "  - Example: Arch!2025secured\n\n"
                       "Continue anyway? (not recommended)",
-                      "⚠  Fuerza de contraseña: %s\n\n"
+                      "[!]  Fuerza de contraseña: %s\n\n"
                       "Tu contraseña de root es DÉBIL.\n\n"
                       "Consejos:\n"
-                      "  • Usa al menos 8 caracteres\n"
-                      "  • Mezcla MAYÚSCULAS, minúsculas, números y símbolos\n"
-                      "  • Ejemplo: Arch!2025seguro\n\n"
+                      "  - Usa al menos 8 caracteres\n"
+                      "  - Mezcla MAYÚSCULAS, minúsculas, números y símbolos\n"
+                      "  - Ejemplo: Arch!2025seguro\n\n"
                       "¿Continuar de todas formas? (no recomendado)"),
                     slabel);
                 if (!yesno_dlg(L("Weak password!","¡Contraseña débil!"),warn))
@@ -2787,9 +2788,9 @@ static int screen_passwords(void) {
 
         char rp2_hdr[256];
         snprintf(rp2_hdr,sizeof(rp2_hdr),
-            L("🔑 Confirm ROOT password\n   Type the same password again to verify.",
-              "🔑 Confirma la contraseña de ROOT\n   Escríbela otra vez para verificar."));
-        if (!passwordbox_dlg(L("🔑 Root password (2/2)","🔑 Contraseña root (2/2)"),
+            L(" Confirm ROOT password\n   Type the same password again to verify.",
+              " Confirma la contraseña de ROOT\n   Escríbela otra vez para verificar."));
+        if (!passwordbox_dlg(L(" Root password (2/2)"," Contraseña root (2/2)"),
                              rp2_hdr, rp2, sizeof(rp2))) {
             if (g_home_requested) { g_home_requested=0; return 2; }
             return 0;
@@ -2809,16 +2810,16 @@ static int screen_passwords(void) {
 
         char up_hdr[2048];
         snprintf(up_hdr,sizeof(up_hdr),
-            L("👤 Password for user: %s\n\n"
+            L(" Password for user: %s\n\n"
               "   This is your everyday login password.\n"
               "   Can be the same or different from root.",
-              "👤 Contraseña del usuario: %s\n\n"
+              " Contraseña del usuario: %s\n\n"
               "   Es la contraseña con la que inicias sesión a diario.\n"
               "   Puede ser igual o diferente a la de root."),
             st.username[0]?st.username:"user");
 
         char up1[256]={0},up2[256]={0};
-        if (!passwordbox_dlg(L("👤 User password (1/2)","👤 Contraseña usuario (1/2)"),
+        if (!passwordbox_dlg(L(" User password (1/2)"," Contraseña usuario (1/2)"),
                              up_hdr, up1, sizeof(up1))) {
             if (g_home_requested) { g_home_requested=0; return 2; }
             return 0;
@@ -2830,10 +2831,10 @@ static int screen_passwords(void) {
             if (s == 1) {
                 char warn[512];
                 snprintf(warn,sizeof(warn),
-                    L("⚠  User password strength: %s\n\n"
+                    L("[!]  User password strength: %s\n\n"
                       "This password is WEAK. It could be guessed easily.\n\n"
                       "Continue anyway?",
-                      "⚠  Fuerza de contraseña de usuario: %s\n\n"
+                      "[!]  Fuerza de contraseña de usuario: %s\n\n"
                       "Esta contraseña es DÉBIL. Podría adivinarse fácilmente.\n\n"
                       "¿Continuar de todas formas?"),
                     slabel);
@@ -2844,9 +2845,9 @@ static int screen_passwords(void) {
 
         char up2_hdr[256];
         snprintf(up2_hdr,sizeof(up2_hdr),
-            L("👤 Confirm user password\n   Type it again to verify.",
-              "👤 Confirma la contraseña de usuario\n   Escríbela otra vez."));
-        if (!passwordbox_dlg(L("👤 User password (2/2)","👤 Contraseña usuario (2/2)"),
+            L(" Confirm user password\n   Type it again to verify.",
+              " Confirma la contraseña de usuario\n   Escríbela otra vez."));
+        if (!passwordbox_dlg(L(" User password (2/2)"," Contraseña usuario (2/2)"),
                              up2_hdr, up2, sizeof(up2))) {
             if (g_home_requested) { g_home_requested=0; return 2; }
             return 0;
@@ -2872,16 +2873,16 @@ static int screen_passwords(void) {
 static int screen_disk(void) {
     char summary[256];
     snprintf(summary,sizeof(summary),
-        L("📋 Summary: mode=%s  fs=%s  kernel=%s",
-          "📋 Resumen: modo=%s  fs=%s  kernel=%s"),
+        L("[RESUMEN] mode=%s  fs=%s  kernel=%s",
+          "[RESUMEN] modo=%s  fs=%s  kernel=%s"),
         is_uefi()?"UEFI":"BIOS", st.filesystem, st.kernel);
 
     {
         MenuItem mode_items[2];
         strncpy(mode_items[0].tag,"full",255);
         snprintf(mode_items[0].desc,511,"%s",
-            L("Full Install   ✔ Easiest  — whole disk erased, Arch takes over",
-              "Instalación completa ✔ Más fácil — borra todo el disco para Arch"));
+            L("Full Install   [+] Easiest  — whole disk erased, Arch takes over",
+              "Instalación completa [+] Más fácil — borra todo el disco para Arch"));
         strncpy(mode_items[1].tag,"dual",255);
         snprintf(mode_items[1].desc,511,"%s",
             L("Dual Boot      — keep Windows/Linux, share disk with Arch",
@@ -2889,36 +2890,36 @@ static int screen_disk(void) {
 
         char mode_text[4096];
         snprintf(mode_text,sizeof(mode_text),"%s\n\n%s",summary,
-            L("💿 How do you want to install Arch Linux?\n\n"
+            L(" How do you want to install Arch Linux?\n\n"
               "  FULL INSTALL (recommended for new installs)\n"
-              "    → The whole selected disk is erased and Arch is installed on it.\n"
-              "    → Simple, clean, no leftovers. Fastest option.\n"
-              "    ⚠  ALL data on that disk will be permanently deleted!\n\n"
+              "    -> The whole selected disk is erased and Arch is installed on it.\n"
+              "    -> Simple, clean, no leftovers. Fastest option.\n"
+              "    [!]  ALL data on that disk will be permanently deleted!\n\n"
               "  DUAL BOOT (keep another OS)\n"
-              "    → You already have Windows or another Linux on the disk.\n"
-              "    → You want to keep it and ALSO install Arch alongside it.\n"
-              "    → You will manually select an empty partition for Arch.\n"
-              "    → At boot, a menu will let you choose which OS to start.\n"
-              "    ⚠  You must have created a free/empty partition first\n"
+              "    -> You already have Windows or another Linux on the disk.\n"
+              "    -> You want to keep it and ALSO install Arch alongside it.\n"
+              "    -> You will manually select an empty partition for Arch.\n"
+              "    -> At boot, a menu will let you choose which OS to start.\n"
+              "    [!]  You must have created a free/empty partition first\n"
               "       using a tool like GParted or Windows Disk Management.\n"
-              "    ⚠  Only the Arch partition will be formatted — other OS is safe.",
-              "💿 ¿Cómo quieres instalar Arch Linux?\n\n"
+              "    [!]  Only the Arch partition will be formatted — other OS is safe.",
+              " ¿Cómo quieres instalar Arch Linux?\n\n"
               "  INSTALACIÓN COMPLETA (recomendado para instalaciones nuevas)\n"
-              "    → Todo el disco seleccionado se borra y Arch se instala en él.\n"
-              "    → Simple, limpio, sin restos. La opción más rápida.\n"
-              "    ⚠  ¡TODOS los datos de ese disco se borrarán para siempre!\n\n"
+              "    -> Todo el disco seleccionado se borra y Arch se instala en él.\n"
+              "    -> Simple, limpio, sin restos. La opción más rápida.\n"
+              "    [!]  ¡TODOS los datos de ese disco se borrarán para siempre!\n\n"
               "  DUAL BOOT (conservar otro sistema operativo)\n"
-              "    → Ya tienes Windows u otro Linux en el disco.\n"
-              "    → Quieres conservarlo E instalar Arch al lado.\n"
-              "    → Seleccionarás manualmente una partición vacía para Arch.\n"
-              "    → Al arrancar, un menú te dejará elegir qué sistema iniciar.\n"
-              "    ⚠  Debes haber creado antes una partición libre/vacía\n"
+              "    -> Ya tienes Windows u otro Linux en el disco.\n"
+              "    -> Quieres conservarlo E instalar Arch al lado.\n"
+              "    -> Seleccionarás manualmente una partición vacía para Arch.\n"
+              "    -> Al arrancar, un menú te dejará elegir qué sistema iniciar.\n"
+              "    [!]  Debes haber creado antes una partición libre/vacía\n"
               "       con una herramienta como GParted o Administración de discos.\n"
-              "    ⚠  Solo se formateará la partición de Arch — el otro SO estará seguro."));
+              "    [!]  Solo se formateará la partición de Arch — el otro SO estará seguro."));
 
         char mode_out[16]={0};
         if (!radiolist_dlg(
-                L("💿 Install Type","💿 Tipo de instalación"),
+                L(" Install Type"," Tipo de instalación"),
                 mode_text, mode_items, 2,
                 st.dualboot ? "dual" : "full",
                 mode_out, sizeof(mode_out))) {
@@ -2943,10 +2944,10 @@ static int screen_disk(void) {
         if (lsblk[0]) {
             char txt[MAX_OUT];
             snprintf(txt,sizeof(txt),
-                     L("Current disk layout:\n\n%s\n⚠  WARNING: The selected disk will be COMPLETELY ERASED.",
-                       "Esquema actual de discos:\n\n%s\n⚠  ADVERTENCIA: El disco seleccionado se BORRARÁ COMPLETAMENTE."),
+                     L("Current disk layout:\n\n%s\n[!]  WARNING: The selected disk will be COMPLETELY ERASED.",
+                       "Esquema actual de discos:\n\n%s\n[!]  ADVERTENCIA: El disco seleccionado se BORRARÁ COMPLETAMENTE."),
                      lsblk);
-            msgbox(L("💿 Disk overview — read before choosing!","💿 Vista de discos — ¡lee antes de elegir!"),txt);
+            msgbox(L(" Disk overview — read before choosing!"," Vista de discos — ¡lee antes de elegir!"),txt);
         }
 
         MenuItem items[32];
@@ -2955,21 +2956,21 @@ static int screen_disk(void) {
         for (int i=0;i<nd;i++) {
             snprintf(items[i].tag,256,"/dev/%s",disks[i].name);
             int ssd = is_ssd(disks[i].name);
-            const char *dtype = ssd > 0 ? "SSD ⚡" : (ssd == 0 ? "HDD 🔄" : "");
+            const char *dtype = ssd > 0 ? "SSD  SSD" : (ssd == 0 ? "HDD  HDD" : "");
             snprintf(items[i].desc,512,"%lld GB  %s  %s",
                      disks[i].size_gb, dtype, disks[i].model);
         }
 
         char sel[128]={0};
         if (!radiolist_dlg(
-                L("💿 Select Disk","💿 Selecciona el disco"),
-                L("⚠  ALL DATA on the selected disk will be PERMANENTLY DELETED!\n\n"
-                  "   SSD ⚡ = fast solid-state drive\n"
-                  "   HDD 🔄 = traditional spinning hard drive\n\n"
+                L(" Select Disk"," Selecciona el disco"),
+                L("[!]  ALL DATA on the selected disk will be PERMANENTLY DELETED!\n\n"
+                  "   SSD  SSD = fast solid-state drive\n"
+                  "   HDD  HDD = traditional spinning hard drive\n\n"
                   "   Select the disk where Arch Linux will be installed:",
-                  "⚠  ¡TODOS los datos del disco seleccionado se BORRARÁN PERMANENTEMENTE!\n\n"
-                  "   SSD ⚡ = unidad de estado sólido rápida\n"
-                  "   HDD 🔄 = disco duro tradicional giratorio\n\n"
+                  "[!]  ¡TODOS los datos del disco seleccionado se BORRARÁN PERMANENTEMENTE!\n\n"
+                  "   SSD  SSD = unidad de estado sólido rápida\n"
+                  "   HDD  HDD = disco duro tradicional giratorio\n\n"
                   "   Selecciona el disco donde se instalará Arch Linux:"),
                 items,nd, cur_dev[0]?cur_dev:items[0].tag, sel, sizeof(sel))) {
             if (g_home_requested) { g_home_requested=0; return 2; }
@@ -3005,25 +3006,25 @@ static int screen_disk(void) {
                   "TODOS los datos de este disco se BORRARÁN PERMANENTEMENTE.\n\n"
                   "¿Estás seguro de que es el disco correcto?"),
                 sel, dsize_gb,
-                ssd2>0?"SSD ⚡":(ssd2==0?"HDD 🔄":"Unknown"),
+                ssd2>0?"SSD  SSD":(ssd2==0?"HDD  HDD":"Unknown"),
                 dmodel[0]?dmodel:"Unknown");
-            if (!yesno_dlg(L("⚠ Confirm disk selection","⚠ Confirmar disco seleccionado"), c1))
+            if (!yesno_dlg(L("[!] Confirm disk selection","[!] Confirmar disco seleccionado"), c1))
                 return 0;
 
             char c2[512];
             snprintf(c2,sizeof(c2),
-                L("🔴 LAST WARNING!\n\n"
+                L("[!!] LAST WARNING!\n\n"
                   "   %s  (%lld GB) will be completely erased.\n\n"
                   "   There is NO undo. All files, Windows, everything on it\n"
                   "   will be gone FOREVER.\n\n"
                   "   Are you ABSOLUTELY SURE you want to continue?",
-                  "🔴 ¡ÚLTIMA ADVERTENCIA!\n\n"
+                  "[!!] ¡ÚLTIMA ADVERTENCIA!\n\n"
                   "   %s  (%lld GB) se borrará completamente.\n\n"
                   "   NO hay vuelta atrás. Todos los archivos, Windows, todo\n"
                   "   lo que hay en él desaparecerá PARA SIEMPRE.\n\n"
                   "   ¿Estás COMPLETAMENTE SEGURO de que quieres continuar?"),
                 sel, dsize_gb);
-            if (!yesno_dlg(L("🔴 Final confirmation","🔴 Confirmación final"), c2))
+            if (!yesno_dlg(L("[!!] Final confirmation","[!!] Confirmación final"), c2))
                 return 0;
         }
 
@@ -3041,39 +3042,39 @@ static int screen_disk(void) {
             long long root_gb = disk_gb - (efi_mb/1024) - swap_gb;
             char preview[1024];
             snprintf(preview,sizeof(preview),
-                L("📊 Partition layout preview for /dev/%s (%lld GB):\n\n"
-                  "  ┌─────────────────────────────────────┐\n"
-                  "  │  Partition 1: EFI boot   %4d MB    │\n"
-                  "  │  Partition 2: Swap        %3lld GB    │\n"
-                  "  │  Partition 3: Root (/)   ~%3lld GB    │  ← Arch installs here\n"
-                  "  └─────────────────────────────────────┘\n\n"
+                L(" Partition layout preview for /dev/%s (%lld GB):\n\n"
+                  "  +-------------------------------------┐\n"
+                  "  |  Partition 1: EFI boot   %4d MB    |\n"
+                  "  |  Partition 2: Swap        %3lld GB    |\n"
+                  "  |  Partition 3: Root (/)   ~%3lld GB    |  ← Arch installs here\n"
+                  "  +-------------------------------------┘\n\n"
                   "  Filesystem: %s\n\n"
                   "  This layout will be applied when you confirm installation.\n"
                   "  Nothing is written to disk yet.",
-                  "📊 Vista previa del particionado de /dev/%s (%lld GB):\n\n"
-                  "  ┌─────────────────────────────────────┐\n"
-                  "  │  Partición 1: Arranque EFI  %4d MB │\n"
-                  "  │  Partición 2: Swap            %3lld GB │\n"
-                  "  │  Partición 3: Raíz (/)       ~%3lld GB │  ← Arch se instala aquí\n"
-                  "  └─────────────────────────────────────┘\n\n"
+                  " Vista previa del particionado de /dev/%s (%lld GB):\n\n"
+                  "  +-------------------------------------┐\n"
+                  "  |  Partición 1: Arranque EFI  %4d MB |\n"
+                  "  |  Partición 2: Swap            %3lld GB |\n"
+                  "  |  Partición 3: Raíz (/)       ~%3lld GB |  ← Arch se instala aquí\n"
+                  "  +-------------------------------------┘\n\n"
                   "  Sistema de archivos: %s\n\n"
                   "  Este esquema se aplicará al confirmar la instalación.\n"
                   "  Aún no se escribe nada en el disco."),
                 st.disk, disk_gb, efi_mb, swap_gb, root_gb, st.filesystem);
-            msgbox(L("📊 Partition Preview","📊 Vista previa del particionado"), preview);
+            msgbox(L(" Partition Preview"," Vista previa del particionado"), preview);
         }
 
         char sug_str[8]; snprintf(sug_str,sizeof(sug_str),"%d",sug_gb);
         while(1) {
             char swap_hdr[512];
             snprintf(swap_hdr,sizeof(swap_hdr),
-                L("💾 Swap size\n\n"
+                L(" Swap size\n\n"
                   "   Swap is extra 'emergency memory' on disk.\n"
                   "   If your RAM fills up, the system uses swap instead of crashing.\n"
                   "   It's also needed for hibernation (suspend-to-disk).\n\n"
                   "   Suggested: %s GB  (based on your RAM size)\n\n"
                   "   Enter swap size in GB (1–128):",
-                  "💾 Tamaño del swap\n\n"
+                  " Tamaño del swap\n\n"
                   "   El swap es 'memoria de emergencia' en el disco.\n"
                   "   Si tu RAM se llena, el sistema usa swap en vez de colgarse.\n"
                   "   También se necesita para hibernación (suspend-to-disk).\n\n"
@@ -3081,7 +3082,7 @@ static int screen_disk(void) {
                   "   Introduce el tamaño del swap en GB (1–128):"),
                 sug_str);
             char sw[16]={0};
-            if (!inputbox_dlg(L("💾 Swap Size","💾 Tamaño del swap"), swap_hdr,
+            if (!inputbox_dlg(L(" Swap Size"," Tamaño del swap"), swap_hdr,
                               st.swap[0]?st.swap:sug_str, sw, sizeof(sw))) {
                 if (g_home_requested) { g_home_requested=0; return 2; }
                 return 0;
@@ -3115,13 +3116,13 @@ static int screen_disk(void) {
             char txt[MAX_OUT];
             snprintf(txt,sizeof(txt),
                      L("Current partition layout:\n\n%s\n\n"
-                       "📌 Select the partition where Arch will be installed.\n"
-                       "   ⚠  That partition WILL BE FORMATTED (data erased).\n"
-                       "   ✔  All other partitions stay untouched.",
+                       " Select the partition where Arch will be installed.\n"
+                       "   [!]  That partition WILL BE FORMATTED (data erased).\n"
+                       "   [+]  All other partitions stay untouched.",
                        "Esquema de particiones actual:\n\n%s\n\n"
-                       "📌 Selecciona la partición donde se instalará Arch.\n"
-                       "   ⚠  Esa partición SERÁ FORMATEADA (datos borrados).\n"
-                       "   ✔  Todas las demás particiones quedan intactas."),
+                       " Selecciona la partición donde se instalará Arch.\n"
+                       "   [!]  Esa partición SERÁ FORMATEADA (datos borrados).\n"
+                       "   [+]  Todas las demás particiones quedan intactas."),
                      lsblk);
             msgbox(L("Dual Boot — Partition Overview","Dual Boot — Vista de particiones"), txt);
         }
@@ -3138,11 +3139,11 @@ static int screen_disk(void) {
             L("Dual Boot — Root Partition","Dual Boot — Partición raíz"),
             L("Select the partition for Arch Linux root (/).\n"
               "This partition WILL BE ERASED AND FORMATTED.\n\n"
-              "⚠  Choose a free/empty partition — NOT your Windows partition!\n"
+              "[!]  Choose a free/empty partition — NOT your Windows partition!\n"
               "   Tip: an 'empty' partition usually shows no filesystem type.",
               "Selecciona la partición para la raíz (/) de Arch Linux.\n"
               "Esta partición SE BORRARÁ Y FORMATEARÁ.\n\n"
-              "⚠  ¡Elige una partición libre/vacía — NO la partición de Windows!\n"
+              "[!]  ¡Elige una partición libre/vacía — NO la partición de Windows!\n"
               "   Pista: una partición 'vacía' suele no tener tipo de sistema de archivos."),
             part_items, np,
             st.db_root[0] ? st.db_root : part_items[0].tag,
@@ -3155,10 +3156,10 @@ static int screen_disk(void) {
 
         char conf_msg[256];
         snprintf(conf_msg, sizeof(conf_msg),
-                 L("⚠  CONFIRM: %s will be ERASED and formatted.\n\n"
+                 L("[!]  CONFIRM: %s will be ERASED and formatted.\n\n"
                    "   Your other partitions (Windows etc.) are safe.\n\n"
                    "   Proceed?",
-                   "⚠  CONFIRMAR: %s se BORRARÁ y formateará.\n\n"
+                   "[!]  CONFIRMAR: %s se BORRARÁ y formateará.\n\n"
                    "   Las otras particiones (Windows etc.) están seguras.\n\n"
                    "   ¿Continuar?"),
                  sel_root);
@@ -3249,61 +3250,61 @@ static int screen_disk(void) {
 static int screen_filesystem(void) {
     char summary[256];
     snprintf(summary,sizeof(summary),
-        L("📋 Summary: disk=%s  kernel=%s",
-          "📋 Resumen: disco=%s  kernel=%s"),
+        L("[RESUMEN] disk=%s  kernel=%s",
+          "[RESUMEN] disco=%s  kernel=%s"),
         st.disk[0]?st.disk:"?", st.kernel);
 
     MenuItem items[4];
     strncpy(items[0].tag,"ext4",255);
     snprintf(items[0].desc,511,"%s",L(
-        "ext4   ✔ Stable, fast, universal  ✘ No snapshots",
-        "ext4   ✔ Estable, rápido, universal  ✘ Sin snapshots"));
+        "ext4   [+] Stable, fast, universal  [-] No snapshots",
+        "ext4   [+] Estable, rápido, universal  [-] Sin snapshots"));
     strncpy(items[1].tag,"btrfs",255);
     snprintf(items[1].desc,511,"%s",L(
-        "btrfs  ✔ Snapshots, compression  ✘ Slightly more complex",
-        "btrfs  ✔ Snapshots, compresión   ✘ Algo más complejo"));
+        "btrfs  [+] Snapshots, compression  [-] Slightly more complex",
+        "btrfs  [+] Snapshots, compresión   [-] Algo más complejo"));
     strncpy(items[2].tag,"xfs",255);
     snprintf(items[2].desc,511,"%s",L(
-        "xfs    ✔ Great for large files   ✘ No snapshots, no shrink",
-        "xfs    ✔ Excelente para archivos grandes  ✘ Sin snapshots"));
+        "xfs    [+] Great for large files   [-] No snapshots, no shrink",
+        "xfs    [+] Excelente para archivos grandes  [-] Sin snapshots"));
     strncpy(items[3].tag,"zfs",255);
     snprintf(items[3].desc,511,"%s",L(
-        "zfs    ✔ Advanced checksums      ✘ [EXPERIMENTAL] complex setup",
-        "zfs    ✔ Checksums avanzados     ✘ [EXPERIMENTAL] configuración compleja"));
+        "zfs    [+] Advanced checksums      [-] [EXPERIMENTAL] complex setup",
+        "zfs    [+] Checksums avanzados     [-] [EXPERIMENTAL] configuración compleja"));
 
     char dlg_text[4096];
     snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("🗂  Choose the filesystem for your hard drive.\n\n"
-          "  ext4   → Best choice for most users. Reliable and well-tested.\n"
+        L("  Choose the filesystem for your hard drive.\n\n"
+          "  ext4   -> Best choice for most users. Reliable and well-tested.\n"
           "           PROS: fast, stable, supported everywhere.\n"
           "           CONS: no snapshots (can't roll back changes).\n\n"
-          "  btrfs  → Modern filesystem with extra features.\n"
+          "  btrfs  -> Modern filesystem with extra features.\n"
           "           PROS: automatic snapshots, transparent compression (saves space),\n"
           "                 multiple subvolumes. Works great with Snapper.\n"
           "           CONS: slightly more RAM usage, not all tools support it.\n\n"
-          "  xfs    → High performance, good for multimedia/servers.\n"
+          "  xfs    -> High performance, good for multimedia/servers.\n"
           "           PROS: very fast for large files, great metadata performance.\n"
           "           CONS: cannot shrink partition, no snapshots.\n\n"
-          "  zfs    → Powerful but complex. Not recommended for beginners.\n"
+          "  zfs    -> Powerful but complex. Not recommended for beginners.\n"
           "           PROS: data integrity checks, advanced snapshots, RAID support.\n"
           "           CONS: requires extra repository, complex, uses more RAM.",
-          "🗂  Elige el sistema de archivos para tu disco.\n\n"
-          "  ext4   → La mejor opción para la mayoría. Fiable y probado.\n"
+          "  Elige el sistema de archivos para tu disco.\n\n"
+          "  ext4   -> La mejor opción para la mayoría. Fiable y probado.\n"
           "           PROS: rápido, estable, compatible con todo.\n"
           "           CONS: sin snapshots (no puedes deshacer cambios).\n\n"
-          "  btrfs  → Sistema moderno con funciones extra.\n"
+          "  btrfs  -> Sistema moderno con funciones extra.\n"
           "           PROS: snapshots automáticos, compresión transparente (ahorra espacio),\n"
           "                 subvolúmenes. Funciona genial con Snapper.\n"
           "           CONS: algo más de uso de RAM, no todas las herramientas lo soportan.\n\n"
-          "  xfs    → Alto rendimiento, bueno para multimedia/servidores.\n"
+          "  xfs    -> Alto rendimiento, bueno para multimedia/servidores.\n"
           "           PROS: muy rápido con archivos grandes, excelente rendimiento.\n"
           "           CONS: no se puede reducir la partición, sin snapshots.\n\n"
-          "  zfs    → Potente pero complejo. No recomendado para principiantes.\n"
+          "  zfs    -> Potente pero complejo. No recomendado para principiantes.\n"
           "           PROS: verificación de integridad, snapshots avanzados, soporte RAID.\n"
           "           CONS: requiere repositorio extra, complejo, usa más RAM."));
 
     char out[16]={0};
-    if (!radiolist_dlg(L("💾 Filesystem","💾 Sistema de archivos"),
+    if (!radiolist_dlg(L(" Filesystem"," Sistema de archivos"),
                        dlg_text,
                        items, 4, st.filesystem, out, sizeof(out))) {
         if (g_home_requested) { g_home_requested=0; return 2; }
@@ -3338,31 +3339,31 @@ static int screen_filesystem(void) {
 static int screen_kernel(void) {
     char summary[256];
     snprintf(summary,sizeof(summary),
-        L("📋 Summary: disk=%s  fs=%s",
-          "📋 Resumen: disco=%s  fs=%s"),
+        L("[RESUMEN] disk=%s  fs=%s",
+          "[RESUMEN] disco=%s  fs=%s"),
         st.disk[0]?st.disk:"?", st.filesystem);
 
     MenuItem items[5];
     strncpy(items[0].tag,"linux",255);
     snprintf(items[0].desc,511,"%s",L(
-        "linux          ✔ Latest stable  ✔ Best hardware support  (recommended)",
-        "linux          ✔ Último estable  ✔ Mejor soporte hw  (recomendado)"));
+        "linux          [+] Latest stable  [+] Best hardware support  (recommended)",
+        "linux          [+] Último estable  [+] Mejor soporte hw  (recomendado)"));
     strncpy(items[1].tag,"linux-lts",255);
     snprintf(items[1].desc,511,"%s",L(
-        "linux-lts      ✔ Rock-solid  ✔ Longer support  ✘ Older features",
-        "linux-lts      ✔ Muy estable  ✔ Soporte largo  ✘ Funciones más antiguas"));
+        "linux-lts      [+] Rock-solid  [+] Longer support  [-] Older features",
+        "linux-lts      [+] Muy estable  [+] Soporte largo  [-] Funciones más antiguas"));
     strncpy(items[2].tag,"linux-zen",255);
     snprintf(items[2].desc,511,"%s",L(
-        "linux-zen      ✔ Desktop/gaming tweaks  ✘ Slightly more power usage",
-        "linux-zen      ✔ Optimizado escritorio/gaming  ✘ Algo más consumo"));
+        "linux-zen      [+] Desktop/gaming tweaks  [-] Slightly more power usage",
+        "linux-zen      [+] Optimizado escritorio/gaming  [-] Algo más consumo"));
     strncpy(items[3].tag,"linux-hardened",255);
     snprintf(items[3].desc,511,"%s",L(
-        "linux-hardened ✔ Security patches  ✘ Some apps may break",
-        "linux-hardened ✔ Parches seguridad  ✘ Algunas apps pueden fallar"));
+        "linux-hardened [+] Security patches  [-] Some apps may break",
+        "linux-hardened [+] Parches seguridad  [-] Algunas apps pueden fallar"));
     strncpy(items[4].tag,"linux-cachyos",255);
     snprintf(items[4].desc,511,"%s",L(
-        "linux-cachyos  ✔ Max performance  ✘ Needs cachyos repo  ✘ Less tested",
-        "linux-cachyos  ✔ Máximo rendimiento  ✘ Requiere repo cachyos  ✘ Menos probado"));
+        "linux-cachyos  [+] Max performance  [-] Needs cachyos repo  [-] Less tested",
+        "linux-cachyos  [+] Máximo rendimiento  [-] Requiere repo cachyos  [-] Menos probado"));
 
     char kl_copy[512]; strncpy(kl_copy, st.kernel_list, sizeof(kl_copy)-1);
     const char *defs[8]={0}; int ndefs=0;
@@ -3371,47 +3372,47 @@ static int screen_kernel(void) {
 
     char dlg_text[4096];
     snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("🐧 Choose which Linux kernel(s) to install.\n"
+        L(" Choose which Linux kernel(s) to install.\n"
           "   You can pick more than one — use SPACE to toggle.\n"
           "   The first selected kernel is used for boot config.\n\n"
-          "  linux          → Best for most users. Always up to date.\n"
+          "  linux          -> Best for most users. Always up to date.\n"
           "                   PROS: latest drivers, wide hardware support.\n"
           "                   CONS: updates frequently (test before updating).\n\n"
-          "  linux-lts      → Stays on one version for 2+ years.\n"
+          "  linux-lts      -> Stays on one version for 2+ years.\n"
           "                   PROS: very stable, great for servers/production.\n"
           "                   CONS: may miss new hardware support.\n\n"
-          "  linux-zen      → Tuned for responsiveness and gaming.\n"
+          "  linux-zen      -> Tuned for responsiveness and gaming.\n"
           "                   PROS: lower latency, better desktop feel.\n"
           "                   CONS: slightly higher power draw.\n\n"
-          "  linux-hardened → Extra security patches applied.\n"
+          "  linux-hardened -> Extra security patches applied.\n"
           "                   PROS: harder to exploit if attacked.\n"
           "                   CONS: some apps (VMs, games) may not work.\n\n"
-          "  linux-cachyos  → Bleeding-edge performance patches.\n"
+          "  linux-cachyos  -> Bleeding-edge performance patches.\n"
           "                   PROS: highest speed benchmarks.\n"
           "                   CONS: less tested, requires CachyOS repository.",
-          "🐧 Elige qué kernel(s) de Linux instalar.\n"
+          " Elige qué kernel(s) de Linux instalar.\n"
           "   Puedes elegir más de uno — usa ESPACIO para activar/desactivar.\n"
           "   El primer kernel seleccionado se usa para arrancar.\n\n"
-          "  linux          → La mejor opción para la mayoría. Siempre actualizado.\n"
+          "  linux          -> La mejor opción para la mayoría. Siempre actualizado.\n"
           "                   PROS: últimos drivers, amplio soporte de hardware.\n"
           "                   CONS: se actualiza frecuentemente.\n\n"
-          "  linux-lts      → Se mantiene en una versión durante 2+ años.\n"
+          "  linux-lts      -> Se mantiene en una versión durante 2+ años.\n"
           "                   PROS: muy estable, ideal para servidores.\n"
           "                   CONS: puede no soportar hardware muy nuevo.\n\n"
-          "  linux-zen      → Ajustado para respuesta rápida y gaming.\n"
+          "  linux-zen      -> Ajustado para respuesta rápida y gaming.\n"
           "                   PROS: menor latencia, mejor experiencia de escritorio.\n"
           "                   CONS: algo más consumo de energía.\n\n"
-          "  linux-hardened → Con parches de seguridad extra.\n"
+          "  linux-hardened -> Con parches de seguridad extra.\n"
           "                   PROS: más difícil de atacar.\n"
           "                   CONS: algunas apps (VMs, juegos) pueden no funcionar.\n\n"
-          "  linux-cachyos  → Parches de rendimiento de vanguardia.\n"
+          "  linux-cachyos  -> Parches de rendimiento de vanguardia.\n"
           "                   PROS: máximo rendimiento en benchmarks.\n"
           "                   CONS: menos probado, requiere repositorio CachyOS."));
 
     char sel[8][256]; int nsel = -1;
     while (nsel < 1) {
         nsel = checklist_dlg(
-            L("🐧 Kernel","🐧 Kernel"),
+            L(" Kernel"," Kernel"),
             dlg_text,
             items, 5, defs, ndefs, sel, 8);
         if (nsel < 0) {
@@ -3438,68 +3439,68 @@ static int screen_bootloader(void) {
     int uefi = is_uefi();
     char summary[256];
     snprintf(summary,sizeof(summary),
-        L("📋 Summary: fs=%s  kernel=%s  mode=%s",
-          "📋 Resumen: fs=%s  kernel=%s  modo=%s"),
+        L("[RESUMEN] fs=%s  kernel=%s  mode=%s",
+          "[RESUMEN] fs=%s  kernel=%s  modo=%s"),
         st.filesystem, st.kernel, uefi?"UEFI":"BIOS");
 
     MenuItem items[3]; int ni;
     if (!uefi) {
         strncpy(items[0].tag,"grub",255);
         snprintf(items[0].desc,511,"%s",L(
-            "GRUB   ✔ Works everywhere  ✔ Dual-boot friendly  (recommended)",
-            "GRUB   ✔ Funciona en todo  ✔ Ideal para dual boot  (recomendado)"));
+            "GRUB   [+] Works everywhere  [+] Dual-boot friendly  (recommended)",
+            "GRUB   [+] Funciona en todo  [+] Ideal para dual boot  (recomendado)"));
         strncpy(items[1].tag,"limine",255);
         snprintf(items[1].desc,511,"%s",L(
-            "Limine ✔ Fast, modern  ✘ Less common, less documentation",
-            "Limine ✔ Rápido, moderno  ✘ Menos común, menos documentación"));
+            "Limine [+] Fast, modern  [-] Less common, less documentation",
+            "Limine [+] Rápido, moderno  [-] Menos común, menos documentación"));
         ni=2;
     } else {
         strncpy(items[0].tag,"grub",255);
         snprintf(items[0].desc,511,"%s",L(
-            "GRUB         ✔ Universal  ✔ Dual-boot  ✔ UEFI+BIOS  (recommended)",
-            "GRUB         ✔ Universal  ✔ Dual boot  ✔ UEFI+BIOS  (recomendado)"));
+            "GRUB         [+] Universal  [+] Dual-boot  [+] UEFI+BIOS  (recommended)",
+            "GRUB         [+] Universal  [+] Dual boot  [+] UEFI+BIOS  (recomendado)"));
         strncpy(items[1].tag,"systemd-boot",255);
         snprintf(items[1].desc,511,"%s",L(
-            "systemd-boot ✔ Minimal & fast  ✔ UEFI only  ✘ No BIOS support",
-            "systemd-boot ✔ Mínimo y rápido  ✔ Solo UEFI  ✘ Sin soporte BIOS"));
+            "systemd-boot [+] Minimal & fast  [+] UEFI only  [-] No BIOS support",
+            "systemd-boot [+] Mínimo y rápido  [+] Solo UEFI  [-] Sin soporte BIOS"));
         strncpy(items[2].tag,"limine",255);
         snprintf(items[2].desc,511,"%s",L(
-            "Limine       ✔ Lightweight  ✔ UEFI  ✘ Less documentation",
-            "Limine       ✔ Ligero  ✔ UEFI  ✘ Menos documentación"));
+            "Limine       [+] Lightweight  [+] UEFI  [-] Less documentation",
+            "Limine       [+] Ligero  [+] UEFI  [-] Menos documentación"));
         ni=3;
     }
 
     char dlg_text[4096];
     snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("🥾 The bootloader is the first program that runs when you turn on the PC.\n"
+        L(" The bootloader is the first program that runs when you turn on the PC.\n"
           "   It loads your Linux kernel.\n\n"
-          "  GRUB → The classic choice. Works on both old (BIOS) and new (UEFI) PCs.\n"
+          "  GRUB -> The classic choice. Works on both old (BIOS) and new (UEFI) PCs.\n"
           "          PROS: well documented, supports dual boot (Windows+Linux),\n"
           "                theme support, rescue mode.\n"
           "          CONS: slower to start than alternatives.\n\n"
-          "  systemd-boot → Simple and fast (UEFI only).\n"
+          "  systemd-boot -> Simple and fast (UEFI only).\n"
           "          PROS: boots very quickly, minimal config, integrated with systemd.\n"
           "          CONS: UEFI only, no graphical theme, limited dual-boot support.\n\n"
-          "  Limine → Modern and lightweight.\n"
+          "  Limine -> Modern and lightweight.\n"
           "          PROS: very fast, simple config file, supports UEFI and BIOS.\n"
           "          CONS: less community documentation than GRUB.\n\n"
-          "  💡 If unsure, choose GRUB.",
-          "🥾 El gestor de arranque es el primer programa que arranca al encender el PC.\n"
+          "   If unsure, choose GRUB.",
+          " El gestor de arranque es el primer programa que arranca al encender el PC.\n"
           "   Carga el kernel de Linux.\n\n"
-          "  GRUB → La opción clásica. Funciona en PCs antiguos (BIOS) y modernos (UEFI).\n"
+          "  GRUB -> La opción clásica. Funciona en PCs antiguos (BIOS) y modernos (UEFI).\n"
           "          PROS: muy documentado, soporta dual boot (Windows+Linux),\n"
           "                temas visuales, modo de rescate.\n"
           "          CONS: arranque algo más lento que las alternativas.\n\n"
-          "  systemd-boot → Simple y rápido (solo UEFI).\n"
+          "  systemd-boot -> Simple y rápido (solo UEFI).\n"
           "          PROS: arranca muy rápido, config mínima, integrado con systemd.\n"
           "          CONS: solo UEFI, sin temas gráficos, soporte dual boot limitado.\n\n"
-          "  Limine → Moderno y ligero.\n"
+          "  Limine -> Moderno y ligero.\n"
           "          PROS: muy rápido, config simple, soporta UEFI y BIOS.\n"
           "          CONS: menos documentación en la comunidad que GRUB.\n\n"
-          "  💡 Si no sabes cuál elegir, elige GRUB."));
+          "   Si no sabes cuál elegir, elige GRUB."));
 
     char out[16]={0};
-    if (!radiolist_dlg(L("🥾 Bootloader","🥾 Gestor de arranque"),
+    if (!radiolist_dlg(L(" Bootloader"," Gestor de arranque"),
                        dlg_text, items, ni, st.bootloader, out, sizeof(out))) {
         if (g_home_requested) { g_home_requested=0; return 2; }
         return 0;
@@ -3876,23 +3877,23 @@ static int screen_gpu(void) {
 static int screen_yay(void) {
     char summary[256];
     snprintf(summary,sizeof(summary),
-        L("📋 Summary: user=%s  desktop=%s  fs=%s",
-          "📋 Resumen: usuario=%s  escritorio=%s  fs=%s"),
+        L("[RESUMEN] user=%s  desktop=%s  fs=%s",
+          "[RESUMEN] usuario=%s  escritorio=%s  fs=%s"),
         st.username[0]?st.username:"?", st.desktop, st.filesystem);
 
     MenuItem items[2];
     strncpy(items[0].tag,"yes",255);
     snprintf(items[0].desc,511,"%s",L(
-        "Yes ✔ Install yay  (recommended for most users)",
-        "Sí  ✔ Instalar yay  (recomendado para la mayoría)"));
+        "Yes [+] Install yay  (recommended for most users)",
+        "Sí  [+] Instalar yay  (recomendado para la mayoría)"));
     strncpy(items[1].tag,"no",255);
     snprintf(items[1].desc,511,"%s",L(
-        "No  ✘ Skip  (only use official Arch packages)",
-        "No  ✘ Omitir  (solo usar paquetes oficiales de Arch)"));
+        "No  [-] Skip  (only use official Arch packages)",
+        "No  [-] Omitir  (solo usar paquetes oficiales de Arch)"));
 
     char dlg_text[4096];
     snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("📦 What is yay?\n\n"
+        L(" What is yay?\n\n"
           "   Arch Linux has an official package repository (thousands of apps).\n"
           "   But the AUR (Arch User Repository) has tens of thousands MORE packages\n"
           "   contributed by the community — like Spotify, Discord, AnyDesk, etc.\n\n"
@@ -3900,8 +3901,8 @@ static int screen_yay(void) {
           "   as official ones, using the same  'yay -S package'  command.\n\n"
           "   PROS: access to 80,000+ extra packages, easy to use.\n"
           "   CONS: AUR packages are community-maintained (review before installing).\n\n"
-          "   💡 Recommended: YES",
-          "📦 ¿Qué es yay?\n\n"
+          "    Recommended: YES",
+          " ¿Qué es yay?\n\n"
           "   Arch Linux tiene un repositorio oficial (miles de apps).\n"
           "   Pero el AUR (Arch User Repository) tiene decenas de miles MÁS,\n"
           "   mantenidos por la comunidad — como Spotify, Discord, AnyDesk, etc.\n\n"
@@ -3909,10 +3910,10 @@ static int screen_yay(void) {
           "   de fácil que los oficiales, con el mismo comando  'yay -S paquete'.\n\n"
           "   PROS: acceso a 80.000+ paquetes extra, fácil de usar.\n"
           "   CONS: los paquetes AUR son de la comunidad (revísalos antes de instalar).\n\n"
-          "   💡 Recomendado: SÍ"));
+          "    Recomendado: SÍ"));
 
     char out[8]={0};
-    if (!radiolist_dlg(L("📦 AUR Helper (yay)","📦 AUR Helper (yay)"),
+    if (!radiolist_dlg(L(" AUR Helper (yay)"," AUR Helper (yay)"),
                        dlg_text, items, 2, st.yay?"yes":"no", out, sizeof(out))) {
         if (g_home_requested) { g_home_requested=0; return 2; }
         return 0;
@@ -3926,22 +3927,22 @@ static int screen_snapper(void) {
 
     char summary[256];
     snprintf(summary,sizeof(summary),
-        L("📋 Summary: fs=btrfs  kernel=%s  yay=%s",
-          "📋 Resumen: fs=btrfs  kernel=%s  yay=%s"),
+        L("[RESUMEN] fs=btrfs  kernel=%s  yay=%s",
+          "[RESUMEN] fs=btrfs  kernel=%s  yay=%s"),
         st.kernel, st.yay?"yes":"no");
 
     MenuItem items[2];
     strncpy(items[0].tag,"yes",255);
     snprintf(items[0].desc,511,"%s",L(
-        "Yes ✔ Enable automatic snapshots  (recommended with btrfs)",
-        "Sí  ✔ Activar snapshots automáticos  (recomendado con btrfs)"));
+        "Yes [+] Enable automatic snapshots  (recommended with btrfs)",
+        "Sí  [+] Activar snapshots automáticos  (recomendado con btrfs)"));
     strncpy(items[1].tag,"no",255);
     snprintf(items[1].desc,511,"%s",L(
-        "No  ✘ Skip","No  ✘ Omitir"));
+        "No  [-] Skip","No  [-] Omitir"));
 
     char dlg_text[4096];
     snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("📸 What is Snapper?\n\n"
+        L(" What is Snapper?\n\n"
           "   Snapper is a tool that automatically takes a 'photo' (snapshot)\n"
           "   of your system before and after every software installation or update.\n\n"
           "   If an update breaks something, you can roll back to the previous\n"
@@ -3950,9 +3951,9 @@ static int screen_snapper(void) {
           "   any snapshot directly from the GRUB menu.\n\n"
           "   PROS: automatic safety net, easy recovery, no extra effort needed.\n"
           "   CONS: uses some extra disk space (snapshots store changed files).\n\n"
-          "   ⚠  Requires btrfs filesystem — which you already selected. ✔\n\n"
-          "   💡 Recommended: YES",
-          "📸 ¿Qué es Snapper?\n\n"
+          "   [!]  Requires btrfs filesystem — which you already selected. [+]\n\n"
+          "    Recommended: YES",
+          " ¿Qué es Snapper?\n\n"
           "   Snapper es una herramienta que toma automáticamente una 'foto' (snapshot)\n"
           "   del sistema antes y después de cada instalación o actualización.\n\n"
           "   Si una actualización rompe algo, puedes volver al estado anterior\n"
@@ -3961,11 +3962,11 @@ static int screen_snapper(void) {
           "   desde cualquier snapshot directamente en el menú de GRUB.\n\n"
           "   PROS: red de seguridad automática, recuperación fácil, sin esfuerzo.\n"
           "   CONS: usa algo más de espacio en disco (los snapshots guardan cambios).\n\n"
-          "   ⚠  Requiere el sistema de archivos btrfs — que ya tienes seleccionado. ✔\n\n"
-          "   💡 Recomendado: SÍ"));
+          "   [!]  Requiere el sistema de archivos btrfs — que ya tienes seleccionado. [+]\n\n"
+          "    Recomendado: SÍ"));
 
     char out[8]={0};
-    if (!radiolist_dlg(L("📸 BTRFS Snapshots (Snapper)","📸 Snapshots BTRFS (Snapper)"),
+    if (!radiolist_dlg(L(" BTRFS Snapshots (Snapper)"," Snapshots BTRFS (Snapper)"),
                        dlg_text, items, 2, st.snapper?"yes":"no", out, sizeof(out))) {
         if (g_home_requested) { g_home_requested=0; return 2; }
         return 0;
@@ -3979,22 +3980,22 @@ static int screen_flatpak(void) {
 
     char summary[256];
     snprintf(summary,sizeof(summary),
-        L("📋 Summary: desktop=%s  yay=%s",
-          "📋 Resumen: escritorio=%s  yay=%s"),
+        L("[RESUMEN] desktop=%s  yay=%s",
+          "[RESUMEN] escritorio=%s  yay=%s"),
         st.desktop, st.yay?"yes":"no");
 
     MenuItem items[2];
     strncpy(items[0].tag,"yes",255);
     snprintf(items[0].desc,511,"%s",L(
-        "Yes ✔ Install Flatpak + Flathub  (recommended)",
-        "Sí  ✔ Instalar Flatpak + Flathub  (recomendado)"));
+        "Yes [+] Install Flatpak + Flathub  (recommended)",
+        "Sí  [+] Instalar Flatpak + Flathub  (recomendado)"));
     strncpy(items[1].tag,"no",255);
     snprintf(items[1].desc,511,"%s",L(
-        "No  ✘ Skip","No  ✘ Omitir"));
+        "No  [-] Skip","No  [-] Omitir"));
 
     char dlg_text[4096];
     snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("📦 What is Flatpak?\n\n"
+        L(" What is Flatpak?\n\n"
           "   Flatpak is a universal way to install apps that works on ANY Linux distro.\n"
           "   Apps installed via Flatpak run in a sandbox (isolated from the system).\n\n"
           "   Flathub is the main Flatpak store — it has apps like:\n"
@@ -4004,8 +4005,8 @@ static int screen_flatpak(void) {
           "   CONS: apps are larger (each brings its own libraries),\n"
           "         slightly slower first launch.\n\n"
           "   With yay (AUR) AND Flatpak you'll have access to virtually any app.\n\n"
-          "   💡 Recommended: YES",
-          "📦 ¿Qué es Flatpak?\n\n"
+          "    Recommended: YES",
+          " ¿Qué es Flatpak?\n\n"
           "   Flatpak es una forma universal de instalar apps que funciona en CUALQUIER\n"
           "   distribución Linux. Las apps se ejecutan en un sandbox (aisladas del sistema).\n\n"
           "   Flathub es la tienda principal de Flatpak — tiene apps como:\n"
@@ -4015,10 +4016,10 @@ static int screen_flatpak(void) {
           "   CONS: las apps son más grandes (cada una trae sus propias librerías),\n"
           "         primer arranque algo más lento.\n\n"
           "   Con yay (AUR) Y Flatpak tendrás acceso a prácticamente cualquier app.\n\n"
-          "   💡 Recomendado: SÍ"));
+          "    Recomendado: SÍ"));
 
     char out[8]={0};
-    if (!radiolist_dlg(L("📦 Flatpak","📦 Flatpak"),
+    if (!radiolist_dlg(L(" Flatpak"," Flatpak"),
                        dlg_text, items, 2, st.flatpak?"yes":"no", out, sizeof(out))) {
         if (g_home_requested) { g_home_requested=0; return 2; }
         return 0;
