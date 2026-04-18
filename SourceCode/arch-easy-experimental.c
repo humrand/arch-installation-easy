@@ -2053,51 +2053,88 @@ static void *ib_run_thread(void *arg) {
         ib_gradual(ib,8,14,0.04);
 
         {
-            long long size_mib = (long long)st.db_size_gb * 1024;
+            long long size_bytes = (long long)st.db_size_gb * 1024LL * 1024LL * 1024LL;
+            long long min_start  = 1LL * 1024LL * 1024LL;
 
-            char free_cmd[512];
-            snprintf(free_cmd, sizeof(free_cmd),
-                "parted -s %s unit MiB print free 2>/dev/null"
-                " | awk '/Free Space/{gsub(\"MiB\",\"\",$1); gsub(\"MiB\",\"\",$3);"
-                " if($3+0 >= %lld) {print $1; exit}}'",
-                disk, size_mib);
-            FILE *fp_free = popen(free_cmd, "r");
-            char start_mib_str[32] = {0};
-            if (fp_free) {
-                if (fgets(start_mib_str, sizeof(start_mib_str), fp_free))
-                    trim_nl(start_mib_str);
-                pclose(fp_free);
+            char pt_type[16] = "msdos";
+            {
+                char ptcmd[256];
+                snprintf(ptcmd, sizeof(ptcmd),
+                    "parted -s %s print 2>/dev/null | awk '/Partition Table/{print $3}'",
+                    disk);
+                FILE *fp_pt2 = popen(ptcmd, "r");
+                if (fp_pt2) {
+                    char tmp[32]={0};
+                    if (fgets(tmp,sizeof(tmp),fp_pt2)) {
+                        trim_nl(tmp);
+                        if (tmp[0]) strncpy(pt_type,tmp,sizeof(pt_type)-1);
+                    }
+                    pclose(fp_pt2);
+                }
+                write_log_fmt("Partition table type: %s", pt_type);
             }
 
-            if (!start_mib_str[0]) {
-                write_log("WARNING: could not detect free space start, using 'largest free block' fallback");
+            long long start_bytes = 0;
+            long long avail_bytes = 0;
+            {
+                char free_cmd[512];
                 snprintf(free_cmd, sizeof(free_cmd),
-                    "parted -s %s unit MiB print free 2>/dev/null"
-                    " | awk '/Free Space/{gsub(\"MiB\",\"\",$1); print $1}' | tail -1",
+                    "parted -m %s unit B print free 2>/dev/null"
+                    " | awk -F: '$1==\"\" {gsub(\"B\",\"\",$2); gsub(\"B\",\"\",$4);"
+                    " if($4+0 > avail) {avail=$4+0; start=$2+0}}"
+                    " END{print start, avail}'",
                     disk);
-                fp_free = popen(free_cmd, "r");
+                FILE *fp_free = popen(free_cmd, "r");
                 if (fp_free) {
-                    if (fgets(start_mib_str, sizeof(start_mib_str), fp_free))
-                        trim_nl(start_mib_str);
+                    long long s=0, a=0;
+                    if (fscanf(fp_free, "%lld %lld", &s, &a) == 2) {
+                        start_bytes = s;
+                        avail_bytes = a;
+                    }
                     pclose(fp_free);
                 }
+                write_log_fmt("Largest free region: start=%lldB size=%lldB", start_bytes, avail_bytes);
             }
 
-            long long start_mib = start_mib_str[0] ? atoll(start_mib_str) : 1;
-            long long end_mib   = start_mib + size_mib;
+            if (avail_bytes < size_bytes) {
+                char errmsg[256];
+                snprintf(errmsg, sizeof(errmsg),
+                    L("Not enough free space on %s.\n"
+                      "Available: %lld GB  |  Requested: %d GB\n\n"
+                      "Free up space and try again.",
+                      "No hay suficiente espacio libre en %s.\n"
+                      "Disponible: %lld GB  |  Solicitado: %d GB\n\n"
+                      "Libera espacio e intenta de nuevo."),
+                    disk, avail_bytes / (1024LL*1024LL*1024LL), st.db_size_gb);
+                ib->on_done(0, errmsg, ib->ud);
+                return NULL;
+            }
 
-            write_log_fmt("Dual-boot: creating partition %lldMiB - %lldMiB on %s",
-                          start_mib, end_mib, disk);
+            if (start_bytes < min_start) start_bytes = min_start;
 
-            snprintf(cmd, sizeof(cmd),
-                "parted -s %s mkpart primary %lldMiB %lldMiB",
-                disk, start_mib, end_mib);
+            long long align = 1LL * 1024LL * 1024LL;
+            start_bytes = ((start_bytes + align - 1) / align) * align;
+            long long end_bytes = start_bytes + size_bytes;
+
+            write_log_fmt("Dual-boot: creating partition %lldB - %lldB on %s",
+                          start_bytes, end_bytes, disk);
+
+            if (!strcmp(pt_type, "gpt"))
+                snprintf(cmd, sizeof(cmd),
+                    "parted -s %s mkpart arch %lldB %lldB",
+                    disk, start_bytes, end_bytes);
+            else
+                snprintf(cmd, sizeof(cmd),
+                    "parted -s %s mkpart primary %lldB %lldB",
+                    disk, start_bytes, end_bytes);
+
             ib_run(ib, cmd, "parted mkpart dual-boot");
             settle_partitions(disk);
 
             char part_cmd[256];
             snprintf(part_cmd, sizeof(part_cmd),
-                "parted -s %s print 2>/dev/null | awk '/^ [0-9]/{n=$1} END{print n}'",
+                "parted -m %s unit B print 2>/dev/null"
+                " | awk -F: '$1~/^[0-9]+$/{n=$1} END{print n}'",
                 disk);
             FILE *fp_pt = popen(part_cmd, "r");
             if (fp_pt) {
