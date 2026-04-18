@@ -2079,9 +2079,9 @@ static void *ib_run_thread(void *arg) {
             {
                 char free_cmd[512];
                 snprintf(free_cmd, sizeof(free_cmd),
-                    "parted -m %s unit B print free 2>/dev/null"
-                    " | awk -F: '$1==\"\" {gsub(\"B\",\"\",$2); gsub(\"B\",\"\",$4);"
-                    " if($4+0 > avail) {avail=$4+0; start=$2+0}}"
+                    "parted -s %s unit B print free 2>/dev/null"
+                    " | awk '/Free Space/{gsub(\"B\",\"\",$1); gsub(\"B\",\"\",$3);"
+                    " if($3+0 > avail){avail=$3+0; start=$1+0}}"
                     " END{print start, avail}'",
                     disk);
                 FILE *fp_free = popen(free_cmd, "r");
