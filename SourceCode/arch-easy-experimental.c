@@ -2052,20 +2052,56 @@ static void *ib_run_thread(void *arg) {
                        "Creando nueva particion para Arch (dual-boot)..."));
         ib_gradual(ib,8,14,0.04);
 
-        snprintf(cmd, sizeof(cmd),
-            "sgdisk -n 0:0:+%dG -t 0:8300 %s",
-            st.db_size_gb, disk);
-        ib_run(ib, cmd, "sgdisk new partition");
-        settle_partitions(disk);
-
         {
+            long long size_mib = (long long)st.db_size_gb * 1024;
+
+            char free_cmd[512];
+            snprintf(free_cmd, sizeof(free_cmd),
+                "parted -s %s unit MiB print free 2>/dev/null"
+                " | awk '/Free Space/{gsub(\"MiB\",\"\",$1); gsub(\"MiB\",\"\",$3);"
+                " if($3+0 >= %lld) {print $1; exit}}'",
+                disk, size_mib);
+            FILE *fp_free = popen(free_cmd, "r");
+            char start_mib_str[32] = {0};
+            if (fp_free) {
+                if (fgets(start_mib_str, sizeof(start_mib_str), fp_free))
+                    trim_nl(start_mib_str);
+                pclose(fp_free);
+            }
+
+            if (!start_mib_str[0]) {
+                write_log("WARNING: could not detect free space start, using 'largest free block' fallback");
+                snprintf(free_cmd, sizeof(free_cmd),
+                    "parted -s %s unit MiB print free 2>/dev/null"
+                    " | awk '/Free Space/{gsub(\"MiB\",\"\",$1); print $1}' | tail -1",
+                    disk);
+                fp_free = popen(free_cmd, "r");
+                if (fp_free) {
+                    if (fgets(start_mib_str, sizeof(start_mib_str), fp_free))
+                        trim_nl(start_mib_str);
+                    pclose(fp_free);
+                }
+            }
+
+            long long start_mib = start_mib_str[0] ? atoll(start_mib_str) : 1;
+            long long end_mib   = start_mib + size_mib;
+
+            write_log_fmt("Dual-boot: creating partition %lldMiB - %lldMiB on %s",
+                          start_mib, end_mib, disk);
+
+            snprintf(cmd, sizeof(cmd),
+                "parted -s %s mkpart primary %lldMiB %lldMiB",
+                disk, start_mib, end_mib);
+            ib_run(ib, cmd, "parted mkpart dual-boot");
+            settle_partitions(disk);
+
             char part_cmd[256];
             snprintf(part_cmd, sizeof(part_cmd),
-                "sgdisk -p %s 2>/dev/null | awk '/^ *[0-9]/{last=$1} END{print last}'",
+                "parted -s %s print 2>/dev/null | awk '/^ [0-9]/{n=$1} END{print n}'",
                 disk);
             FILE *fp_pt = popen(part_cmd, "r");
             if (fp_pt) {
-                char pnum[16]={0};
+                char pnum[16] = {0};
                 if (fgets(pnum, sizeof(pnum), fp_pt)) {
                     trim_nl(pnum);
                     int n = atoi(pnum);
