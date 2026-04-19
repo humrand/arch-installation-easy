@@ -4881,22 +4881,14 @@ static void ensure_display(void) {
                "/tmp/arch_wp.png 2>/dev/null || true\n");
     fprintf(f, "\n");
 
-    fprintf(f, "mkdir -p /root/.config/pcmanfm/default\n");
-    fprintf(f, "printf '[*]\\nwallpaper_mode=fit\\nwallpaper=/tmp/arch_wp.png\\n' "
-               "> /root/.config/pcmanfm/default/pcmanfm.conf\n");
-    fprintf(f, "\n");
-
     fprintf(f, "openbox &\n");
     fprintf(f, "sleep 0.5\n");
     fprintf(f, "\n");
 
-    fprintf(f, "pcmanfm --desktop &\n");
-    fprintf(f, "sleep 0.5\n");
-
     fprintf(f, "feh --bg-fill /tmp/arch_wp.png 2>/dev/null "
                "|| xsetroot -solid '#0d1117'\n");
     fprintf(f, "\n");
-    fprintf(f, "\n");
+
 
     fprintf(f, "tint2 &\n");
     fprintf(f, "\n");
