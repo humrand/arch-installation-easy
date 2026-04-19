@@ -4873,13 +4873,12 @@ static void ensure_display(void) {
     fprintf(f, "xrdb -merge /root/.Xresources 2>/dev/null || true\n");
     fprintf(f, "\n");
 
-    fprintf(f, "convert -size 1920x1080 "
-               "gradient:'#0d1117-#0f2040' "
+    fprintf(f, "curl -s -L --max-time 15 "
+               "-o /tmp/arch_wp.png "
+               "'https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/wallpaper.png' "
+               "2>/dev/null || "
+               "convert -size 1920x1080 gradient:'#0d1117-#0f2040' "
                "/tmp/arch_wp.png 2>/dev/null || true\n");
-    fprintf(f, "RES=$(xrandr 2>/dev/null | awk '/\\*/{print $1}' | head -1)\n");
-    fprintf(f, "[ -n \"$RES\" ] && convert /tmp/arch_wp.png "
-               "-resize \"${RES}^\" -gravity Center "
-               "-extent \"$RES\" /tmp/arch_wp.png 2>/dev/null || true\n");
     fprintf(f, "\n");
 
     fprintf(f, "openbox &\n");
