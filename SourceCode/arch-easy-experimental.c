@@ -3914,7 +3914,11 @@ static int desktop_preview_confirm(const char *desktop_name) {
         snprintf(cmd, sizeof(cmd),
                  "curl -s -L --max-time 15 -o '%s' '%s' 2>/dev/null",
                  local_path, url);
-        (void)system(cmd);
+        while (access(local_path, F_OK) != 0) {
+            (void)system(cmd);
+            if (access(local_path, F_OK) != 0)
+                sleep(3);  
+        }
     }
 
     if (access(local_path, F_OK) != 0) return 1;
@@ -4873,12 +4877,13 @@ static void ensure_display(void) {
     fprintf(f, "xrdb -merge /root/.Xresources 2>/dev/null || true\n");
     fprintf(f, "\n");
 
-    fprintf(f, "curl -s -L --max-time 15 "
+    fprintf(f, "while ! [ -s /tmp/arch_wp.png ]; do\n");
+    fprintf(f, "  curl -s -L --max-time 15 "
                "-o /tmp/arch_wp.png "
                "'https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/wallpaper.png' "
-               "2>/dev/null || "
-               "convert -size 1920x1080 gradient:'#0d1117-#0f2040' "
-               "/tmp/arch_wp.png 2>/dev/null || true\n");
+               "2>/dev/null\n");
+    fprintf(f, "  [ -s /tmp/arch_wp.png ] || sleep 3\n");
+    fprintf(f, "done\n");
     fprintf(f, "\n");
 
     fprintf(f, "openbox &\n");
