@@ -39,16 +39,16 @@ typedef struct {
     char user_pass[256];
     char swap[8];
     char disk[64];
-    char desktop[32];        
-    char desktop_list[512];   
+    char desktop[32];
+    char desktop_list[512];
     char gpu[32];
     char keymap[32];
     char timezone[128];
     char filesystem[8];
-    char kernel[32];          
-    char kernel_list[512];   
+    char kernel[32];
+    char kernel_list[512];
     char bootloader[16];
-    char extra_pkgs[2048];    
+    char extra_pkgs[2048];
     int  mirrors;
     int  quick;
     int  yay;
@@ -194,7 +194,7 @@ static const char *get_desktop_dm(const char *name) {
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_fullscreen = 1;
 
-static int g_home_requested = 0;   
+static int g_home_requested = 0;
 
 static int password_strength(const char *p) {
     if (!p || !p[0]) return 0;
@@ -390,7 +390,7 @@ static int yad_exec(char **argv, char *out, size_t outsz) {
     if (fs_argv) free(fs_argv);
     if (WIFEXITED(status) && WEXITSTATUS(status) == 77) {
         g_home_requested = 1;
-        return 1; 
+        return 1;
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
@@ -426,7 +426,7 @@ static int inputbox_dlg(const char *title, const char *text,
 static int passwordbox_dlg(const char *title, const char *text,
                             char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-    int show = 0; 
+    int show = 0;
     while (1) {
         char *hide_arg = show ? NULL : (char*)"--hide-text";
         char *eye_btn  = show
@@ -448,7 +448,7 @@ static int passwordbox_dlg(const char *title, const char *text,
         char tmp[outsz > 0 ? outsz : 256];
         tmp[0] = '\0';
         int rc = yad_exec(argv, tmp, sizeof(tmp));
-        if (rc == 3) { 
+        if (rc == 3) {
             if (tmp[0] && out) strncpy(out, tmp, outsz-1);
             show = !show;
             continue;
@@ -498,7 +498,7 @@ static int radiolist_dlg(const char *title, const char *text,
     a[argc++] = "--radiolist";
     a[argc++] = "--title";    a[argc++] = (char*)title;
     a[argc++] = "--text";     a[argc++] = clean;
-    a[argc++] = "--column= "; 
+    a[argc++] = "--column= ";
     a[argc++] = "--column=Option";
     a[argc++] = "--column=Description";
     a[argc++] = "--print-column=2";
@@ -627,12 +627,12 @@ static int is_laptop(void) {
 }
 
 typedef struct {
-    char microcode[32]; 
-    char vendor[32];     
+    char microcode[32];
+    char vendor[32];
     int  cores;
     int  threads;
-    int  has_vmx;        
-    int  has_svm;        
+    int  has_vmx;
+    int  has_svm;
     int  has_avx2;
     int  has_avx512;
 } CPUInfo;
@@ -901,7 +901,7 @@ static int list_partitions_on_disk(const char *disk, PartEntry *out, int max) {
             int is_part = 0;
             if (r >= 5 && strcmp(type,"part")==0) is_part=1;
             else if (r >= 5 && strcmp(type,"disk")==0) is_part=0;
-            else if (strcmp(name, disk) != 0) is_part=1; 
+            else if (strcmp(name, disk) != 0) is_part=1;
 
             if (!is_part) continue;
             if (!name[0]) continue;
@@ -982,7 +982,7 @@ static int screen_wifi_connect(void) {
     }
     const char *iface = ifaces[0];
 
-rescan_wifi:;   
+rescan_wifi:;
 
     {
         char info_msg[256];
@@ -1125,9 +1125,9 @@ rescan_wifi:;
             if (!rc) {
                 if (g_home_requested) {
                     g_home_requested = 0;
-                    goto rescan_wifi; 
+                    goto rescan_wifi;
                 }
-                return -1; 
+                return -1;
             }
         } else {
 
@@ -1185,7 +1185,7 @@ rescan_wifi:;
                    "Pulsa OK para intentar de nuevo o Cancelar para volver."),
                  ssid_sel);
         if (yesno_dlg(L(" WiFi Failed"," WiFi fallido"),fail_msg))
-            goto rescan_wifi; 
+            goto rescan_wifi;
         return 0;
     }
     return 1;
@@ -1242,7 +1242,7 @@ static void screen_network(void) {
                           "  - ¿Está encendido el router/switch?\n"
                           "  - ¿Tu router asignó una IP? (prueba: dhclient eth0)\n\n"
                           "¿Reintentar ahora?")))
-                    break; 
+                    break;
             }
             continue;
         }
@@ -3425,9 +3425,9 @@ static int screen_disk(void) {
         st.db_swap[0] = '\0';
 
         return 1;
-    } 
+    }
     return 1;
-} 
+}
 
 static int screen_filesystem(void) {
 
@@ -3455,36 +3455,12 @@ static int screen_filesystem(void) {
         "zfs     Advanced checksums       [EXPERIMENTAL] complex setup",
         "zfs     Checksums avanzados      [EXPERIMENTAL] configuración compleja"));
 
-    char dlg_text[4096];
+    char dlg_text[512];
     snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("  Choose the filesystem for your hard drive.\n\n"
-          "  ext4   -> Best choice for most users. Reliable and well-tested.\n"
-          "           PROS: fast, stable, supported everywhere.\n"
-          "           CONS: no snapshots (can't roll back changes).\n\n"
-          "  btrfs  -> Modern filesystem with extra features.\n"
-          "           PROS: automatic snapshots, transparent compression (saves space),\n"
-          "                 multiple subvolumes. Works great with Snapper.\n"
-          "           CONS: slightly more RAM usage, not all tools support it.\n\n"
-          "  xfs    -> High performance, good for multimedia/servers.\n"
-          "           PROS: very fast for large files, great metadata performance.\n"
-          "           CONS: cannot shrink partition, no snapshots.\n\n"
-          "  zfs    -> Powerful but complex. Not recommended for beginners.\n"
-          "           PROS: data integrity checks, advanced snapshots, RAID support.\n"
-          "           CONS: requires extra repository, complex, uses more RAM.",
-          "  Elige el sistema de archivos para tu disco.\n\n"
-          "  ext4   -> La mejor opción para la mayoría. Fiable y probado.\n"
-          "           PROS: rápido, estable, compatible con todo.\n"
-          "           CONS: sin snapshots (no puedes deshacer cambios).\n\n"
-          "  btrfs  -> Sistema moderno con funciones extra.\n"
-          "           PROS: snapshots automáticos, compresión transparente (ahorra espacio),\n"
-          "                 subvolúmenes. Funciona genial con Snapper.\n"
-          "           CONS: algo más de uso de RAM, no todas las herramientas lo soportan.\n\n"
-          "  xfs    -> Alto rendimiento, bueno para multimedia/servidores.\n"
-          "           PROS: muy rápido con archivos grandes, excelente rendimiento.\n"
-          "           CONS: no se puede reducir la partición, sin snapshots.\n\n"
-          "  zfs    -> Potente pero complejo. No recomendado para principiantes.\n"
-          "           PROS: verificación de integridad, snapshots avanzados, soporte RAID.\n"
-          "           CONS: requiere repositorio extra, complejo, usa más RAM."));
+        L("Choose the filesystem for your root partition.\n"
+          "For most users: ext4 (simple) or btrfs (snapshots).",
+          "Elige el sistema de archivos para la partición raíz.\n"
+          "Para la mayoría: ext4 (simple) o btrfs (snapshots)."));
 
     char out[16]={0};
     if (!radiolist_dlg(L(" Filesystem"," Sistema de archivos"),
@@ -3554,44 +3530,12 @@ static int screen_kernel(void) {
     char *tok = strtok(kl_copy, " ");
     while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL," "); }
 
-    char dlg_text[4096];
+    char dlg_text[512];
     snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L(" Choose which Linux kernel(s) to install.\n"
-          "   You can pick more than one — use SPACE to toggle.\n"
-          "   The first selected kernel is used for boot config.\n\n"
-          "  linux          -> Best for most users. Always up to date.\n"
-          "                   PROS: latest drivers, wide hardware support.\n"
-          "                   CONS: updates frequently (test before updating).\n\n"
-          "  linux-lts      -> Stays on one version for 2+ years.\n"
-          "                   PROS: very stable, great for servers/production.\n"
-          "                   CONS: may miss new hardware support.\n\n"
-          "  linux-zen      -> Tuned for responsiveness and gaming.\n"
-          "                   PROS: lower latency, better desktop feel.\n"
-          "                   CONS: slightly higher power draw.\n\n"
-          "  linux-hardened -> Extra security patches applied.\n"
-          "                   PROS: harder to exploit if attacked.\n"
-          "                   CONS: some apps (VMs, games) may not work.\n\n"
-          "  linux-cachyos  -> Bleeding-edge performance patches.\n"
-          "                   PROS: highest speed benchmarks.\n"
-          "                   CONS: less tested, requires CachyOS repository.",
-          " Elige qué kernel(s) de Linux instalar.\n"
-          "   Puedes elegir más de uno — usa ESPACIO para activar/desactivar.\n"
-          "   El primer kernel seleccionado se usa para arrancar.\n\n"
-          "  linux          -> La mejor opción para la mayoría. Siempre actualizado.\n"
-          "                   PROS: últimos drivers, amplio soporte de hardware.\n"
-          "                   CONS: se actualiza frecuentemente.\n\n"
-          "  linux-lts      -> Se mantiene en una versión durante 2+ años.\n"
-          "                   PROS: muy estable, ideal para servidores.\n"
-          "                   CONS: puede no soportar hardware muy nuevo.\n\n"
-          "  linux-zen      -> Ajustado para respuesta rápida y gaming.\n"
-          "                   PROS: menor latencia, mejor experiencia de escritorio.\n"
-          "                   CONS: algo más consumo de energía.\n\n"
-          "  linux-hardened -> Con parches de seguridad extra.\n"
-          "                   PROS: más difícil de atacar.\n"
-          "                   CONS: algunas apps (VMs, juegos) pueden no funcionar.\n\n"
-          "  linux-cachyos  -> Parches de rendimiento de vanguardia.\n"
-          "                   PROS: máximo rendimiento en benchmarks.\n"
-          "                   CONS: menos probado, requiere repositorio CachyOS."));
+        L("Choose one or more kernels. SPACE to toggle.\n"
+          "The first selected kernel will be used for boot.",
+          "Elige uno o más kernels. ESPACIO para marcar.\n"
+          "El primer kernel seleccionado se usará para arrancar."));
 
     char sel[8][256]; int nsel = -1;
     while (nsel < 1) {
@@ -4034,6 +3978,7 @@ static int screen_desktop(void) {
 
     char sel[8][256]; int nsel = -1;
     for (;;) {
+
         nsel = checklist_dlg(
             L("Desktop Environment","Entorno de escritorio"),
             L("Select one or more desktop environments to install.\n"
@@ -4061,6 +4006,7 @@ static int screen_desktop(void) {
         if (nc == 0) { strncpy(cleaned[0], "None", 255); nc = 1; }
 
         if (!desktop_preview_confirm(cleaned[0])) {
+
             nsel = -1;
             continue;
         }
