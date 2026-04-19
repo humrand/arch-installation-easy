@@ -3937,6 +3937,74 @@ static int screen_timezone(void) {
     return 1;
 }
 
+static const char *get_desktop_preview_url(const char *name) {
+    if (!strcmp(name, "KDE Plasma")) return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/KDE-6.png";
+    if (!strcmp(name, "Cinnamon"))   return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/cinnamonn.jpg";
+    if (!strcmp(name, "GNOME"))      return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/gnome.jpg";
+    if (!strcmp(name, "Hyprland"))   return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/hyprland.png";
+    if (!strcmp(name, "LXQt"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/lxqt.jpg";
+    if (!strcmp(name, "MATE"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/mate.jpg";
+    if (!strcmp(name, "None"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/no.png";
+    if (!strcmp(name, "Sway"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/sway.jpg";
+    if (!strcmp(name, "XFCE"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/xfce.jpg";
+    return NULL;
+}
+
+static int desktop_preview_confirm(const char *desktop_name) {
+    const char *url = get_desktop_preview_url(desktop_name);
+    if (!url) return 1;
+
+    char safe[64]; int si = 0;
+    for (const char *p = desktop_name; *p && si < 60; p++)
+        safe[si++] = (*p == ' ') ? '_' : *p;
+    safe[si] = '\0';
+
+    const char *ext = strrchr(url, '.');
+    if (!ext) ext = ".png";
+
+    char local_path[256];
+    snprintf(local_path, sizeof(local_path), "/tmp/arch_preview_%s%s", safe, ext);
+
+    if (access(local_path, F_OK) != 0) {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+                 "curl -s -L --max-time 15 -o '%s' '%s' 2>/dev/null",
+                 local_path, url);
+        (void)system(cmd);
+    }
+
+    if (access(local_path, F_OK) != 0) return 1;
+
+    char title[128];
+    snprintf(title, sizeof(title),
+             L("Preview: %s", "Vista previa: %s"), desktop_name);
+    char text[512];
+    snprintf(text, sizeof(text),
+             L("This is how <b>%s</b> looks.\nAre you sure you want to install it?",
+               "Así se verá <b>%s</b>.\n¿Estás seguro de que quieres instalarlo?"),
+             desktop_name);
+    char btn_ok[64], btn_back[64];
+    snprintf(btn_ok,   sizeof(btn_ok),   "--button=%s:0",
+             L("✓  Install this DE","✓  Instalar este escritorio"));
+    snprintf(btn_back, sizeof(btn_back), "--button=%s:1",
+             L("← Back","← Volver"));
+
+    char *argv[32]; int ai = 0;
+    argv[ai++] = "yad";
+    argv[ai++] = "--picture";
+    argv[ai++] = "--size=fit";
+    argv[ai++] = "--title";    argv[ai++] = title;
+    argv[ai++] = "--filename"; argv[ai++] = local_path;
+    argv[ai++] = "--width=1100";
+    argv[ai++] = "--height=650";
+    argv[ai++] = "--center";
+    argv[ai++] = btn_ok;
+    argv[ai++] = btn_back;
+    argv[ai] = NULL;
+
+    return yad_exec(argv, NULL, 0) == 0;
+}
+
 static int screen_desktop(void) {
     const char *desktops[][2] = {
         {"KDE Plasma",L("KDE Plasma - full featured, modern","KDE Plasma - completo, moderno")},
@@ -3965,7 +4033,7 @@ static int screen_desktop(void) {
     while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL,"|"); }
 
     char sel[8][256]; int nsel = -1;
-    while (nsel < 1) {
+    for (;;) {
         nsel = checklist_dlg(
             L("Desktop Environment","Entorno de escritorio"),
             L("Select one or more desktop environments to install.\n"
@@ -3980,26 +4048,34 @@ static int screen_desktop(void) {
             msgbox(L("No selection","Sin seleccion"),
                    L("Select at least one option (or 'None' for CLI).",
                      "Selecciona al menos una opcion (o 'None' para solo terminal)."));
+            continue;
         }
-    }
-    free(items);
 
-    char cleaned[8][256]; int nc=0;
-    int has_non_none = 0;
-    for(int i=0;i<nsel;i++) if(strcmp(sel[i],"None")) has_non_none=1;
-    for(int i=0;i<nsel;i++) {
-        if(has_non_none && !strcmp(sel[i],"None")) continue;
-        strncpy(cleaned[nc++], sel[i], 255);
-    }
-    if (nc == 0) { strncpy(cleaned[0],"None",255); nc=1; }
+        char cleaned[8][256]; int nc = 0;
+        int has_non_none = 0;
+        for (int i = 0; i < nsel; i++) if (strcmp(sel[i], "None")) has_non_none = 1;
+        for (int i = 0; i < nsel; i++) {
+            if (has_non_none && !strcmp(sel[i], "None")) continue;
+            strncpy(cleaned[nc++], sel[i], 255);
+        }
+        if (nc == 0) { strncpy(cleaned[0], "None", 255); nc = 1; }
 
-    st.desktop_list[0] = '\0';
-    for (int i=0;i<nc;i++) {
-        if(i) strncat(st.desktop_list,"|",sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
-        strncat(st.desktop_list, cleaned[i], sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
+        if (!desktop_preview_confirm(cleaned[0])) {
+            nsel = -1;
+            continue;
+        }
+
+        st.desktop_list[0] = '\0';
+        for (int i = 0; i < nc; i++) {
+            if (i) strncat(st.desktop_list, "|",
+                           sizeof(st.desktop_list) - strlen(st.desktop_list) - 1);
+            strncat(st.desktop_list, cleaned[i],
+                    sizeof(st.desktop_list) - strlen(st.desktop_list) - 1);
+        }
+        strncpy(st.desktop, cleaned[0], sizeof(st.desktop) - 1);
+        free(items);
+        return 1;
     }
-    strncpy(st.desktop, cleaned[0], sizeof(st.desktop)-1);
-    return 1;
 }
 
 static int screen_gpu(void) {
