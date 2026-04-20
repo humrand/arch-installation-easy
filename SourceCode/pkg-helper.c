@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h> 
 
 #define MAX_NAME    256
 #define MAX_VER      64
@@ -545,21 +546,145 @@ static char *sha256_of(const char *path) {
     return (strlen(line) == 64) ? g_strdup(line) : NULL;
 }
 
-static gboolean safe_replace(const char *src, const char *dst, int exec_bit) {
-    const char *chmod_arg = exec_bit ? "755" : "644";
-    char cmd[1024];
-
-    snprintf(cmd, sizeof(cmd),
-             "cp '%s' '%s' 2>/dev/null && chmod %s '%s' 2>/dev/null",
-             src, dst, chmod_arg, dst);
-    if (system(cmd) == 0) return TRUE;
-
-    snprintf(cmd, sizeof(cmd),
-             "pkexec sh -c \"cp '%s' '%s' && chmod %s '%s'\"",
-             src, dst, chmod_arg, dst);
-    return (system(cmd) == 0);
+static gboolean restart_cb(gpointer data) {
+    (void)data;
+    char *argv[] = { (char *)UPD_BIN_DST, NULL };
+    GError *err = NULL;
+    g_spawn_async(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL, NULL, NULL, &err);
+    if (err) g_error_free(err);
+    gtk_main_quit();
+    return G_SOURCE_REMOVE;
 }
 
+static void on_pkexec_done(GPid pid, gint status, gpointer data) {
+    g_spawn_close_pid(pid);
+    UpdResult *r = data;
+    unlink(UPD_TMP_BIN);
+    unlink(UPD_TMP_ICO);
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        if (r->bin_updated && r->icon_updated)
+            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_BOTH));
+        else if (r->icon_updated) {
+            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_ICON));
+            GdkPixbuf *pb = gdk_pixbuf_new_from_file(UPD_ICO_DST, NULL);
+            if (pb) { gtk_window_set_icon(GTK_WINDOW(g_win), pb); g_object_unref(pb); }
+        } else {
+            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_BIN));
+        }
+        if (r->bin_updated) {
+            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATE_RESTART));
+            g_timeout_add(2000, restart_cb, NULL);
+        }
+    } else {
+        gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATE_FAILED));
+    }
+    g_free(r);
+}
+
+static gboolean upd_notify_idle(gpointer data) {
+    UpdResult *r = data;
+
+    if (!r->bin_updated && !r->icon_updated) {
+        gtk_label_set_text(GTK_LABEL(g_status),
+            r->any_error ? T(STR_UPDATE_FAILED) : T(STR_UP_TO_DATE));
+        g_free(r);
+        return G_SOURCE_REMOVE;
+    }
+
+    GString *sh = g_string_new("");
+    if (r->bin_updated)
+        g_string_append_printf(sh,
+            "cp '%s' '%s' && chmod 755 '%s'",
+            UPD_TMP_BIN, UPD_BIN_DST, UPD_BIN_DST);
+    if (r->icon_updated) {
+        if (r->bin_updated) g_string_append(sh, " && ");
+        g_string_append_printf(sh,
+            "cp '%s' '%s' && chmod 644 '%s'",
+            UPD_TMP_ICO, UPD_ICO_DST, UPD_ICO_DST);
+    }
+
+    char *argv[] = { "pkexec", "sh", "-c", sh->str, NULL };
+    GPid  pid;
+    GError *err = NULL;
+
+    gtk_label_set_text(GTK_LABEL(g_status),
+        g_lang == LANG_ES ? "Aplicando actualización..." : "Applying update...");
+
+    if (g_spawn_async(NULL, argv, NULL,
+            G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
+            NULL, NULL, &pid, &err)) {
+        g_child_watch_add(pid, on_pkexec_done, r);
+    } else {
+        gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATE_FAILED));
+        if (err) g_error_free(err);
+        unlink(UPD_TMP_BIN);
+        unlink(UPD_TMP_ICO);
+        g_free(r);
+    }
+    g_string_free(sh, TRUE);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean upd_checking_idle(gpointer data) {
+    (void)data;
+    gtk_label_set_text(GTK_LABEL(g_status), T(STR_CHECKING_UPDATES));
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer update_check_thread(gpointer data) {
+    (void)data;
+    UpdResult *r = g_new0(UpdResult, 1);
+
+    g_idle_add(upd_checking_idle, NULL);
+
+    {
+        char cmd[700];
+        snprintf(cmd, sizeof(cmd),
+                 "curl -fsSL --max-time 30 -o '%s' '%s' 2>/dev/null",
+                 UPD_TMP_BIN, UPD_URL_BIN);
+        if (system(cmd) == 0) {
+            char self[512] = UPD_BIN_DST;
+            {
+                char tmp[512] = {0};
+                ssize_t n = readlink("/proc/self/exe", tmp, sizeof(tmp)-1);
+                if (n > 0) { tmp[n] = '\0'; strncpy(self, tmp, sizeof(self)-1); }
+            }
+            char *sha_local  = sha256_of(self);
+            char *sha_remote = sha256_of(UPD_TMP_BIN);
+            if (sha_local && sha_remote && strcmp(sha_local, sha_remote) != 0)
+                r->bin_updated = TRUE;  
+            else if (!sha_remote)
+                r->any_error = TRUE;
+            g_free(sha_local);
+            g_free(sha_remote);
+            if (!r->bin_updated) unlink(UPD_TMP_BIN);   
+        } else {
+            r->any_error = TRUE;
+        }
+    }
+
+    {
+        char cmd[700];
+        snprintf(cmd, sizeof(cmd),
+                 "curl -fsSL --max-time 20 -o '%s' '%s' 2>/dev/null",
+                 UPD_TMP_ICO, UPD_URL_ICON);
+        if (system(cmd) == 0) {
+            char *sha_local  = sha256_of(UPD_ICO_DST);
+            char *sha_remote = sha256_of(UPD_TMP_ICO);
+            if (!sha_local || (sha_remote && strcmp(sha_local, sha_remote) != 0))
+                r->icon_updated = TRUE;
+            g_free(sha_local);
+            g_free(sha_remote);
+            if (!r->icon_updated) unlink(UPD_TMP_ICO);
+        } else {
+            r->any_error = TRUE;
+        }
+    }
+
+    g_idle_add(upd_notify_idle, r);
+    return NULL;
+}
 
 static gboolean upd_notify_idle(gpointer data) {
     UpdResult *r = data;
