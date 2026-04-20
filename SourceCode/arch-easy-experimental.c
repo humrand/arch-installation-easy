@@ -144,10 +144,10 @@ typedef struct {
 static const DesktopDef DESKTOP_DEFS[] = {
     {"KDE Plasma", {
         "xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput",
-        "plasma-meta konsole dolphin ark kate plasma-nm firefox sddm"
+        "plasma-meta konsole alacritty dolphin ark kate plasma-nm firefox sddm"
     }, 2},
     {"GNOME", {
-        "gnome gdm firefox"
+        "gnome gdm firefox alacritty"
     }, 1},
     {"Cinnamon", {
         "xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput",
@@ -164,11 +164,11 @@ static const DesktopDef DESKTOP_DEFS[] = {
     }, 1},
     {"Hyprland", {
         "hyprland waybar wofi kitty xdg-desktop-portal-hyprland "
-        "polkit-gnome qt5-wayland qt6-wayland sddm firefox"
+        "polkit-gnome qt5-wayland alacritty qt6-wayland sddm firefox"
     }, 1},
     {"Sway", {
         "sway waybar wofi alacritty xdg-desktop-portal-wlr "
-        "polkit-gnome qt5-wayland sddm firefox"
+        "polkit-gnome qt5-wayland sddm alacritty firefox"
     }, 1},
     {NULL, {NULL}, 0}
 };
