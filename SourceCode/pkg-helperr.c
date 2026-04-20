@@ -13,7 +13,7 @@
 #define MAX_LINE   1024
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
-static LangID g_lang = LANG_ES;
+static LangID g_lang = LANG_EN;
 
 typedef enum {
     STR_PLACEHOLDER,
