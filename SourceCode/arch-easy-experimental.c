@@ -2550,6 +2550,40 @@ static void *ib_run_thread(void *arg) {
         }
     }
 
+    {
+        ib_stage(ib, L("Installing pkg-helper (package manager GUI)...",
+                       "Instalando pkg-helper (gestor de paquetes GUI)..."));
+
+        ib_chroot(ib,
+            "curl -sL --max-time 60 "
+            "-o /usr/local/bin/pkg-helper "
+            "'https://raw.githubusercontent.com/humrand/arch-installation-easy"
+            "/main/SourceCode/pkg-helper' "
+            "&& chmod +x /usr/local/bin/pkg-helper",
+            1);
+
+        ib_chroot(ib,
+            "pacman -S --noconfirm --needed gtk3 2>/dev/null || true",
+            1);
+
+        ib_chroot(ib,
+            "mkdir -p /usr/share/applications && "
+            "printf '"
+            "[Desktop Entry]\\n"
+            "Name=PKG Helper\\n"
+            "Comment=Arch Linux Package Manager (pacman/AUR/Flatpak)\\n"
+            "Exec=pkg-helper\\n"
+            "Icon=system-software-install\\n"
+            "Terminal=false\\n"
+            "Type=Application\\n"
+            "Categories=System;PackageManager;\\n"
+            "Keywords=pacman;aur;flatpak;packages;\\n"
+            "' > /usr/share/applications/pkg-helper.desktop",
+            1);
+
+        write_log("pkg-helper: binary installed to /usr/local/bin, .desktop created.");
+    }
+
     pthread_mutex_lock(&ib->lock);
     int had_error = ib->had_error;
     char first_error[sizeof(ib->first_error)];
