@@ -46,6 +46,7 @@ typedef enum {
     STR_UPDATED_BOTH,
     STR_UPDATE_RESTART,
     STR_UPDATE_FAILED,
+    STR_BTN_CHECK_UPDATES,
     N_STRINGS
 } StrID;
 
@@ -112,6 +113,8 @@ static const char *g_strings[N_STRINGS][2] = {
                                "Restart the application to use the new version."},
    { "Could not check for updates.",
                                "Could not check for updates."                 },
+   { "Buscar actualizaciones",
+                               "Check for updates"                            },
 };
 
 #define T(id) g_strings[(id)][g_lang]
@@ -134,6 +137,7 @@ static GtkWidget         *g_entry;
 static GtkWidget         *g_btn_search;
 static GtkWidget         *g_btn_install;
 static GtkWidget         *g_btn_remove;
+static GtkWidget         *g_btn_update;
 static GtkWidget         *g_status;
 static GtkWidget         *g_tree;
 static GtkWidget         *g_spinner;
@@ -493,6 +497,9 @@ static void apply_lang(void) {
     gtk_button_set_label(GTK_BUTTON(g_btn_install), T(STR_BTN_INSTALL));
     gtk_widget_set_tooltip_text(g_btn_remove,  T(STR_TOOLTIP_REMOVE));
     gtk_widget_set_tooltip_text(g_btn_install, T(STR_TOOLTIP_INSTALL));
+    gtk_button_set_label(GTK_BUTTON(g_btn_update), T(STR_BTN_CHECK_UPDATES));
+    gtk_widget_set_tooltip_text(g_btn_update,
+        g_lang == LANG_ES ? "Comprueba si hay nueva versión" : "Check if a new version is available");
 
     const char *cur = gtk_label_get_text(GTK_LABEL(g_status));
     if (strcmp(cur, g_strings[STR_STATUS_READY][LANG_ES]) == 0 ||
@@ -579,6 +586,7 @@ static void on_pkexec_done(GPid pid, gint status, gpointer data) {
     } else {
         gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATE_FAILED));
     }
+    if (g_btn_update) gtk_widget_set_sensitive(g_btn_update, TRUE);
     g_free(r);
 }
 
@@ -588,6 +596,7 @@ static gboolean upd_notify_idle(gpointer data) {
     if (!r->bin_updated && !r->icon_updated) {
         gtk_label_set_text(GTK_LABEL(g_status),
             r->any_error ? T(STR_UPDATE_FAILED) : T(STR_UP_TO_DATE));
+        if (g_btn_update) gtk_widget_set_sensitive(g_btn_update, TRUE);
         g_free(r);
         return G_SOURCE_REMOVE;
     }
@@ -629,6 +638,7 @@ static gboolean upd_notify_idle(gpointer data) {
 static gboolean upd_checking_idle(gpointer data) {
     (void)data;
     gtk_label_set_text(GTK_LABEL(g_status), T(STR_CHECKING_UPDATES));
+    if (g_btn_update) gtk_widget_set_sensitive(g_btn_update, FALSE);
     return G_SOURCE_REMOVE;
 }
 
@@ -691,6 +701,10 @@ static void launch_update_check(void) {
     g_thread_unref(t);
 }
 
+static void on_check_updates(GtkWidget *w, gpointer d) {
+    launch_update_check();
+}
+
 static void build_ui(void) {
     g_win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(g_win), "PKG Helper - Arch Linux");
@@ -722,6 +736,12 @@ static void build_ui(void) {
     gtk_widget_set_tooltip_text(g_lang_combo, "Idioma / Language");
     g_signal_connect(g_lang_combo, "changed", G_CALLBACK(on_lang_changed), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_top), g_lang_combo, FALSE, FALSE, 0);
+
+    g_btn_update = gtk_button_new_with_label(T(STR_BTN_CHECK_UPDATES));
+    gtk_widget_set_tooltip_text(g_btn_update,
+        g_lang == LANG_ES ? "Comprueba si hay nueva versión" : "Check if a new version is available");
+    g_signal_connect(g_btn_update, "clicked", G_CALLBACK(on_check_updates), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_update, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox), hbox_top, FALSE, FALSE, 0);
 
@@ -840,8 +860,6 @@ int main(int argc, char *argv[]) {
     }
 
     gtk_widget_show_all(g_win);
-
-    launch_update_check();
 
     gtk_main();
     return 0;
