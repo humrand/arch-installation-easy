@@ -13,7 +13,7 @@
 #define MAX_LINE   1024
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
-static LangID g_lang = LANG_EN;
+static LangID g_lang = LANG_ES;
 
 typedef enum {
     STR_PLACEHOLDER,
@@ -643,6 +643,7 @@ typedef struct {
     gboolean icon_updated;
     gboolean any_error;
     char     self_path[512];
+    char     res_file[256];
 } UpdResult;
 
 static char *sha256_of(const char *path) {
@@ -680,12 +681,12 @@ static void on_pkexec_done(GPid pid, gint status, gpointer data) {
 
     gboolean ok = FALSE;
     {
-        FILE *rf = fopen("/tmp/.pkg-helper-upd-result", "r");
+        FILE *rf = fopen(r->res_file, "r");
         if (rf) {
             char buf[8] = {0};
             fgets(buf, sizeof(buf), rf);
             fclose(rf);
-            unlink("/tmp/.pkg-helper-upd-result");
+            unlink(r->res_file);
             ok = (strncmp(buf, "ok", 2) == 0);
         }
     }
@@ -725,14 +726,15 @@ static gboolean upd_notify_idle(gpointer data) {
     GString *sh = g_string_new("");
     if (r->bin_updated)
         g_string_append_printf(sh,
-            "cp '%s' '%s' && chmod 755 '%s'",
-            UPD_TMP_BIN, r->self_path, r->self_path);
+            "rm -f '%s' && cp '%s' '%s' && chmod 755 '%s'",
+            r->self_path, UPD_TMP_BIN, r->self_path, r->self_path);
+    
     if (r->icon_updated) {
         if (r->bin_updated) g_string_append(sh, " && ");
         g_string_append_printf(sh,
-            "mkdir -p '%s' && cp '%s' '%s' && chmod 644 '%s'",
+            "mkdir -p '%s' && rm -f '%s' && cp '%s' '%s' && chmod 644 '%s'",
             "/usr/share/icons/hicolor/256x256/apps",
-            UPD_TMP_ICO, UPD_ICO_DST, UPD_ICO_DST);
+            UPD_ICO_DST, UPD_TMP_ICO, UPD_ICO_DST, UPD_ICO_DST);
     }
 
     {
@@ -740,13 +742,16 @@ static gboolean upd_notify_idle(gpointer data) {
         if (sf) {
             fprintf(sf,
                 "#!/bin/sh\n"
+                "rm -f '%s'\n"
                 "%s \\\n"
-                "  && echo ok   > /tmp/.pkg-helper-upd-result \\\n"
-                "  || echo fail > /tmp/.pkg-helper-upd-result\n"
+                "  && echo ok   > '%s' \\\n"
+                "  || echo fail > '%s'\n"
+                "chmod 666 '%s' 2>/dev/null\n"
                 "echo\n"
                 "echo '--- %s ---'\n"
                 "read\n",
-                sh->str, T(STR_ALACRITTY_DONE));
+                r->res_file,
+                sh->str, r->res_file, r->res_file, r->res_file, T(STR_ALACRITTY_DONE));
             fclose(sf);
             chmod("/tmp/.pkg-helper-upd.sh", 0755);
         }
@@ -786,6 +791,8 @@ static gboolean upd_checking_idle(gpointer data) {
 static gpointer update_check_thread(gpointer data) {
     (void)data;
     UpdResult *r = g_new0(UpdResult, 1);
+    
+    snprintf(r->res_file, sizeof(r->res_file), "/tmp/.pkg-helper-res-%d", getpid());
 
     g_idle_add(upd_checking_idle, NULL);
 
@@ -803,10 +810,12 @@ static gpointer update_check_thread(gpointer data) {
             }
             char *sha_local  = sha256_of(r->self_path);
             char *sha_remote = sha256_of(UPD_TMP_BIN);
-            if (sha_local && sha_remote && strcmp(sha_local, sha_remote) != 0)
+            
+            if (sha_remote && (!sha_local || strcmp(sha_local, sha_remote) != 0))
                 r->bin_updated = TRUE;
             else if (!sha_remote)
                 r->any_error = TRUE;
+                
             g_free(sha_local);
             g_free(sha_remote);
             if (!r->bin_updated) unlink(UPD_TMP_BIN);
@@ -823,8 +832,10 @@ static gpointer update_check_thread(gpointer data) {
         if (system(cmd) == 0) {
             char *sha_local  = sha256_of(UPD_ICO_DST);
             char *sha_remote = sha256_of(UPD_TMP_ICO);
-            if (!sha_local || (sha_remote && strcmp(sha_local, sha_remote) != 0))
+            
+            if (sha_remote && (!sha_local || strcmp(sha_local, sha_remote) != 0))
                 r->icon_updated = TRUE;
+                
             g_free(sha_local);
             g_free(sha_remote);
             if (!r->icon_updated) unlink(UPD_TMP_ICO);
@@ -843,6 +854,7 @@ static void launch_update_check(void) {
 }
 
 static void on_check_updates(GtkWidget *w, gpointer d) {
+    gtk_widget_set_sensitive(g_btn_update, FALSE);
     launch_update_check();
 }
 
