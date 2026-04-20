@@ -2563,6 +2563,15 @@ static void *ib_run_thread(void *arg) {
             1);
 
         ib_chroot(ib,
+            "mkdir -p /usr/share/icons/hicolor/256x256/apps && "
+            "curl -sL --max-time 30 "
+            "-o /usr/share/icons/hicolor/256x256/apps/pkg-helper.png "
+            "'https://raw.githubusercontent.com/humrand/arch-installation-easy"
+            "/main/SourceCode/images/pkg.png' && "
+            "gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true",
+            1);
+
+        ib_chroot(ib,
             "pacman -S --noconfirm --needed gtk3 2>/dev/null || true",
             1);
 
@@ -2573,7 +2582,7 @@ static void *ib_run_thread(void *arg) {
             "Name=PKG Helper\\n"
             "Comment=Arch Linux Package Manager (pacman/AUR/Flatpak)\\n"
             "Exec=pkg-helper\\n"
-            "Icon=system-software-install\\n"
+            "Icon=pkg-helper\\n"
             "Terminal=false\\n"
             "Type=Application\\n"
             "Categories=System;PackageManager;\\n"
@@ -2581,7 +2590,7 @@ static void *ib_run_thread(void *arg) {
             "' > /usr/share/applications/pkg-helper.desktop",
             1);
 
-        write_log("pkg-helper: binary installed to /usr/local/bin, .desktop created.");
+        write_log("pkg-helper: binary, icon and .desktop installed.");
     }
 
     pthread_mutex_lock(&ib->lock);
