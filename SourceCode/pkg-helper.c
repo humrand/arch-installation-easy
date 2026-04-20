@@ -3,7 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/wait.h>          
+#include <sys/wait.h>
+#include <sys/stat.h>
 
 #define MAX_NAME    256
 #define MAX_VER      64
@@ -47,77 +48,118 @@ typedef enum {
     STR_UPDATE_RESTART,
     STR_UPDATE_FAILED,
     STR_BTN_CHECK_UPDATES,
+    STR_APPLYING_UPDATE,
+    STR_TOOLTIP_UPDATE,
     N_STRINGS
 } StrID;
 
 static const char *g_strings[N_STRINGS][2] = {
     { "Busca un paquete...",
-                               "Search for a package..."                       },
+      "Search for a package..."                        },
     { "Buscar",
-                               "Search"                                        },
+      "Search"                                         },
     { "Fuentes:",
-                               "Sources:"                                      },
+      "Sources:"                                       },
     { "pacman (oficial)",
-                               "pacman (official)"                             },
+      "pacman (official)"                              },
     { "Listo. Escribe un paquete y pulsa Buscar.",
-                               "Ready. Type a package and press Search."       },
+      "Ready. Type a package and press Search."        },
     { "Eliminar",
-                               "Remove"                                        },
+      "Remove"                                         },
     { "Instalar",
-                               "Install"                                       },
+      "Install"                                        },
     { "sudo pacman -Rns / flatpak uninstall",
-                               "sudo pacman -Rns / flatpak uninstall"          },
+      "sudo pacman -Rns / flatpak uninstall"           },
     { "Instala los paquetes marcados no instalados",
-                               "Install checked packages not yet installed"    },
+      "Install checked packages not yet installed"     },
     { "Instalado",
-                               "Installed"                                     },
+      "Installed"                                      },
     { "Buscando...",
-                               "Searching..."                                  },
+      "Searching..."                                   },
     { "Sin resultados para \"%s\"",
-                               "No results for \"%s\""                         },
+      "No results for \"%s\""                          },
     { "%u paquetes encontrados para \"%s\"",
-                               "%u packages found for \"%s\""                  },
+      "%u packages found for \"%s\""                  },
     { "Marca paquetes no instalados para instalar",
-                               "Check uninstalled packages to install"         },
+      "Check uninstalled packages to install"          },
     { "Marca paquetes instalados para eliminar",
-                               "Check installed packages to remove"            },
-   { "Instalando %d paquete(s)...",
-                               "Installing %d package(s)..."                   },
-   { "Eliminando %d paquete(s)...",
-                               "Removing %d package(s)..."                     },
-   { "--- Listo. Pulsa Enter para cerrar ---",
-                               "--- Done. Press Enter to close ---"            },
-   { "Error al abrir Alacritty: %s",
-                               "Error opening Alacritty: %s"                  },
+      "Check installed packages to remove"             },
+    { "Instalando %d paquete(s)...",
+      "Installing %d package(s)..."                    },
+    { "Eliminando %d paquete(s)...",
+      "Removing %d package(s)..."                      },
+    { "--- Listo. Pulsa Enter para cerrar ---",
+      "--- Done. Press Enter to close ---"             },
+    { "Error al abrir Alacritty: %s",
+      "Error opening Alacritty: %s"                   },
     { "Estado",
-                               "Status"                                        },
-   { "Fuente",
-                               "Source"                                        },
+      "Status"                                         },
+    { "Fuente",
+      "Source"                                         },
     { "Nombre",
-                               "Name"                                          },
-    { "Version",
-                               "Version"                                       },
-     { "Descripcion",
-                               "Description"                                   },
-   { "Checking for updates...",
-                               "Checking for updates..."                       },
-   { "Application is up to date.",
-                               "Application is up to date."                   },
-    { "App updated. Restart to apply.",
-                               "App updated. Restart to apply."               },
-   { "Icono actualizado.",
-                               "Icon updated."                                 },
-   { "App and icon updated. Restart to apply.",
-                               "App and icon updated. Restart to apply."      },
-  { "Restart the application to use the new version.",
-                               "Restart the application to use the new version."},
-   { "Could not check for updates.",
-                               "Could not check for updates."                 },
-   { "Buscar actualizaciones",
-                               "Check for updates"                            },
+      "Name"                                           },
+    { "Versión",
+      "Version"                                        },
+    { "Descripción",
+      "Description"                                    },
+    { "Comprobando actualizaciones...",
+      "Checking for updates..."                        },
+    { "La aplicación está actualizada.",
+      "Application is up to date."                     },
+    { "App actualizada. Reinicia para aplicar.",
+      "App updated. Restart to apply."                 },
+    { "Icono actualizado.",
+      "Icon updated."                                  },
+    { "App e icono actualizados. Reinicia para aplicar.",
+      "App and icon updated. Restart to apply."        },
+    { "Reinicia la aplicación para usar la nueva versión.",
+      "Restart the application to use the new version." },
+    { "No se pudo comprobar las actualizaciones.",
+      "Could not check for updates."                   },
+    { "Buscar actualizaciones",
+      "Check for updates"                              },
+    { "Aplicando actualización...",
+      "Applying update..."                             },
+    { "Comprueba si hay una nueva versión",
+      "Check if a new version is available"            },
 };
 
 #define T(id) g_strings[(id)][g_lang]
+
+
+static char *lang_config_path(void) {
+    const char *home = g_get_home_dir();
+    return g_build_filename(home, ".config", "pkg-helper", "lang", NULL);
+}
+
+static void save_lang_pref(void) {
+    char *path = lang_config_path();
+    char *dir  = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    FILE *fp = fopen(path, "w");
+    if (fp) {
+        fputs(g_lang == LANG_EN ? "EN" : "ES", fp);
+        fclose(fp);
+    }
+    g_free(dir);
+    g_free(path);
+}
+
+static void load_lang_pref(void) {
+    char *path = lang_config_path();
+    FILE *fp = fopen(path, "r");
+    if (fp) {
+        char buf[8] = {0};
+        fgets(buf, sizeof(buf), fp);
+        fclose(fp);
+        if (strncmp(buf, "EN", 2) == 0)
+            g_lang = LANG_EN;
+        else if (strncmp(buf, "ES", 2) == 0)
+            g_lang = LANG_ES;
+    }
+    g_free(path);
+}
+
 
 enum {
     COL_CHECK = 0,
@@ -168,8 +210,14 @@ typedef struct {
     gboolean use_pacman;
     gboolean use_aur;
     gboolean use_flatpak;
-    GArray  *results;
 } SearchCtx;
+
+typedef struct {
+    GArray  *pkgs;       
+    char     query[256];
+    gboolean is_last;     
+    guint    grand_total; 
+} BatchCtx;
 
 static void trim(char *s) {
     if (!s || !*s) return;
@@ -304,11 +352,15 @@ static void parse_flatpak_output(FILE *fp, GArray *results) {
     }
 }
 
-static gboolean search_done_cb(gpointer data) {
-    SearchCtx *ctx = data;
-    gtk_list_store_clear(g_store);
-    for (guint i=0; i<ctx->results->len; i++) {
-        Pkg *p = &g_array_index(ctx->results, Pkg, i);
+
+static gboolean batch_add_cb(gpointer data) {
+    BatchCtx *ctx = data;
+
+    gtk_tree_view_freeze_child_notify(GTK_TREE_VIEW(g_tree));
+    g_object_freeze_notify(G_OBJECT(g_store));
+
+    for (guint i = 0; i < ctx->pkgs->len; i++) {
+        Pkg *p = &g_array_index(ctx->pkgs, Pkg, i);
         GtkTreeIter it;
         gtk_list_store_append(g_store, &it);
         gtk_list_store_set(g_store, &it,
@@ -323,58 +375,107 @@ static gboolean search_done_cb(gpointer data) {
             COL_INSTALLED,  p->installed,
             -1);
     }
-    char status[128];
-    if (ctx->results->len==0)
-        snprintf(status, sizeof(status), T(STR_NO_RESULTS), ctx->query);
-    else
-        snprintf(status, sizeof(status), T(STR_FOUND_PKGS),
-                 ctx->results->len, ctx->query);
-    gtk_label_set_text(GTK_LABEL(g_status), status);
-    gtk_spinner_stop(GTK_SPINNER(g_spinner));
-    gtk_widget_set_sensitive(g_btn_search,  TRUE);
-    gtk_widget_set_sensitive(g_btn_install, TRUE);
-    gtk_widget_set_sensitive(g_btn_remove,  TRUE);
-    g_array_free(ctx->results, TRUE);
+
+    g_object_thaw_notify(G_OBJECT(g_store));
+    gtk_tree_view_thaw_child_notify(GTK_TREE_VIEW(g_tree));
+
+    if (ctx->is_last) {
+        char status[128];
+        if (ctx->grand_total == 0)
+            snprintf(status, sizeof(status), T(STR_NO_RESULTS), ctx->query);
+        else
+            snprintf(status, sizeof(status), T(STR_FOUND_PKGS),
+                     ctx->grand_total, ctx->query);
+        gtk_label_set_text(GTK_LABEL(g_status), status);
+        gtk_spinner_stop(GTK_SPINNER(g_spinner));
+        gtk_widget_set_sensitive(g_btn_search,  TRUE);
+        gtk_widget_set_sensitive(g_btn_install, TRUE);
+        gtk_widget_set_sensitive(g_btn_remove,  TRUE);
+    }
+
+    g_array_free(ctx->pkgs, TRUE);
     g_free(ctx);
     return G_SOURCE_REMOVE;
 }
 
+static void dispatch_batch(GArray *pkgs, const char *query,
+                           gboolean is_last, guint grand_total) {
+    BatchCtx *ctx  = g_new0(BatchCtx, 1);
+    ctx->pkgs       = pkgs;
+    ctx->is_last    = is_last;
+    ctx->grand_total= grand_total;
+    strncpy(ctx->query, query, sizeof(ctx->query) - 1);
+    g_idle_add(batch_add_cb, ctx);
+}
+
+
 static gpointer search_thread(gpointer data) {
     SearchCtx *ctx = data;
     char cmd[512]; FILE *fp;
-
-    if (ctx->use_pacman) {
-        snprintf(cmd, sizeof(cmd), "pacman -Ss '%s' 2>/dev/null", ctx->query);
-        fp = popen(cmd, "r");
-        if (fp) { parse_pacman_output(fp, ctx->results, "pacman", "sudo pacman -S"); pclose(fp); }
-    }
-    if (ctx->use_aur && system("which yay >/dev/null 2>&1")==0) {
-        snprintf(cmd, sizeof(cmd), "yay --color=never -Ss --aur '%s' 2>/dev/null", ctx->query);
-        fp = popen(cmd, "r");
-        if (fp) { parse_pacman_output(fp, ctx->results, "aur", "yay -S"); pclose(fp); }
-    }
-    if (ctx->use_flatpak && system("which flatpak >/dev/null 2>&1")==0) {
-        snprintf(cmd, sizeof(cmd), "flatpak search '%s' 2>/dev/null", ctx->query);
-        fp = popen(cmd, "r");
-        if (fp) { parse_flatpak_output(fp, ctx->results); pclose(fp); }
-    }
+    guint grand_total = 0;
 
     GHashTable *pacman_ht  = build_pacman_installed();
     GHashTable *flatpak_ht = build_flatpak_installed();
-    for (guint i=0; i<ctx->results->len; i++) {
-        Pkg *p = &g_array_index(ctx->results, Pkg, i);
-        if (strcmp(p->source, "flatpak")==0) {
+
+    gboolean do_aur     = ctx->use_aur     && system("which yay >/dev/null 2>&1") == 0;
+    gboolean do_flatpak = ctx->use_flatpak && system("which flatpak >/dev/null 2>&1") == 0;
+
+    int remaining = (ctx->use_pacman ? 1 : 0) + (do_aur ? 1 : 0) + (do_flatpak ? 1 : 0);
+
+    if (remaining == 0) {
+        dispatch_batch(g_array_new(FALSE, TRUE, sizeof(Pkg)),
+                       ctx->query, TRUE, 0);
+        goto cleanup;
+    }
+
+    if (ctx->use_pacman) {
+        GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
+        snprintf(cmd, sizeof(cmd), "pacman -Ss '%s' 2>/dev/null", ctx->query);
+        fp = popen(cmd, "r");
+        if (fp) { parse_pacman_output(fp, pkgs, "pacman", "sudo pacman -S"); pclose(fp); }
+        for (guint i = 0; i < pkgs->len; i++) {
+            Pkg *p = &g_array_index(pkgs, Pkg, i);
+            p->installed = g_hash_table_contains(pacman_ht, p->name);
+        }
+        grand_total += pkgs->len;
+        remaining--;
+        dispatch_batch(pkgs, ctx->query, remaining == 0, grand_total);
+    }
+
+    if (do_aur) {
+        GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
+        snprintf(cmd, sizeof(cmd), "yay --color=never -Ss --aur '%s' 2>/dev/null", ctx->query);
+        fp = popen(cmd, "r");
+        if (fp) { parse_pacman_output(fp, pkgs, "aur", "yay -S"); pclose(fp); }
+        for (guint i = 0; i < pkgs->len; i++) {
+            Pkg *p = &g_array_index(pkgs, Pkg, i);
+            p->installed = g_hash_table_contains(pacman_ht, p->name);
+        }
+        grand_total += pkgs->len;
+        remaining--;
+        dispatch_batch(pkgs, ctx->query, remaining == 0, grand_total);
+    }
+
+    if (do_flatpak) {
+        GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
+        snprintf(cmd, sizeof(cmd), "flatpak search '%s' 2>/dev/null", ctx->query);
+        fp = popen(cmd, "r");
+        if (fp) { parse_flatpak_output(fp, pkgs); pclose(fp); }
+        for (guint i = 0; i < pkgs->len; i++) {
+            Pkg *p = &g_array_index(pkgs, Pkg, i);
             char *appid = strrchr(p->cmd, ' ');
             if (appid) appid++;
             p->installed = appid && g_hash_table_contains(flatpak_ht, appid);
-        } else {
-            p->installed = g_hash_table_contains(pacman_ht, p->name);
         }
+        grand_total += pkgs->len;
+        remaining--;
+        dispatch_batch(pkgs, ctx->query, remaining == 0, grand_total);
     }
+
+cleanup:
     g_hash_table_destroy(pacman_ht);
     g_hash_table_destroy(flatpak_ht);
-
-    g_idle_add(search_done_cb, ctx);
+    g_free(ctx);
     return NULL;
 }
 
@@ -464,7 +565,6 @@ static void on_search(GtkWidget *w, gpointer d) {
     ctx->use_pacman  = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_chk_pacman));
     ctx->use_aur     = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_chk_aur));
     ctx->use_flatpak = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_chk_flatpak));
-    ctx->results     = g_array_new(FALSE, TRUE, sizeof(Pkg));
     strncpy(ctx->query, query, sizeof(ctx->query)-1);
     GThread *t = g_thread_new("pkg-search", search_thread, ctx);
     g_thread_unref(t);
@@ -498,8 +598,7 @@ static void apply_lang(void) {
     gtk_widget_set_tooltip_text(g_btn_remove,  T(STR_TOOLTIP_REMOVE));
     gtk_widget_set_tooltip_text(g_btn_install, T(STR_TOOLTIP_INSTALL));
     gtk_button_set_label(GTK_BUTTON(g_btn_update), T(STR_BTN_CHECK_UPDATES));
-    gtk_widget_set_tooltip_text(g_btn_update,
-        g_lang == LANG_ES ? "Comprueba si hay nueva versión" : "Check if a new version is available");
+    gtk_widget_set_tooltip_text(g_btn_update, T(STR_TOOLTIP_UPDATE));
 
     const char *cur = gtk_label_get_text(GTK_LABEL(g_status));
     if (strcmp(cur, g_strings[STR_STATUS_READY][LANG_ES]) == 0 ||
@@ -521,6 +620,13 @@ static void apply_lang(void) {
 static void on_lang_changed(GtkComboBox *combo, gpointer d) {
     g_lang = (LangID)gtk_combo_box_get_active(combo);
     apply_lang();
+    save_lang_pref();   
+}
+
+static gboolean on_window_destroy(GtkWidget *w, GdkEvent *event, gpointer d) {
+    save_lang_pref();   
+    gtk_main_quit();
+    return FALSE;
 }
 
 #define UPD_URL_BIN  "https://raw.githubusercontent.com/humrand/" \
@@ -620,8 +726,7 @@ static gboolean upd_notify_idle(gpointer data) {
     GPid  pid;
     GError *err = NULL;
 
-    gtk_label_set_text(GTK_LABEL(g_status),
-        g_lang == LANG_ES ? "Aplicando actualización..." : "Applying update...");
+    gtk_label_set_text(GTK_LABEL(g_status), T(STR_APPLYING_UPDATE));
 
     if (g_spawn_async(NULL, argv, NULL,
             G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
@@ -667,12 +772,12 @@ static gpointer update_check_thread(gpointer data) {
             char *sha_local  = sha256_of(r->self_path);
             char *sha_remote = sha256_of(UPD_TMP_BIN);
             if (sha_local && sha_remote && strcmp(sha_local, sha_remote) != 0)
-                r->bin_updated = TRUE;   
+                r->bin_updated = TRUE;
             else if (!sha_remote)
                 r->any_error = TRUE;
             g_free(sha_local);
             g_free(sha_remote);
-            if (!r->bin_updated) unlink(UPD_TMP_BIN);   
+            if (!r->bin_updated) unlink(UPD_TMP_BIN);
         } else {
             r->any_error = TRUE;
         }
@@ -714,7 +819,7 @@ static void build_ui(void) {
     gtk_window_set_title(GTK_WINDOW(g_win), "PKG Helper - Arch Linux");
     gtk_window_set_default_size(GTK_WINDOW(g_win), 920, 580);
     gtk_window_set_position(GTK_WINDOW(g_win), GTK_WIN_POS_CENTER);
-    g_signal_connect(g_win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    g_signal_connect(g_win, "delete-event", G_CALLBACK(on_window_destroy), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
@@ -742,8 +847,7 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(hbox_top), g_lang_combo, FALSE, FALSE, 0);
 
     g_btn_update = gtk_button_new_with_label(T(STR_BTN_CHECK_UPDATES));
-    gtk_widget_set_tooltip_text(g_btn_update,
-        g_lang == LANG_ES ? "Comprueba si hay nueva versión" : "Check if a new version is available");
+    gtk_widget_set_tooltip_text(g_btn_update, T(STR_TOOLTIP_UPDATE));
     g_signal_connect(g_btn_update, "clicked", G_CALLBACK(on_check_updates), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_update, FALSE, FALSE, 0);
 
@@ -855,6 +959,9 @@ static void build_ui(void) {
 
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
+
+    load_lang_pref();   
+
     build_ui();
 
     GdkPixbuf *win_icon = gdk_pixbuf_new_from_file(UPD_ICO_DST, NULL);
@@ -864,7 +971,6 @@ int main(int argc, char *argv[]) {
     }
 
     gtk_widget_show_all(g_win);
-
     gtk_main();
     return 0;
 }
