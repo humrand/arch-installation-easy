@@ -12,7 +12,7 @@
 #define MAX_LINE   1024
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
-static LangID g_lang = LANG_ES;
+static LangID g_lang = LANG_EN;
 
 typedef enum {
     STR_PLACEHOLDER,
@@ -536,6 +536,7 @@ typedef struct {
     gboolean bin_updated;
     gboolean icon_updated;
     gboolean any_error;
+    char     self_path[512];
 } UpdResult;
 
 static char *sha256_of(const char *path) {
@@ -554,11 +555,12 @@ static char *sha256_of(const char *path) {
 }
 
 static gboolean restart_cb(gpointer data) {
-    (void)data;
-    char *argv[] = { (char *)UPD_BIN_DST, NULL };
+    char *path = data;
+    char *argv[] = { (path && path[0]) ? path : (char *)UPD_BIN_DST, NULL };
     GError *err = NULL;
     g_spawn_async(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL, NULL, NULL, &err);
     if (err) g_error_free(err);
+    g_free(path);
     gtk_main_quit();
     return G_SOURCE_REMOVE;
 }
@@ -581,7 +583,7 @@ static void on_pkexec_done(GPid pid, gint status, gpointer data) {
         }
         if (r->bin_updated) {
             gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATE_RESTART));
-            g_timeout_add(2000, restart_cb, NULL);
+            g_timeout_add(2000, restart_cb, g_strdup(r->self_path));
         }
     } else {
         gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATE_FAILED));
@@ -605,11 +607,12 @@ static gboolean upd_notify_idle(gpointer data) {
     if (r->bin_updated)
         g_string_append_printf(sh,
             "cp '%s' '%s' && chmod 755 '%s'",
-            UPD_TMP_BIN, UPD_BIN_DST, UPD_BIN_DST);
+            UPD_TMP_BIN, r->self_path, r->self_path);
     if (r->icon_updated) {
         if (r->bin_updated) g_string_append(sh, " && ");
         g_string_append_printf(sh,
-            "cp '%s' '%s' && chmod 644 '%s'",
+            "mkdir -p '%s' && cp '%s' '%s' && chmod 644 '%s'",
+            "/usr/share/icons/hicolor/256x256/apps",
             UPD_TMP_ICO, UPD_ICO_DST, UPD_ICO_DST);
     }
 
@@ -629,6 +632,7 @@ static gboolean upd_notify_idle(gpointer data) {
         if (err) g_error_free(err);
         unlink(UPD_TMP_BIN);
         unlink(UPD_TMP_ICO);
+        if (g_btn_update) gtk_widget_set_sensitive(g_btn_update, TRUE);
         g_free(r);
     }
     g_string_free(sh, TRUE);
@@ -654,13 +658,13 @@ static gpointer update_check_thread(gpointer data) {
                  "curl -fsSL --max-time 30 -o '%s' '%s' 2>/dev/null",
                  UPD_TMP_BIN, UPD_URL_BIN);
         if (system(cmd) == 0) {
-            char self[512] = UPD_BIN_DST;
+            strncpy(r->self_path, UPD_BIN_DST, sizeof(r->self_path)-1);
             {
                 char tmp[512] = {0};
                 ssize_t n = readlink("/proc/self/exe", tmp, sizeof(tmp)-1);
-                if (n > 0) { tmp[n] = '\0'; strncpy(self, tmp, sizeof(self)-1); }
+                if (n > 0) { tmp[n] = '\0'; strncpy(r->self_path, tmp, sizeof(r->self_path)-1); }
             }
-            char *sha_local  = sha256_of(self);
+            char *sha_local  = sha256_of(r->self_path);
             char *sha_remote = sha256_of(UPD_TMP_BIN);
             if (sha_local && sha_remote && strcmp(sha_local, sha_remote) != 0)
                 r->bin_updated = TRUE;   
