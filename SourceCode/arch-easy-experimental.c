@@ -4920,28 +4920,33 @@ static void ensure_display(void) {
     fprintf(f, "xrdb -merge /root/.Xresources 2>/dev/null || true\n");
     fprintf(f, "\n");
 
-    fprintf(f, "while ! [ -s /tmp/arch_wp.png ]; do\n");
-    fprintf(f, "  curl -s -L --max-time 15 "
-               "-o /tmp/arch_wp.png "
-               "'https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/wallpaper.png' "
-               "2>/dev/null\n");
-    fprintf(f, "  [ -s /tmp/arch_wp.png ] || sleep 3\n");
-    fprintf(f, "done\n");
-    fprintf(f, "\n");
-
     fprintf(f, "openbox &\n");
     fprintf(f, "sleep 0.5\n");
     fprintf(f, "\n");
 
-    fprintf(f, "feh --bg-fill /tmp/arch_wp.png 2>/dev/null "
-               "|| xsetroot -solid '#0d1117'\n");
+    fprintf(f, "xsetroot -solid '#0d1117'\n");
     fprintf(f, "\n");
-
 
     fprintf(f, "tint2 &\n");
     fprintf(f, "\n");
 
     fprintf(f, "xsetroot -cursor_name left_ptr\n");
+
+    fprintf(f, "(\n");
+    fprintf(f, "  while ! ping -c1 -W3 8.8.8.8 >/dev/null 2>&1 && \\\n");
+    fprintf(f, "        ! ping -c1 -W3 1.1.1.1 >/dev/null 2>&1; do\n");
+    fprintf(f, "    sleep 2\n");
+    fprintf(f, "  done\n");
+    fprintf(f, "  while ! [ -s /tmp/arch_wp.png ]; do\n");
+    fprintf(f, "    curl -s -L --max-time 15 "
+               "-o /tmp/arch_wp.png "
+               "'https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/wallpaper.png' "
+               "2>/dev/null\n");
+    fprintf(f, "    [ -s /tmp/arch_wp.png ] || sleep 3\n");
+    fprintf(f, "  done\n");
+    fprintf(f, "  feh --bg-fill /tmp/arch_wp.png 2>/dev/null || true\n");
+    fprintf(f, ") &\n");
+    fprintf(f, "\n");
     fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
     fprintf(f, "exec \"%s\"\n", exepath);
     fclose(f);
