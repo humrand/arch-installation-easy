@@ -674,10 +674,23 @@ static gboolean restart_cb(gpointer data) {
 static void on_pkexec_done(GPid pid, gint status, gpointer data) {
     g_spawn_close_pid(pid);
     UpdResult *r = data;
+    unlink("/tmp/.pkg-helper-upd.sh");
     unlink(UPD_TMP_BIN);
     unlink(UPD_TMP_ICO);
 
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+    gboolean ok = FALSE;
+    {
+        FILE *rf = fopen("/tmp/.pkg-helper-upd-result", "r");
+        if (rf) {
+            char buf[8] = {0};
+            fgets(buf, sizeof(buf), rf);
+            fclose(rf);
+            unlink("/tmp/.pkg-helper-upd-result");
+            ok = (strncmp(buf, "ok", 2) == 0);
+        }
+    }
+
+    if (ok) {
         if (r->bin_updated && r->icon_updated)
             gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_BOTH));
         else if (r->icon_updated) {
@@ -722,7 +735,26 @@ static gboolean upd_notify_idle(gpointer data) {
             UPD_TMP_ICO, UPD_ICO_DST, UPD_ICO_DST);
     }
 
-    char *argv[] = { "pkexec", "sh", "-c", sh->str, NULL };
+    {
+        FILE *sf = fopen("/tmp/.pkg-helper-upd.sh", "w");
+        if (sf) {
+            fprintf(sf,
+                "#!/bin/sh\n"
+                "%s \\\n"
+                "  && echo ok   > /tmp/.pkg-helper-upd-result \\\n"
+                "  || echo fail > /tmp/.pkg-helper-upd-result\n"
+                "echo\n"
+                "echo '--- %s ---'\n"
+                "read\n",
+                sh->str, T(STR_ALACRITTY_DONE));
+            fclose(sf);
+            chmod("/tmp/.pkg-helper-upd.sh", 0755);
+        }
+    }
+    g_string_free(sh, TRUE);
+
+    char *argv[] = { "alacritty", "-e", "sudo",
+                     "/tmp/.pkg-helper-upd.sh", NULL };
     GPid  pid;
     GError *err = NULL;
 
@@ -735,12 +767,12 @@ static gboolean upd_notify_idle(gpointer data) {
     } else {
         gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATE_FAILED));
         if (err) g_error_free(err);
+        unlink("/tmp/.pkg-helper-upd.sh");
         unlink(UPD_TMP_BIN);
         unlink(UPD_TMP_ICO);
         if (g_btn_update) gtk_widget_set_sensitive(g_btn_update, TRUE);
         g_free(r);
     }
-    g_string_free(sh, TRUE);
     return G_SOURCE_REMOVE;
 }
 
