@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/wait.h> 
+#include <sys/wait.h>          
 
 #define MAX_NAME    256
 #define MAX_VER      64
@@ -117,15 +117,15 @@ static const char *g_strings[N_STRINGS][2] = {
 #define T(id) g_strings[(id)][g_lang]
 
 enum {
-    COL_CHECK = 0,  
-    COL_STATUS,     
+    COL_CHECK = 0,
+    COL_STATUS,
     COL_SOURCE,
     COL_NAME,
     COL_VERSION,
     COL_DESC,
-    COL_CMD,        
-    COL_REMOVE_CMD,  
-    COL_INSTALLED,  
+    COL_CMD,
+    COL_REMOVE_CMD,
+    COL_INSTALLED,
     N_COLS
 };
 
@@ -653,7 +653,7 @@ static gpointer update_check_thread(gpointer data) {
             char *sha_local  = sha256_of(self);
             char *sha_remote = sha256_of(UPD_TMP_BIN);
             if (sha_local && sha_remote && strcmp(sha_local, sha_remote) != 0)
-                r->bin_updated = TRUE;  
+                r->bin_updated = TRUE;   
             else if (!sha_remote)
                 r->any_error = TRUE;
             g_free(sha_local);
@@ -680,109 +680,6 @@ static gpointer update_check_thread(gpointer data) {
         } else {
             r->any_error = TRUE;
         }
-    }
-
-    g_idle_add(upd_notify_idle, r);
-    return NULL;
-}
-
-static gboolean upd_notify_idle(gpointer data) {
-    UpdResult *r = data;
-
-    if (r->any_error && !r->bin_updated && !r->icon_updated) {
-        g_free(r);
-        return G_SOURCE_REMOVE;
-    }
-
-    const char *msg;
-    if (r->bin_updated && r->icon_updated)
-        msg = T(STR_UPDATED_BOTH);
-    else if (r->bin_updated)
-        msg = T(STR_UPDATED_BIN);
-    else if (r->icon_updated)
-        msg = T(STR_UPDATED_ICON);
-    else
-        msg = T(STR_UP_TO_DATE);
-
-    gtk_label_set_text(GTK_LABEL(g_status), msg);
-
-    if (r->icon_updated && g_win) {
-        GdkPixbuf *pb = gdk_pixbuf_new_from_file(UPD_ICO_DST, NULL);
-        if (pb) {
-            gtk_window_set_icon(GTK_WINDOW(g_win), pb);
-            g_object_unref(pb);
-        }
-    }
-
-    g_free(r);
-    return G_SOURCE_REMOVE;
-}
-
-static gboolean upd_checking_idle(gpointer data) {
-    (void)data;
-    gtk_label_set_text(GTK_LABEL(g_status), T(STR_CHECKING_UPDATES));
-    return G_SOURCE_REMOVE;
-}
-
-static gpointer update_check_thread(gpointer data) {
-    (void)data;
-    UpdResult *r = g_new0(UpdResult, 1);
-
-    g_idle_add(upd_checking_idle, NULL);
-
-    {
-        char cmd[700];
-        snprintf(cmd, sizeof(cmd),
-                 "curl -fsSL --max-time 30 -o '%s' '%s' 2>/dev/null",
-                 UPD_TMP_BIN, UPD_URL_BIN);
-        if (system(cmd) == 0) {
-            char self[512] = UPD_BIN_DST;
-            {
-                char tmp[512] = {0};
-                ssize_t n = readlink("/proc/self/exe", tmp, sizeof(tmp)-1);
-                if (n > 0) { tmp[n] = '\0'; strncpy(self, tmp, sizeof(self)-1); }
-            }
-            char *sha_local  = sha256_of(self);
-            char *sha_remote = sha256_of(UPD_TMP_BIN);
-            if (sha_local && sha_remote && strcmp(sha_local, sha_remote) != 0) {
-                if (safe_replace(UPD_TMP_BIN, UPD_BIN_DST, 1))
-                    r->bin_updated = TRUE;
-                else
-                    r->any_error = TRUE;
-            }
-            g_free(sha_local);
-            g_free(sha_remote);
-        } else {
-            r->any_error = TRUE;
-        }
-        unlink(UPD_TMP_BIN);
-    }
-
-    {
-        char cmd[700];
-        snprintf(cmd, sizeof(cmd),
-                 "curl -fsSL --max-time 20 -o '%s' '%s' 2>/dev/null",
-                 UPD_TMP_ICO, UPD_URL_ICON);
-        if (system(cmd) == 0) {
-            char *sha_local  = sha256_of(UPD_ICO_DST);
-            char *sha_remote = sha256_of(UPD_TMP_ICO);
-            if (!sha_local || (sha_remote && strcmp(sha_local, sha_remote) != 0)) {
-                if (safe_replace(UPD_TMP_ICO, UPD_ICO_DST, 0)) {
-                    r->icon_updated = TRUE;
-                    system("pkexec gtk-update-icon-cache -f "
-                           "/usr/share/icons/hicolor 2>/dev/null || "
-                           "gtk-update-icon-cache -f "
-                           "/usr/share/icons/hicolor 2>/dev/null || true");
-                } else {
-                    r->any_error = TRUE;
-                }
-            }
-            g_free(sha_local);
-            g_free(sha_remote);
-        } else {
-            r->any_error = TRUE;
-        }
-        unlink(UPD_TMP_ICO);
     }
 
     g_idle_add(upd_notify_idle, r);
@@ -846,15 +743,15 @@ static void build_ui(void) {
         gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
 
     g_store = gtk_list_store_new(N_COLS,
-        G_TYPE_BOOLEAN,  
-        G_TYPE_STRING,   
-        G_TYPE_STRING,   
-        G_TYPE_STRING,   
-        G_TYPE_STRING,   
-        G_TYPE_STRING,   
-        G_TYPE_STRING,   
-        G_TYPE_STRING,   
-        G_TYPE_BOOLEAN); 
+        G_TYPE_BOOLEAN,
+        G_TYPE_STRING,
+        G_TYPE_STRING,
+        G_TYPE_STRING,
+        G_TYPE_STRING,
+        G_TYPE_STRING,
+        G_TYPE_STRING,
+        G_TYPE_STRING,
+        G_TYPE_BOOLEAN);
 
     g_tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(g_store));
     g_object_unref(g_store);
