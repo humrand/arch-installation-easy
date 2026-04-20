@@ -214,7 +214,7 @@ typedef struct {
 
 typedef struct {
     GArray  *pkgs;       
-    char     query[256];
+    char     query[256];  
     gboolean is_last;     
     guint    grand_total; 
 } BatchCtx;
@@ -356,7 +356,7 @@ static void parse_flatpak_output(FILE *fp, GArray *results) {
 static gboolean batch_add_cb(gpointer data) {
     BatchCtx *ctx = data;
 
-    gtk_tree_view_freeze_child_notify(GTK_TREE_VIEW(g_tree));
+    gtk_widget_freeze_child_notify(g_tree);
     g_object_freeze_notify(G_OBJECT(g_store));
 
     for (guint i = 0; i < ctx->pkgs->len; i++) {
@@ -377,7 +377,7 @@ static gboolean batch_add_cb(gpointer data) {
     }
 
     g_object_thaw_notify(G_OBJECT(g_store));
-    gtk_tree_view_thaw_child_notify(GTK_TREE_VIEW(g_tree));
+    gtk_widget_thaw_child_notify(g_tree);
 
     if (ctx->is_last) {
         char status[128];
@@ -620,7 +620,7 @@ static void apply_lang(void) {
 static void on_lang_changed(GtkComboBox *combo, gpointer d) {
     g_lang = (LangID)gtk_combo_box_get_active(combo);
     apply_lang();
-    save_lang_pref();   
+    save_lang_pref();
 }
 
 static gboolean on_window_destroy(GtkWidget *w, GdkEvent *event, gpointer d) {
