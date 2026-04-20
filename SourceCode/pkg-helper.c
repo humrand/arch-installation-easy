@@ -563,15 +563,18 @@ static void on_pkexec_done(GPid pid, gint status, gpointer data) {
     unlink(UPD_TMP_ICO);
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        if (r->bin_updated && r->icon_updated)
-            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_BOTH));
-        else if (r->icon_updated) {
-            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_ICON));
+        if (r->icon_updated && g_win) {
             GdkPixbuf *pb = gdk_pixbuf_new_from_file(UPD_ICO_DST, NULL);
             if (pb) { gtk_window_set_icon(GTK_WINDOW(g_win), pb); g_object_unref(pb); }
-        } else {
-            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_BIN));
         }
+
+        if (r->bin_updated && r->icon_updated)
+            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_BOTH));
+        else if (r->icon_updated)
+            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_ICON));
+        else
+            gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATED_BIN));
+
         if (r->bin_updated) {
             gtk_label_set_text(GTK_LABEL(g_status), T(STR_UPDATE_RESTART));
             g_timeout_add(2000, restart_cb, NULL);
@@ -658,7 +661,7 @@ static gpointer update_check_thread(gpointer data) {
                 r->any_error = TRUE;
             g_free(sha_local);
             g_free(sha_remote);
-            if (!r->bin_updated) unlink(UPD_TMP_BIN);   
+            if (!r->bin_updated) unlink(UPD_TMP_BIN);  
         } else {
             r->any_error = TRUE;
         }
