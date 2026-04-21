@@ -997,33 +997,25 @@ static void show_changelog_dialog(GtkWidget *parent) {
     typedef struct { const char *ver; const char *date; const char *body_es; const char *body_en; } Entry;
     static const Entry entries[] = {
         {
-            "v0.0.3-beta", "2025",
+            "v0.0.3-beta", "21 april 2026",
             "• Rendimiento mejorado: todos los paquetes se descargan en paralelo en lugar de uno por uno.\n"
             "• La interfaz ya respeta el idioma configurado al mostrar el historial de cambios.\n",
             "• Performance improvement: all packages are now downloaded in parallel instead of one by one.\n"
             "• The interface now respects the configured language when displaying the changelog.\n"
         },
         {
-            "v0.0.2-beta", "2025",
-            "• Soporte para AUR mediante yay.\n"
-            "• Soporte para paquetes Flatpak.\n"
-            "• Selector de fuentes (pacman / AUR / Flatpak) en la barra superior.\n"
+            "v0.0.2-beta", "20 april 2026",
             "• Corrección de crash al buscar con fuentes desactivadas.\n",
-            "• AUR support via yay.\n"
-            "• Flatpak package support.\n"
-            "• Source selector (pacman / AUR / Flatpak) in the top bar.\n"
             "• Fixed crash when searching with all sources disabled.\n"
         },
         {
-            "v0.0.1-beta", "2025",
+            "v0.0.1-beta", "20 april 2026",
             "• Versión inicial de PKG Helper.\n"
-            "• Búsqueda de paquetes vía pacman.\n"
+            "• Búsqueda de paquetes vía flatpak yay y pacman.\n"
             "• Instalación y eliminación de paquetes a través de Alacritty.\n"
-            "• Selector de idioma (ES / EN) con persistencia.\n",
             "• Initial release of PKG Helper.\n"
-            "• Package search via pacman.\n"
+            "• Package search via flatpak yay and pacman.\n"
             "• Package install and remove through Alacritty.\n"
-            "• Language selector (ES / EN) with persistence.\n"
         },
     };
 
