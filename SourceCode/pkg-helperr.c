@@ -265,6 +265,14 @@ static void strip_ansi(char *dst, const char *src, size_t dstlen) {
     dst[di] = '\0';
 }
 
+static void filter_exact(GArray *pkgs, const char *query) {
+    for (int i = (int)pkgs->len - 1; i >= 0; i--) {
+        Pkg *p = &g_array_index(pkgs, Pkg, i);
+        if (strcasecmp(p->name, query) != 0)
+            g_array_remove_index_fast(pkgs, i);
+    }
+}
+
 static GHashTable *build_pacman_installed(void) {
     GHashTable *ht = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     FILE *fp = popen("pacman -Q 2>/dev/null", "r");
@@ -457,6 +465,7 @@ static gpointer search_thread(gpointer data) {
         snprintf(cmd, sizeof(cmd), "pacman -Ss '%s' 2>/dev/null", ctx->query);
         fp = popen(cmd, "r");
         if (fp) { parse_pacman_output(fp, pkgs, "pacman", "sudo pacman -S"); pclose(fp); }
+        filter_exact(pkgs, ctx->query);
         for (guint i = 0; i < pkgs->len; i++) {
             Pkg *p = &g_array_index(pkgs, Pkg, i);
             p->installed = g_hash_table_contains(pacman_ht, p->name);
@@ -471,6 +480,7 @@ static gpointer search_thread(gpointer data) {
         snprintf(cmd, sizeof(cmd), "yay --color=never -Ss --aur '%s' 2>/dev/null", ctx->query);
         fp = popen(cmd, "r");
         if (fp) { parse_pacman_output(fp, pkgs, "aur", "yay -S"); pclose(fp); }
+        filter_exact(pkgs, ctx->query);
         for (guint i = 0; i < pkgs->len; i++) {
             Pkg *p = &g_array_index(pkgs, Pkg, i);
             p->installed = g_hash_table_contains(pacman_ht, p->name);
@@ -485,6 +495,7 @@ static gpointer search_thread(gpointer data) {
         snprintf(cmd, sizeof(cmd), "flatpak search '%s' 2>/dev/null", ctx->query);
         fp = popen(cmd, "r");
         if (fp) { parse_flatpak_output(fp, pkgs); pclose(fp); }
+        filter_exact(pkgs, ctx->query);
         for (guint i = 0; i < pkgs->len; i++) {
             Pkg *p = &g_array_index(pkgs, Pkg, i);
             char *appid = strrchr(p->cmd, ' ');
