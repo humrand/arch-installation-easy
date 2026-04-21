@@ -20,7 +20,7 @@
 #include <signal.h>
 #include <sys/statvfs.h>
 
-#define VERSION   "V2.1.0"
+#define VERSION   "V3.0.0"
 #define LOG_FILE  "/tmp/arch_install.log"
 #define TITLE     "Arch Linux Installer"
 
@@ -39,16 +39,16 @@ typedef struct {
     char user_pass[256];
     char swap[8];
     char disk[64];
-    char desktop[32];        
-    char desktop_list[512];   
+    char desktop[32];
+    char desktop_list[512];
     char gpu[32];
     char keymap[32];
     char timezone[128];
     char filesystem[8];
-    char kernel[32];          
-    char kernel_list[512];   
+    char kernel[32];
+    char kernel_list[512];
     char bootloader[16];
-    char extra_pkgs[2048];    
+    char extra_pkgs[2048];
     int  mirrors;
     int  quick;
     int  yay;
@@ -58,6 +58,7 @@ typedef struct {
     char db_root[128];
     char db_efi[128];
     char db_swap[128];
+    int  db_size_gb;
     char profile[32];
     int  laptop;
     char optimus_mode[16];
@@ -94,6 +95,7 @@ static State st = {
     .db_root      = "",
     .db_efi       = "",
     .db_swap      = "",
+    .db_size_gb   = 30,
     .profile      = "none",
     .laptop       = 0,
     .optimus_mode = "hybrid",
@@ -103,7 +105,6 @@ static State st = {
 };
 
 #define L(en, es) (strcmp(st.lang,"en")==0 ? (en) : (es))
-
 
 typedef struct { const char *key; const char *val; } KV;
 
@@ -143,10 +144,10 @@ typedef struct {
 static const DesktopDef DESKTOP_DEFS[] = {
     {"KDE Plasma", {
         "xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput",
-        "plasma-meta konsole dolphin ark kate plasma-nm firefox sddm"
+        "plasma-meta konsole alacritty dolphin ark kate plasma-nm firefox sddm"
     }, 2},
     {"GNOME", {
-        "gnome gdm firefox"
+        "gnome gdm firefox alacritty"
     }, 1},
     {"Cinnamon", {
         "xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput",
@@ -163,11 +164,11 @@ static const DesktopDef DESKTOP_DEFS[] = {
     }, 1},
     {"Hyprland", {
         "hyprland waybar wofi kitty xdg-desktop-portal-hyprland "
-        "polkit-gnome qt5-wayland qt6-wayland sddm firefox"
+        "polkit-gnome qt5-wayland alacritty qt6-wayland sddm firefox"
     }, 1},
     {"Sway", {
         "sway waybar wofi alacritty xdg-desktop-portal-wlr "
-        "polkit-gnome qt5-wayland sddm firefox"
+        "polkit-gnome qt5-wayland sddm alacritty firefox"
     }, 1},
     {NULL, {NULL}, 0}
 };
@@ -191,6 +192,36 @@ static const char *get_desktop_dm(const char *name) {
 }
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_fullscreen = 1;
+
+static int g_home_requested = 0;
+
+static int password_strength(const char *p) {
+    if (!p || !p[0]) return 0;
+    int len  = (int)strlen(p);
+    int has_lower = 0, has_upper = 0, has_digit = 0, has_sym = 0;
+    for (const char *c = p; *c; c++) {
+        if (islower((unsigned char)*c))  has_lower = 1;
+        if (isupper((unsigned char)*c))  has_upper = 1;
+        if (isdigit((unsigned char)*c))  has_digit = 1;
+        if (ispunct((unsigned char)*c))  has_sym   = 1;
+    }
+    int score = has_lower + has_upper + has_digit + has_sym;
+    if (len < 6)  return 1;
+    if (len < 8 || score < 2) return 1;
+    if (len < 12 || score < 3) return 2;
+    return 3;
+}
+
+static void password_strength_label(const char *p, char *out, size_t sz,
+                                    const char *lang) {
+    int s = password_strength(p);
+    const char *bar[]   = {"", "██░░░", "████░", "█████"};
+    const char *elen[]  = {"(empty)", "WEAK", "MEDIUM", "STRONG"};
+    const char *eses[]  = {"(vacía)", "DÉBIL", "MEDIA",  "FUERTE"};
+    const char **lbl = strcmp(lang,"en")==0 ? elen : eses;
+    snprintf(out, sz, "%s %s", s>0?bar[s]:"", lbl[s]);
+}
 
 static void write_log(const char *msg) {
     time_t t = time(NULL);
@@ -277,135 +308,213 @@ static int validate_swap(const char *s) {
     return v >= 1 && v <= 128;
 }
 
-typedef struct { char **v; int n; int cap; } DA;
+typedef struct { char tag[256]; char desc[512]; } MenuItem;
 
-static DA da_new(void) {
-    DA da; da.cap=32; da.n=0;
-    da.v = malloc(32*sizeof(char*));
-    da.v[0] = NULL;
-    return da;
-}
-static void da_push(DA *da, const char *s) {
-    if (da->n+2 > da->cap) {
-        da->cap *= 2;
-        da->v = realloc(da->v, da->cap*sizeof(char*));
+static void dlg_strip(const char *src, char *dst, size_t n) {
+    size_t i = 0;
+    while (*src && i < n - 1) {
+        if (*src == '\\' && *(src+1) == 'Z') {
+            src += 2;
+            if (*src) src++;
+        } else {
+            dst[i++] = *src++;
+        }
     }
-    da->v[da->n++] = strdup(s);
-    da->v[da->n]   = NULL;
-}
-static void da_free(DA *da) {
-    for (int i=0;i<da->n;i++) free(da->v[i]);
-    free(da->v); da->v=NULL; da->n=0;
+    dst[i] = '\0';
 }
 
-static int da_exec(DA *da, char *out, size_t outsz) {
-    char tmp[64] = "/tmp/.dlgXXXXXX";
-    int tfd = mkstemp(tmp);
-    if (tfd < 0) { if(out&&outsz) out[0]='\0'; return -1; }
+static void set_dark_theme_env(void) {
+    setenv("GTK_THEME", "Adwaita:dark", 1);
+    setenv("YAD_DISABLE_APPLICATION_INDICATOR", "1", 1);
+}
 
-    tcflush(STDIN_FILENO, TCIFLUSH);
+static int yad_exec(char **argv, char *out, size_t outsz) {
+    char **exec_argv = argv;
+    char **fs_argv   = NULL;
+
+    if (g_fullscreen) {
+        int n = 0;
+        while (argv[n]) n++;
+        fs_argv = calloc((size_t)(n + 3), sizeof(char*));
+        int j = 0;
+        for (int i = 0; i < n; i++) {
+            if (strncmp(argv[i], "--width=", 8) == 0) continue;
+            if (strncmp(argv[i], "--height=", 9) == 0) continue;
+            fs_argv[j++] = argv[i];
+        }
+        fs_argv[j++] = "--maximize";
+        fs_argv[j]   = NULL;
+        exec_argv    = fs_argv;
+    }
+
+    int pfd[2];
+    if (pipe(pfd) != 0) {
+        if (out && outsz) out[0] = '\0';
+        if (fs_argv) free(fs_argv);
+        return -1;
+    }
 
     pid_t pid = fork();
     if (pid == 0) {
-        dup2(tfd, STDERR_FILENO);
-        close(tfd);
-        execvp("dialog", da->v);
+        set_dark_theme_env();
+        close(pfd[0]);
+        dup2(pfd[1], STDOUT_FILENO);
+        close(pfd[1]);
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) dup2(dn, STDERR_FILENO);
+        execvp("yad", exec_argv);
         _exit(127);
     }
-    close(tfd);
+    close(pfd[1]);
 
-    int status; waitpid(pid, &status, 0);
-
-    if (out && outsz>0) {
-        FILE *f = fopen(tmp,"r");
-        if (f) {
-            size_t n = fread(out, 1, outsz-1, f);
-            out[n]='\0'; fclose(f);
-            trim_nl(out);
-        } else out[0]='\0';
+    if (out && outsz > 0) {
+        size_t total = 0;
+        char buf[512];
+        ssize_t n;
+        while ((n = read(pfd[0], buf, sizeof(buf))) > 0) {
+            if (total + (size_t)n < outsz) {
+                memcpy(out + total, buf, (size_t)n);
+                total += (size_t)n;
+            }
+        }
+        out[total] = '\0';
+        size_t len = strlen(out);
+        while (len > 0 && (out[len-1] == '|' || out[len-1] == '\n' || out[len-1] == '\r'))
+            out[--len] = '\0';
+        trim_nl(out);
     }
-    unlink(tmp);
+    close(pfd[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
+    if (fs_argv) free(fs_argv);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 77) {
+        g_home_requested = 1;
+        return 1;
+    }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-static void da_hdr(DA *da, const char *title) {
-    char bt[256], tt[256];
-    snprintf(bt, sizeof(bt), "\\Zb\\Z4%s\\Zn  -  %s", TITLE, VERSION);
-    snprintf(tt, sizeof(tt), " %s ", title);
-    da_push(da,"dialog"); da_push(da,"--colors");
-    da_push(da,"--backtitle"); da_push(da,bt);
-    da_push(da,"--title");    da_push(da,tt);
-}
-
+#define YAD_W   "--width=580", "--center"
+#define YAD_WS  "--width=420", "--center"
+#define YAD_WL  "--width=700", "--center"
 
 static void msgbox(const char *title, const char *text) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--msgbox"); da_push(&da,text);
-    da_push(&da,"0"); da_push(&da,"0");
-    da_exec(&da,NULL,0); da_free(&da);
+    char clean[4096]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
+                 "--button=OK:0", YAD_W, "--wrap", NULL};
+    yad_exec(a, NULL, 0);
 }
 
 static int yesno_dlg(const char *title, const char *text) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--yesno"); da_push(&da,text);
-    da_push(&da,"0"); da_push(&da,"0");
-    int rc = da_exec(&da,NULL,0); da_free(&da);
-    return rc == 0;
+    char clean[4096]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--question","--title",(char*)title,"--text",clean,
+                 "--button=Yes:0","--button=No:1", YAD_W, "--wrap", NULL};
+    return yad_exec(a, NULL, 0) == 0;
 }
 
 static int inputbox_dlg(const char *title, const char *text,
                          const char *init, char *out, size_t outsz) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--inputbox"); da_push(&da,text);
-    da_push(&da,"0"); da_push(&da,"60");
-    if (init && *init) da_push(&da,init);
-    else da_push(&da,"");
-    int rc = da_exec(&da,out,outsz); da_free(&da);
-    return rc == 0;
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--entry","--title",(char*)title,"--text",clean,
+                 "--entry-text",(char*)(init?init:""),
+                 "--button=OK:0","--button=Cancel:1","--button= Home:77",
+                 YAD_W, NULL};
+    return yad_exec(a, out, outsz) == 0;
 }
 
 static int passwordbox_dlg(const char *title, const char *text,
                             char *out, size_t outsz) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--insecure"); da_push(&da,"--passwordbox");
-    da_push(&da,text); da_push(&da,"0"); da_push(&da,"60");
-    int rc = da_exec(&da,out,outsz); da_free(&da);
-    return rc == 0;
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+    int show = 0;
+    while (1) {
+        char *hide_arg = show ? NULL : (char*)"--hide-text";
+        char *eye_btn  = show
+            ? (char*)"--button= Ocultar:3"
+            : (char*)"--button= Mostrar:3";
+        char *argv[32]; int ai = 0;
+        argv[ai++] = "yad";
+        argv[ai++] = "--entry";
+        if (hide_arg) argv[ai++] = hide_arg;
+        argv[ai++] = "--title";    argv[ai++] = (char*)title;
+        argv[ai++] = "--text";     argv[ai++] = clean;
+        if (out && out[0]) { argv[ai++] = "--entry-text"; argv[ai++] = out; }
+        argv[ai++] = "--button=OK:0";
+        argv[ai++] = "--button=Cancel:1";
+        argv[ai++] = eye_btn;
+        argv[ai++] = "--button= Home:77";
+        argv[ai++] = (char*)YAD_WS;
+        argv[ai] = NULL;
+        char tmp[outsz > 0 ? outsz : 256];
+        tmp[0] = '\0';
+        int rc = yad_exec(argv, tmp, sizeof(tmp));
+        if (rc == 3) {
+            if (tmp[0] && out) strncpy(out, tmp, outsz-1);
+            show = !show;
+            continue;
+        }
+        if (rc == 0 && out) { strncpy(out, tmp, outsz-1); return 1; }
+        return 0;
+    }
 }
-
-typedef struct { char tag[256]; char desc[512]; } MenuItem;
 
 static int menu_dlg(const char *title, const char *text,
                      MenuItem *items, int n, char *out, size_t outsz) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--menu"); da_push(&da,text);
-    char h[8]; snprintf(h,sizeof(h),"%d", n>28?40:n+12);
-    char ns[8]; snprintf(ns,sizeof(ns),"%d",n);
-    da_push(&da,h); da_push(&da,"76"); da_push(&da,ns);
-    for (int i=0;i<n;i++) { da_push(&da,items[i].tag); da_push(&da,items[i].desc); }
-    int rc = da_exec(&da,out,outsz); da_free(&da);
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+
+    int argc = 0;
+    char **a = calloc((size_t)(n * 2 + 16), sizeof(char*));
+    a[argc++] = "yad";
+    a[argc++] = "--list";
+    a[argc++] = "--title";    a[argc++] = (char*)title;
+    a[argc++] = "--text";     a[argc++] = clean;
+    a[argc++] = "--column=Option";
+    a[argc++] = "--column=Description";
+    a[argc++] = "--print-column=1";
+    a[argc++] = YAD_WL;
+    a[argc++] = "--button=OK:0";
+    a[argc++] = "--button=Cancel:1";
+    a[argc++] = "--button= Home:77";
+    for (int i = 0; i < n; i++) {
+        a[argc++] = items[i].tag;
+        a[argc++] = items[i].desc;
+    }
+    a[argc] = NULL;
+
+    int rc = yad_exec(a, out, outsz);
+    free(a);
     return rc == 0;
 }
 
 static int radiolist_dlg(const char *title, const char *text,
                            MenuItem *items, int n, const char *def,
                            char *out, size_t outsz) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--radiolist"); da_push(&da,text);
-    char h[8]; snprintf(h,sizeof(h),"%d", n>28?40:n+12);
-    char ns[8]; snprintf(ns,sizeof(ns),"%d",n);
-    da_push(&da,h); da_push(&da,"76"); da_push(&da,ns);
-    for (int i=0;i<n;i++) {
-        da_push(&da,items[i].tag); da_push(&da,items[i].desc);
-        da_push(&da,(def && strcmp(items[i].tag,def)==0)?"on":"off");
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+
+    int argc = 0;
+    char **a = calloc((size_t)(n * 3 + 20), sizeof(char*));
+    a[argc++] = "yad";
+    a[argc++] = "--list";
+    a[argc++] = "--radiolist";
+    a[argc++] = "--title";    a[argc++] = (char*)title;
+    a[argc++] = "--text";     a[argc++] = clean;
+    a[argc++] = "--column= ";
+    a[argc++] = "--column=Option";
+    a[argc++] = "--column=Description";
+    a[argc++] = "--print-column=2";
+    a[argc++] = YAD_WL;
+    a[argc++] = "--button=OK:0";
+    a[argc++] = "--button=Cancel:1";
+    a[argc++] = "--button= Home:77";
+    for (int i = 0; i < n; i++) {
+        a[argc++] = (def && strcmp(items[i].tag, def) == 0) ? "TRUE" : "FALSE";
+        a[argc++] = items[i].tag;
+        a[argc++] = items[i].desc;
     }
-    int rc = da_exec(&da,out,outsz); da_free(&da);
+    a[argc] = NULL;
+
+    int rc = yad_exec(a, out, outsz);
+    free(a);
     return rc == 0;
 }
 
@@ -413,61 +522,76 @@ static int checklist_dlg(const char *title, const char *text,
                           MenuItem *items, int n,
                           const char **defaults, int ndef,
                           char out[][256], int maxout) {
-    DA da = da_new();
-    da_hdr(&da, title);
-    da_push(&da, "--separate-output");
-    da_push(&da, "--checklist"); da_push(&da, text);
-    char h[8]; snprintf(h, sizeof(h), "%d", n>28 ? 40 : n+12);
-    char ns[8]; snprintf(ns, sizeof(ns), "%d", n);
-    da_push(&da, h); da_push(&da, "76"); da_push(&da, ns);
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+
+    int argc = 0;
+    char **a = calloc((size_t)(n * 3 + 20), sizeof(char*));
+    a[argc++] = "yad";
+    a[argc++] = "--list";
+    a[argc++] = "--checklist";
+    a[argc++] = "--title";    a[argc++] = (char*)title;
+    a[argc++] = "--text";     a[argc++] = clean;
+    a[argc++] = "--column= ";
+    a[argc++] = "--column=Option";
+    a[argc++] = "--column=Description";
+    a[argc++] = "--print-column=2";
+    a[argc++] = YAD_WL;
+    a[argc++] = "--button=OK:0";
+    a[argc++] = "--button=Cancel:1";
+    a[argc++] = "--button= Home:77";
     for (int i = 0; i < n; i++) {
-        da_push(&da, items[i].tag);
-        da_push(&da, items[i].desc);
         int on = 0;
         for (int j = 0; j < ndef; j++)
-            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0) { on=1; break; }
-        da_push(&da, on ? "on" : "off");
+            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0) { on = 1; break; }
+        a[argc++] = on ? "TRUE" : "FALSE";
+        a[argc++] = items[i].tag;
+        a[argc++] = items[i].desc;
     }
-    char raw[4096] = {0};
-    int rc = da_exec(&da, raw, sizeof(raw));
-    da_free(&da);
-    if (rc != 0) return -1;  
+    a[argc] = NULL;
 
+    char raw[4096] = {0};
+    int rc = yad_exec(a, raw, sizeof(raw));
+    free(a);
+    if (rc != 0) return -1;
 
     int count = 0;
-    char *p = raw;
+    char copy[4096]; strncpy(copy, raw, sizeof(copy)-1);
+    char *p = copy;
     while (*p && count < maxout) {
-        char *nl = strchr(p, '\n');
-        int len = nl ? (int)(nl - p) : (int)strlen(p);
-        if (len > 0 && len < 255) {
-            strncpy(out[count], p, len);
-            out[count][len] = '\0';
-            count++;
+        char *sep = p;
+        while (*sep && *sep != '|' && *sep != '\n') sep++;
+        int slen = (int)(sep - p);
+        if (slen > 0 && slen < 255) {
+            strncpy(out[count], p, slen);
+            out[count][slen] = '\0';
+            trim_nl(out[count]);
+            if (out[count][0]) count++;
         }
-        if (!nl) break;
-        p = nl + 1;
+        if (*sep) p = sep + 1;
+        else break;
     }
     return count;
 }
 
 static void infobox_dlg(const char *title, const char *text) {
-    DA da = da_new();
-    da_hdr(&da,title);
-    da_push(&da,"--infobox"); da_push(&da,text);
-    da_push(&da,"5"); da_push(&da,"50");
-    da_exec(&da,NULL,0); da_free(&da);
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+    char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
+                 "--timeout=60","--no-buttons", YAD_WS, NULL};
+    pid_t pid = fork();
+    if (pid == 0) {
+        set_dark_theme_env();
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) { dup2(dn, STDOUT_FILENO); dup2(dn, STDERR_FILENO); }
+        execvp("yad", a);
+        _exit(0);
+    }
 }
 
 typedef void (*LineCallback)(const char *line, void *ud);
 
+static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_error);
 static int run_simple(const char *cmd, int ignore_error) {
-    write_log_fmt("$ %s", cmd);
-    char full[MAX_CMD];
-    snprintf(full,sizeof(full),"{ %s; } >/dev/null 2>&1",cmd);
-    int rc = system(full);
-    rc = (rc==-1)?-1:WEXITSTATUS(rc);
-    if (rc!=0 && !ignore_error) write_log_fmt("ERROR (rc=%d): %s",rc,cmd);
-    return rc;
+    return run_stream(cmd, NULL, NULL, ignore_error);
 }
 
 static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_error) {
@@ -475,7 +599,10 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     char full[MAX_CMD];
     snprintf(full,sizeof(full),"{ %s; } 2>&1",cmd);
     FILE *fp = popen(full,"r");
-    if (!fp) { write_log_fmt("ERROR: popen failed: %s",cmd); return -1; }
+    if (!fp) {
+        write_log_fmt("ERROR: popen failed: %s", cmd);
+        return -1;
+    }
     char line[4096];
     while (fgets(line,sizeof(line),fp)) {
         size_t len = strlen(line);
@@ -487,24 +614,11 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
     }
     int rc = pclose(fp);
     rc = (rc==-1)?-1:WEXITSTATUS(rc);
-    if (rc!=0 && !ignore_error) write_log_fmt("ERROR (rc=%d): %s",rc,cmd);
-    return rc;
-}
-
-static int run_retry(const char *cmd, int retries) {
-    for (int attempt = 0; attempt < retries; attempt++) {
-        int rc = run_simple(cmd, 1);
-        if (rc == 0) return 0;
-        write_log_fmt("run_retry: attempt %d/%d failed (rc=%d): %s",
-                      attempt+1, retries, rc, cmd);
-        if (attempt < retries-1) {
-            int delay = 2 * (attempt + 1);
-            write_log_fmt("run_retry: waiting %ds before next attempt...", delay);
-            sleep(delay);
-        }
+    if (rc!=0) {
+        write_log_fmt("ERROR (rc=%d): %s", rc, cmd);
+        if (ignore_error) write_log("Command failure was ignored by the caller.");
     }
-    write_log_fmt("run_retry: all %d attempts failed: %s", retries, cmd);
-    return -1;
+    return rc;
 }
 
 static int is_laptop(void) {
@@ -513,12 +627,12 @@ static int is_laptop(void) {
 }
 
 typedef struct {
-    char microcode[32]; 
-    char vendor[32];     
+    char microcode[32];
+    char vendor[32];
     int  cores;
     int  threads;
-    int  has_vmx;        
-    int  has_svm;        
+    int  has_vmx;
+    int  has_svm;
     int  has_avx2;
     int  has_avx512;
 } CPUInfo;
@@ -565,11 +679,10 @@ static double measure_mirror_speed(const char *url) {
     FILE *fp = popen(cmd,"r");
     if (!fp) return 0.0;
     double speed = 0.0;
-    fscanf(fp,"%lf",&speed);
+    (void)fscanf(fp,"%lf",&speed);
     pclose(fp);
     return speed;
 }
-
 
 static int is_uefi(void) {
     struct stat st2;
@@ -592,60 +705,59 @@ static int is_ssd(const char *disk_path) {
     snprintf(rot,sizeof(rot),"/sys/block/%s/queue/rotational",block);
     FILE *f = fopen(rot,"r");
     if (!f) return 0;
-    char c[4]={0}; fread(c,1,3,f); fclose(f);
+    char c[4]={0}; (void)fread(c,1,3,f); fclose(f);
     return c[0]=='0';
 }
 
 static int check_connectivity(void);
-static int msgbox_declared_above;  
 
 static int run_preflight(void) {
     char report[2048] = {0};
     int ok = 1;
 
     if (geteuid() != 0) {
-        strncat(report, L("  ✗ Not running as root\n",
-                          "  ✗ No se esta ejecutando como root\n"),
+        strncat(report, L("   Not running as root\n",
+                          "   No se esta ejecutando como root\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("  ✓ Running as root\n","  ✓ Ejecutando como root\n"),
+        strncat(report, L("   Running as root\n","   Ejecutando como root\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (!check_connectivity()) {
-        strncat(report, L("  ✗ No internet connection\n",
-                          "  ✗ Sin conexion a internet\n"),
+        strncat(report, L("   No internet connection\n",
+                          "   Sin conexion a internet\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("  ✓ Internet connection OK\n","  ✓ Conexion a internet OK\n"),
+        strncat(report, L("   Internet connection OK\n","   Conexion a internet OK\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (system("which pacstrap >/dev/null 2>&1") != 0) {
-        strncat(report, L("  ✗ pacstrap not found (are you in the Arch ISO?)\n",
-                          "  ✗ pacstrap no encontrado (estas en la ISO de Arch?)\n"),
+        strncat(report, L("   pacstrap not found (are you in the Arch ISO?)\n",
+                          "   pacstrap no encontrado (estas en la ISO de Arch?)\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("  ✓ pacstrap found\n","  ✓ pacstrap encontrado\n"),
+        strncat(report, L("   pacstrap found\n","   pacstrap encontrado\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (system("mountpoint -q /mnt 2>/dev/null") == 0) {
-        strncat(report, L("  ⚠ /mnt is already mounted (may conflict)\n",
-                          "  ⚠ /mnt ya esta montado (puede haber conflicto)\n"),
+        strncat(report, L("   /mnt is already mounted (may conflict)\n",
+                          "   /mnt ya esta montado (puede haber conflicto)\n"),
                 sizeof(report)-strlen(report)-1);
     } else {
-        strncat(report, L("  ✓ /mnt is free\n","  ✓ /mnt libre\n"),
+        strncat(report, L("   /mnt is free\n","   /mnt libre\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     st.laptop = is_laptop();
     if (st.laptop) {
-        strncat(report, L("  ✓ Laptop detected (will install TLP power management)\n",
-                          "  ✓ Laptop detectada (se instalara gestion de energia TLP)\n"),
+        strncat(report, L("   Laptop detected (will install TLP power management)\n",
+                          "   Laptop detectada (se instalara gestion de energia TLP)\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
@@ -655,8 +767,8 @@ static int run_preflight(void) {
             long long free_mb = ((long long)vfs.f_bavail * vfs.f_frsize) / (1024*1024);
             char line[128];
             snprintf(line,sizeof(line),
-                     L("  ✓ Installer free space: %lld MB\n",
-                       "  ✓ Espacio libre en instalador: %lld MB\n"), free_mb);
+                     L("   Installer free space: %lld MB\n",
+                       "   Espacio libre en instalador: %lld MB\n"), free_mb);
             strncat(report,line,sizeof(report)-strlen(report)-1);
         }
     }
@@ -683,7 +795,7 @@ static int run_preflight(void) {
 static void detect_gpu(char *out, size_t sz) {
     FILE *fp = popen("lspci 2>/dev/null | grep -iE 'vga|3d|display'","r");
     char buf[4096]={0};
-    if (fp) { fread(buf,1,sizeof(buf)-1,fp); pclose(fp); }
+    if (fp) { (void)fread(buf,1,sizeof(buf)-1,fp); pclose(fp); }
     for (char *p=buf; *p; p++) *p=tolower((unsigned char)*p);
     int nv = strstr(buf,"nvidia")!=NULL;
     int am = (strstr(buf,"amd")!=NULL)||(strstr(buf,"radeon")!=NULL);
@@ -731,7 +843,6 @@ static int list_disks(DiskInfo *out, int max) {
     return n;
 }
 
-
 typedef struct {
     char path[128];
     char fstype[32];
@@ -763,6 +874,61 @@ static int list_all_partitions(PartEntry *out, int max) {
         n++;
     }
     pclose(fp);
+    return n;
+}
+
+static int list_partitions_on_disk(const char *disk, PartEntry *out, int max) {
+
+    char prefix[128];
+    int nvme = (strstr(disk,"nvme") || strstr(disk,"mmcblk")) ? 1 : 0;
+    snprintf(prefix, sizeof(prefix), "%s%s", disk, nvme ? "p" : "");
+
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "lsblk -b -p -n -l -o NAME,SIZE,FSTYPE,LABEL,TYPE %s 2>/dev/null", disk);
+    FILE *fp = popen(cmd, "r");
+    int n = 0;
+    if (fp) {
+        char line[512];
+        while (n < max && fgets(line, sizeof(line), fp)) {
+            char name[128]={0}, fstype[64]={0}, label[64]={0}, type[16]={0};
+            long long sz = 0;
+
+            int r = sscanf(line, "%127s %lld %63s %63s %15s",
+                           name, &sz, fstype, label, type);
+            if (r < 2) continue;
+
+            int is_part = 0;
+            if (r >= 5 && strcmp(type,"part")==0) is_part=1;
+            else if (r >= 5 && strcmp(type,"disk")==0) is_part=0;
+            else if (strcmp(name, disk) != 0) is_part=1;
+
+            if (!is_part) continue;
+            if (!name[0]) continue;
+
+            char real_fs[64]="?", real_lbl[64]="";
+            if (r >= 3) strncpy(real_fs, fstype, 63);
+            if (r >= 4 && r < 5) strncpy(real_lbl, label, 63);
+            if (r >= 5) strncpy(real_lbl, label, 63);
+
+            strncpy(out[n].path,   name,                         sizeof(out[n].path)-1);
+            out[n].size_mb = sz / (1024LL * 1024);
+            strncpy(out[n].fstype, real_fs[0] ? real_fs : "?",   sizeof(out[n].fstype)-1);
+            strncpy(out[n].label,  real_lbl,                      sizeof(out[n].label)-1);
+            n++;
+        }
+        pclose(fp);
+    }
+
+    if (n == 0) {
+        PartEntry all[64]; int na = list_all_partitions(all, 64);
+        for (int i = 0; i < na && n < max; i++) {
+            if (strncmp(all[i].path, disk, strlen(disk)) == 0) {
+                out[n++] = all[i];
+            }
+        }
+    }
+
     return n;
 }
 
@@ -811,19 +977,24 @@ static int screen_wifi_connect(void) {
     if (ni==0) {
         msgbox(L("WiFi","WiFi"),
                L("No wireless interfaces found.\n\nMake sure your WiFi adapter is recognized.",
-                 "No se encontraron interfaces inalambricas.\n\nVerifica que tu adaptador WiFi sea reconocido."));
+                 "No se encontraron interfaces inalámbricas.\n\nVerifica que tu adaptador WiFi sea reconocido."));
         return -1;
     }
     const char *iface = ifaces[0];
 
-    char info_msg[256];
-    snprintf(info_msg,sizeof(info_msg),
-             L("Scanning for networks on %s...","Buscando redes en %s..."), iface);
-    infobox_dlg(L("Scanning...","Escaneando..."), info_msg);
+rescan_wifi:;
+
+    {
+        char info_msg[256];
+        snprintf(info_msg,sizeof(info_msg),
+                 L("Scanning for networks on %s...\nThis may take up to 12 seconds.",
+                   "Buscando redes en %s...\nEsto puede tardar hasta 12 segundos."), iface);
+        infobox_dlg(L(" Scanning..."," Escaneando..."), info_msg);
+    }
 
     char scan_cmd[256];
     snprintf(scan_cmd,sizeof(scan_cmd),"iwctl station '%s' scan 2>/dev/null",iface);
-    system(scan_cmd);
+    (void)system(scan_cmd);
 
     char ssids[16][128]; int nssids=0;
     time_t deadline = time(NULL)+12;
@@ -863,7 +1034,7 @@ static int screen_wifi_connect(void) {
                  "iw dev '%s' scan 2>/dev/null || "
                  "iwctl station '%s' get-networks 2>/dev/null", iface, iface);
         FILE *fp2 = popen(scan_cmd2,"r");
-        if (fp2) { fread(scan_raw,1,sizeof(scan_raw)-1,fp2); pclose(fp2); }
+        if (fp2) { (void)fread(scan_raw,1,sizeof(scan_raw)-1,fp2); pclose(fp2); }
 
         for (int i=0; i<nssids && nnets<15; i++) {
             strncpy(nets[nnets].ssid, ssids[i], 127);
@@ -872,8 +1043,6 @@ static int screen_wifi_connect(void) {
 
             char *pos = scan_raw;
             while ((pos = strstr(pos, ssids[i])) != NULL) {
-                char *sig_p = pos;
-                while (sig_p > scan_raw && *sig_p != '\n') sig_p--;
                 char ctx[512]={0};
                 char *end_p = strchr(pos, '\n');
                 if (!end_p) end_p = pos + strlen(pos);
@@ -896,7 +1065,6 @@ static int screen_wifi_connect(void) {
                 else if ((sp = strstr(ctx,"WEP")))  strncpy(nets[nnets].security,"WEP",31);
                 else strncpy(nets[nnets].security,"Open",31);
                 break;
-                pos++;
             }
             nnets++;
         }
@@ -908,48 +1076,85 @@ static int screen_wifi_connect(void) {
                 }
     }
 
+    char filter[64]={0};
+    {
+        char filter_hdr[512];
+        snprintf(filter_hdr,sizeof(filter_hdr),
+            L("Found %d network(s) on interface %s.\n\n"
+              "Type part of a network name to filter the list,\n"
+              "or leave blank to show all networks:",
+              "Se encontraron %d red(es) en la interfaz %s.\n\n"
+              "Escribe parte del nombre de una red para filtrar la lista,\n"
+              "o deja en blanco para mostrar todas:"),
+            nnets, iface);
+        inputbox_dlg(L(" Filter networks"," Filtrar redes"),
+                     filter_hdr, "", filter, sizeof(filter));
+
+    }
+
     char ssid_sel[128]={0};
-    if (nnets > 0) {
-        MenuItem items[16];
-        for (int i=0; i<nnets; i++) {
-            strncpy(items[i].tag, nets[i].ssid, 255);
+    int show_nets = 0;
+    {
+        MenuItem filt_items[16]; int nf = 0;
+        for (int i=0; i<nnets && nf<15; i++) {
+            if (filter[0] && strcasestr(nets[i].ssid, filter) == NULL) continue;
+            strncpy(filt_items[nf].tag, nets[i].ssid, 255);
             char bar[6]="-----";
-            int pct = nets[i].signal;
-            if (pct < 0) pct = 0;
+            int pct = nets[i].signal < 0 ? 0 : nets[i].signal;
             int filled = (pct * 5) / 100;
             for (int b=0; b<filled && b<5; b++) bar[b]='#';
             char sec[32]; strncpy(sec, nets[i].security[0]?nets[i].security:"?", 31);
-            if (pct >= 0)
-                snprintf(items[i].desc, 511, "[%s] %3d%%  %-6s  %s",
-                         bar, pct, sec, nets[i].ssid);
-            else
-                snprintf(items[i].desc, 511, "[-----]  ?%%  %-6s  %s",
-                         sec, nets[i].ssid);
+            snprintf(filt_items[nf].desc, 511, "[%s] %3d%%  %-6s  %s",
+                     bar, pct, sec, nets[i].ssid);
+            nf++; show_nets++;
         }
-        char hdr[512];
-        snprintf(hdr,sizeof(hdr),
-                 L("Interface: %s\nSorted by signal strength. Select a network:",
-                   "Interfaz: %s\nOrdenado por senal. Selecciona una red:"), iface);
-        if (!radiolist_dlg(L("WiFi Networks","Redes WiFi"), hdr,
-                           items, nnets, NULL, ssid_sel, sizeof(ssid_sel)))
-            return -1;
-    } else {
-        char hdr[512];
-        snprintf(hdr,sizeof(hdr),
-                 L("Interface: %s\nNo networks found.\nEnter SSID or Cancel:",
-                   "Interfaz: %s\nNo se hallaron redes.\nIngresa el SSID o Cancela:"), iface);
-        if (!inputbox_dlg(L("WiFi - SSID","WiFi - SSID"),hdr,"",ssid_sel,sizeof(ssid_sel)))
-            return -1;
+
+        if (nf > 0) {
+            char hdr[512];
+            snprintf(hdr,sizeof(hdr),
+                     L("Interface: %s%s\n"
+                       "Sorted by signal strength.\n"
+                       "Press  Home to rescan, Cancel to go back.",
+                       "Interfaz: %s%s\n"
+                       "Ordenado por señal.\n"
+                       "Pulsa  Home para reescanear, Cancelar para volver."),
+                     iface, filter[0]?" (filtered)":"");
+
+            int rc = radiolist_dlg(L(" WiFi Networks"," Redes WiFi"), hdr,
+                                   filt_items, nf, NULL, ssid_sel, sizeof(ssid_sel));
+            if (!rc) {
+                if (g_home_requested) {
+                    g_home_requested = 0;
+                    goto rescan_wifi;
+                }
+                return -1;
+            }
+        } else {
+
+            char hdr[512];
+            snprintf(hdr,sizeof(hdr),
+                     L("Interface: %s\nNo networks found%s.\nEnter SSID manually or Cancel:",
+                       "Interfaz: %s\nNo se hallaron redes%s.\nIntroduce el SSID manualmente o Cancela:"),
+                     iface, filter[0]?" matching filter":"");
+            if (!inputbox_dlg(L(" WiFi — SSID"," WiFi — SSID"),hdr,"",ssid_sel,sizeof(ssid_sel))) {
+                if (g_home_requested) { g_home_requested=0; goto rescan_wifi; }
+                return -1;
+            }
+        }
     }
+    (void)show_nets;
     if (!ssid_sel[0]) return -1;
 
     char pass[256]={0};
     char pass_hdr[512];
     snprintf(pass_hdr,sizeof(pass_hdr),
-             L("Password for '%s'\n(leave blank for open, Cancel to go back):",
-               "Contrasena de '%s'\n(vacio si es abierta, Cancelar para volver):"), ssid_sel);
-    if (!passwordbox_dlg(L("WiFi Password","Contrasena WiFi"),pass_hdr,pass,sizeof(pass)))
+             L(" Password for '%s'\n(leave blank if the network is open, Cancel to go back):",
+               " Contraseña de '%s'\n(deja vacío si la red es abierta, Cancelar para volver):"),
+             ssid_sel);
+    if (!passwordbox_dlg(L(" WiFi Password"," Contraseña WiFi"),pass_hdr,pass,sizeof(pass))) {
+        if (g_home_requested) { g_home_requested=0; goto rescan_wifi; }
         return -1;
+    }
 
     char conn_msg[256];
     snprintf(conn_msg,sizeof(conn_msg),
@@ -966,19 +1171,21 @@ static int screen_wifi_connect(void) {
     } else {
         snprintf(cmd,sizeof(cmd),"iwctl station '%s' connect %s",iface,q_ssid);
     }
-    system(cmd);
+    (void)system(cmd);
     sleep(5);
 
     if (!check_connectivity()) {
         char fail_msg[512];
         snprintf(fail_msg,sizeof(fail_msg),
-                 L("Could not connect to '%s'.\n\nPossible causes:\n"
+                 L(" Could not connect to '%s'.\n\nPossible causes:\n"
                    "  - Wrong password\n  - Network out of range\n  - DHCP not responding\n\n"
-                   "Press OK to try again.",
-                   "No se pudo conectar a '%s'.\n\nPosibles causas:\n"
-                   "  - Contrasena incorrecta\n  - Red fuera de alcance\n  - DHCP sin respuesta\n\n"
-                   "Presiona OK para intentar de nuevo."), ssid_sel);
-        msgbox(L("WiFi Failed","WiFi fallido"),fail_msg);
+                   "Press OK to try again or Cancel to go back.",
+                   " No se pudo conectar a '%s'.\n\nPosibles causas:\n"
+                   "  - Contraseña incorrecta\n  - Red fuera de alcance\n  - DHCP sin respuesta\n\n"
+                   "Pulsa OK para intentar de nuevo o Cancelar para volver."),
+                 ssid_sel);
+        if (yesno_dlg(L(" WiFi Failed"," WiFi fallido"),fail_msg))
+            goto rescan_wifi;
         return 0;
     }
     return 1;
@@ -989,37 +1196,54 @@ static void screen_network(void) {
         MenuItem items[2];
         strncpy(items[0].tag,"wired",255);
         snprintf(items[0].desc,511,"%s",
-            L("Wired (Ethernet)  - cable already plugged in",
-              "Cable (Ethernet)  - cable ya conectado"));
+            L(" Wired (Ethernet)   — cable already plugged in",
+              " Cable (Ethernet)   — cable ya conectado"));
         strncpy(items[1].tag,"wifi",255);
         snprintf(items[1].desc,511,"%s",
-            L("WiFi              - connect to a wireless network",
-              "WiFi              - conectar a una red inalambrica"));
+            L(" WiFi               — connect to a wireless network",
+              " WiFi               — conectar a una red inalámbrica"));
 
         char choice[64]={0};
-        if (!menu_dlg(L("Network Connection","Conexion de red"),
-                      L("An active internet connection is required.\n\nHow are you connected?",
-                        "Se necesita conexion a internet.\n\n Como estas conectado?"),
+        if (!menu_dlg(L(" Network Connection"," Conexión de red"),
+                      L("An internet connection is needed to download Arch Linux.\n\n"
+                        "How are you connected to the internet?",
+                        "Se necesita internet para descargar Arch Linux.\n\n"
+                        "¿Cómo estás conectado a internet?"),
                       items,2,choice,sizeof(choice))) {
-            if (yesno_dlg(L("Exit","Salir"),L("Exit the installer?","Salir del instalador?")))
+            if (g_home_requested) { g_home_requested=0; }
+            if (yesno_dlg(L("Exit","Salir"),L("Exit the installer?","¿Salir del instalador?")))
                 exit(0);
             continue;
         }
 
         if (!strcmp(choice,"wired")) {
-            infobox_dlg(L("Checking...","Verificando..."),
-                        L("Testing wired connection...","Probando conexion por cable..."));
-            if (check_connectivity()) {
-                msgbox(L("Connected!","Conectado!"),
-                       L("Wired connection detected. Ready to continue.",
-                         "Conexion por cable detectada. Listo para continuar."));
-                return;
+
+            while (1) {
+                infobox_dlg(L(" Checking..."," Verificando..."),
+                            L("Testing wired connection...","Probando conexión por cable..."));
+                if (check_connectivity()) {
+                    msgbox(L(" Connected!"," ¡Conectado!"),
+                           L("Wired connection detected. Ready to continue.",
+                             "Conexión por cable detectada. Listo para continuar."));
+                    return;
+                }
+
+                if (!yesno_dlg(
+                        L(" No connection"," Sin conexión"),
+                        L("Could not reach the internet over the wired connection.\n\n"
+                          "Check:\n"
+                          "  - Is the network cable plugged in?\n"
+                          "  - Is the router/switch turned on?\n"
+                          "  - Did your router assign an IP? (try: dhclient eth0)\n\n"
+                          "Try again now?",
+                          "No se pudo alcanzar internet por cable.\n\n"
+                          "Comprueba:\n"
+                          "  - ¿Está el cable de red conectado?\n"
+                          "  - ¿Está encendido el router/switch?\n"
+                          "  - ¿Tu router asignó una IP? (prueba: dhclient eth0)\n\n"
+                          "¿Reintentar ahora?")))
+                    break;
             }
-            msgbox(L("No connection detected","Sin conexion detectada"),
-                   L("Could not reach archlinux.org over wired.\n\n"
-                     "Check: cable plugged in, router/switch on.\n\nPress OK to retry.",
-                     "No se pudo alcanzar archlinux.org por cable.\n\n"
-                     "Verifica: cable conectado, router encendido.\n\nOK para reintentar."));
             continue;
         }
         if (!strcmp(choice,"wifi")) {
@@ -1042,7 +1266,7 @@ static int ensure_network(void) {
         snprintf(p,sizeof(p),"which %s >/dev/null 2>&1",tools[i]);
         if (system(p)==0) {
             char cmd[128]; snprintf(cmd,sizeof(cmd),"%s >/dev/null 2>&1",tools[i]);
-            system(cmd); sleep(3);
+            (void)system(cmd); sleep(3);
             if (check_connectivity()) return 1;
         }
     }
@@ -1062,6 +1286,8 @@ typedef struct {
     void (*on_done)(int ok, const char *reason, void *ud);
     void  *ud;
     double progress;
+    int    had_error;
+    char   first_error[1024];
     pthread_mutex_t lock;
 } IB;
 
@@ -1102,6 +1328,17 @@ static void ib_stage(IB *ib, const char *msg) {
     ib->on_stage(msg, ib->ud);
 }
 
+static void ib_note_error(IB *ib, const char *cmd, int rc) {
+    if (!ib || rc == 0) return;
+    pthread_mutex_lock(&ib->lock);
+    if (!ib->had_error) {
+        snprintf(ib->first_error, sizeof(ib->first_error),
+                 "%s failed (rc=%d). Check %s.", cmd, rc, LOG_FILE);
+    }
+    ib->had_error = 1;
+    pthread_mutex_unlock(&ib->lock);
+}
+
 typedef struct {
     IB    *ib;
     double start, end;
@@ -1135,6 +1372,7 @@ static void pacman_cb(const char *line, void *ud) {
 static int ib_pacman(IB *ib, const char *cmd, double start, double end, int ignore_error) {
     PacmanCbS ps = {ib, start, end, 0};
     int rc = run_stream(cmd, pacman_cb, &ps, ignore_error);
+    if (!ignore_error) ib_note_error(ib, cmd, rc);
     ib_pct(ib, end);
     return rc;
 }
@@ -1154,6 +1392,7 @@ static void ib_pacman_critical(IB *ib, const char *cmd,
 
 static void ib_run(IB *ib, const char *cmd, const char *label) {
     int rc = run_stream(cmd, NULL, NULL, 0);
+    ib_note_error(ib, cmd, rc);
     if (rc!=0) {
         char msg[512];
         snprintf(msg,sizeof(msg),
@@ -1165,15 +1404,17 @@ static void ib_run(IB *ib, const char *cmd, const char *label) {
 }
 
 static int ib_chroot(IB *ib, const char *cmd, int ignore_error) {
-    (void)ib;
     char q[MAX_CMD], full[MAX_CMD];
     shell_quote(cmd,q,sizeof(q));
     snprintf(full,sizeof(full),"arch-chroot /mnt /bin/bash -c %s",q);
-    return run_stream(full, NULL, NULL, ignore_error);
+    int rc = run_stream(full, NULL, NULL, ignore_error);
+    if (!ignore_error) ib_note_error(ib, full, rc);
+    return rc;
 }
 
 static void ib_chroot_c(IB *ib, const char *cmd, const char *label) {
     int rc = ib_chroot(ib,cmd,0);
+    ib_note_error(ib, cmd, rc);
     if (rc!=0) {
         char msg[512];
         snprintf(msg,sizeof(msg),
@@ -1337,7 +1578,7 @@ static void ib_install_systemd_boot(IB *ib, const char *root_dev) {
     char cmd[256];
     snprintf(cmd,sizeof(cmd),"blkid -s PARTUUID -o value %s 2>/dev/null",root_dev);
     FILE *fp = popen(cmd,"r");
-    if (fp) { fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
+    if (fp) { (void)fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
 
     char root_opt[256];
     if (partuuid[0]) snprintf(root_opt,sizeof(root_opt),"root=PARTUUID=%s",partuuid);
@@ -1387,7 +1628,7 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
     char cmd[256];
     snprintf(cmd,sizeof(cmd),"blkid -s PARTUUID -o value %s 2>/dev/null",root_dev);
     FILE *fp = popen(cmd,"r");
-    if (fp) { fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
+    if (fp) { (void)fgets(partuuid,sizeof(partuuid),fp); pclose(fp); trim_nl(partuuid); }
 
     char root_opt[256];
     if (partuuid[0]) snprintf(root_opt,sizeof(root_opt),"root=PARTUUID=%s",partuuid);
@@ -1440,14 +1681,13 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
             "mkdir -p /boot/EFI/BOOT && "
             "cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI",1);
 
-
         char p1[256]; char p2[256]; char p3[256];
         char disk_dev[256]; snprintf(disk_dev,sizeof(disk_dev),"/dev/%s",st.disk);
         partition_paths(disk_dev,p1,p2,p3,sizeof(p1));
 
         char partn[8]="1";
         snprintf(cmd,sizeof(cmd),"lsblk -no PARTN %s 2>/dev/null",p1);
-        fp = popen(cmd,"r"); if(fp){fgets(partn,sizeof(partn),fp);pclose(fp);trim_nl(partn);}
+        fp = popen(cmd,"r"); if(fp){(void)fgets(partn,sizeof(partn),fp);pclose(fp);trim_nl(partn);}
         if (!partn[0]) strcpy(partn,"1");
 
         snprintf(cmd,sizeof(cmd),
@@ -1584,8 +1824,15 @@ static void ib_add_cachyos_repo(IB *ib, int chroot) {
              conf, q, conf);
     run_stream(cmd,NULL,NULL,1);
     if (!chroot) {
+        run_stream("pacman-key --recv-keys F3B607488DB35A47 "
+                   "--keyserver keyserver.ubuntu.com",NULL,NULL,1);
+        run_stream("pacman-key --lsign-key F3B607488DB35A47",NULL,NULL,1);
         int rc = run_stream("pacman -Sy --noconfirm",NULL,NULL,1);
         if (rc) run_stream("pacman -Sy --noconfirm",NULL,NULL,1);
+    } else {
+        ib_chroot(ib,"pacman-key --recv-keys F3B607488DB35A47 "
+                     "--keyserver keyserver.ubuntu.com",1);
+        ib_chroot(ib,"pacman-key --lsign-key F3B607488DB35A47",1);
     }
     write_log_fmt("CachyOS repo added to %s",conf);
 }
@@ -1686,7 +1933,6 @@ static void ib_configure_grub_cmdline(IB *ib) {
     }
 }
 
-
 typedef struct {
     IB *ib;
 } IBRunArg;
@@ -1702,22 +1948,11 @@ static void *ib_run_thread(void *arg) {
     strncpy(st.kernel, pkernel, sizeof(st.kernel)-1);
 
     char pdesktop[64]; strncpy(pdesktop, st.desktop_list, sizeof(pdesktop)-1);
-    { char *sp = strchr(pdesktop,' '); if(sp) *sp='\0'; }
+    { char *sp = strchr(pdesktop,'|'); if(sp) *sp='\0'; }
     strncpy(st.desktop, pdesktop, sizeof(st.desktop)-1);
 
     char disk[256];
-    if (st.dualboot) {
-        strncpy(disk, st.db_root, sizeof(disk)-1);
-        char *end = disk + strlen(disk) - 1;
-        if (strstr(disk,"nvme") || strstr(disk,"mmcblk")) {
-            while (end > disk && isdigit((unsigned char)*end)) end--;
-            if (*end == 'p') *end = '\0';
-        } else {
-            while (end > disk && isdigit((unsigned char)*end)) *end-- = '\0';
-        }
-    } else {
-        snprintf(disk, sizeof(disk), "/dev/%s", st.disk);
-    }
+    snprintf(disk, sizeof(disk), "/dev/%s", st.disk);
 
     char p1[256],p2[256],p3[256];
     if (!st.dualboot) partition_paths(disk,p1,p2,p3,sizeof(p1));
@@ -1726,8 +1961,7 @@ static void *ib_run_thread(void *arg) {
     int  uefi       = is_uefi();
     const char *bl  = st.bootloader;
     const char *fs  = st.filesystem;
-    const char *ker = st.kernel;      
-    const char *root_dev = st.dualboot ? st.db_root : p3;
+    const char *root_dev = st.dualboot ? (const char*)st.db_root : (const char*)p3;
 
     if (!strcmp(fs,"zfs")) {
         strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
@@ -1813,25 +2047,128 @@ static void *ib_run_thread(void *arg) {
 
     } else {
         char cmd[MAX_CMD];
-        ib_stage(ib, L("Formatting root partition (dual-boot)...",
-                       "Formateando particion raiz (dual-boot)..."));
-        ib_gradual(ib,10,15,0.04);
 
-if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
-        else if (!strcmp(fs,"xfs")) ib_setup_xfs(ib, st.db_root);
-        else if (!strcmp(fs,"zfs")) ib_setup_zfs(ib, st.db_root);
+        ib_stage(ib, L("Creating new Arch partition (dual-boot)...",
+                       "Creando nueva particion para Arch (dual-boot)..."));
+        ib_gradual(ib,8,14,0.04);
+
+        {
+            long long size_bytes = (long long)st.db_size_gb * 1024LL * 1024LL * 1024LL;
+            long long min_start  = 1LL * 1024LL * 1024LL;
+
+            char pt_type[16] = "msdos";
+            {
+                char ptcmd[256];
+                snprintf(ptcmd, sizeof(ptcmd),
+                    "parted -s %s print 2>/dev/null | awk '/Partition Table/{print $3}'",
+                    disk);
+                FILE *fp_pt2 = popen(ptcmd, "r");
+                if (fp_pt2) {
+                    char tmp[32]={0};
+                    if (fgets(tmp,sizeof(tmp),fp_pt2)) {
+                        trim_nl(tmp);
+                        if (tmp[0]) strncpy(pt_type,tmp,sizeof(pt_type)-1);
+                    }
+                    pclose(fp_pt2);
+                }
+                write_log_fmt("Partition table type: %s", pt_type);
+            }
+
+            long long start_bytes = 0;
+            long long avail_bytes = 0;
+            {
+                char free_cmd[512];
+                snprintf(free_cmd, sizeof(free_cmd),
+                    "parted -s %s unit B print free 2>/dev/null"
+                    " | awk '/Free Space/{gsub(\"B\",\"\",$1); gsub(\"B\",\"\",$3);"
+                    " if($3+0 > avail){avail=$3+0; start=$1+0}}"
+                    " END{print start, avail}'",
+                    disk);
+                FILE *fp_free = popen(free_cmd, "r");
+                if (fp_free) {
+                    long long s=0, a=0;
+                    if (fscanf(fp_free, "%lld %lld", &s, &a) == 2) {
+                        start_bytes = s;
+                        avail_bytes = a;
+                    }
+                    pclose(fp_free);
+                }
+                write_log_fmt("Largest free region: start=%lldB size=%lldB", start_bytes, avail_bytes);
+            }
+
+            if (avail_bytes < size_bytes) {
+                char errmsg[256];
+                snprintf(errmsg, sizeof(errmsg),
+                    L("Not enough free space on %s.\n"
+                      "Available: %lld GB  |  Requested: %d GB\n\n"
+                      "Free up space and try again.",
+                      "No hay suficiente espacio libre en %s.\n"
+                      "Disponible: %lld GB  |  Solicitado: %d GB\n\n"
+                      "Libera espacio e intenta de nuevo."),
+                    disk, avail_bytes / (1024LL*1024LL*1024LL), st.db_size_gb);
+                ib->on_done(0, errmsg, ib->ud);
+                return NULL;
+            }
+
+            if (start_bytes < min_start) start_bytes = min_start;
+
+            long long align = 1LL * 1024LL * 1024LL;
+            start_bytes = ((start_bytes + align - 1) / align) * align;
+            long long end_bytes = start_bytes + size_bytes;
+
+            write_log_fmt("Dual-boot: creating partition %lldB - %lldB on %s",
+                          start_bytes, end_bytes, disk);
+
+            if (!strcmp(pt_type, "gpt"))
+                snprintf(cmd, sizeof(cmd),
+                    "parted -s %s mkpart arch %lldB %lldB",
+                    disk, start_bytes, end_bytes);
+            else
+                snprintf(cmd, sizeof(cmd),
+                    "parted -s %s mkpart primary %lldB %lldB",
+                    disk, start_bytes, end_bytes);
+
+            ib_run(ib, cmd, "parted mkpart dual-boot");
+            settle_partitions(disk);
+
+            char part_cmd[256];
+            snprintf(part_cmd, sizeof(part_cmd),
+                "parted -m %s unit B print 2>/dev/null"
+                " | awk -F: '$1~/^[0-9]+$/{n=$1} END{print n}'",
+                disk);
+            FILE *fp_pt = popen(part_cmd, "r");
+            if (fp_pt) {
+                char pnum[16] = {0};
+                if (fgets(pnum, sizeof(pnum), fp_pt)) {
+                    trim_nl(pnum);
+                    int n = atoi(pnum);
+                    if (n > 0) {
+                        if (strstr(disk,"nvme") || strstr(disk,"mmcblk"))
+                            snprintf(st.db_root, sizeof(st.db_root), "%sp%d", disk, n);
+                        else
+                            snprintf(st.db_root, sizeof(st.db_root), "%s%d", disk, n);
+                        write_log_fmt("Dual-boot new partition: %s", st.db_root);
+                    }
+                }
+                pclose(fp_pt);
+            }
+        }
+
+        settle_partitions(disk);
+        root_dev = st.db_root;
+
+        ib_stage(ib, L("Formatting new Arch partition (dual-boot)...",
+                       "Formateando nueva particion de Arch (dual-boot)..."));
+
+        if (!strcmp(fs,"btrfs"))     ib_setup_btrfs(ib, st.db_root, disk);
+        else if (!strcmp(fs,"xfs"))  ib_setup_xfs(ib, st.db_root);
+        else if (!strcmp(fs,"zfs"))  ib_setup_zfs(ib, st.db_root);
         else {
             snprintf(cmd,sizeof(cmd),"mkfs.ext4 -F %s", st.db_root);
             ib_run(ib, cmd, "mkfs.ext4 dual-boot");
             run_simple("udevadm settle --timeout=10", 1);
             snprintf(cmd,sizeof(cmd),"mount %s /mnt", st.db_root);
             ib_run(ib, cmd, "mount root dual-boot");
-        }
-
-        if (st.db_swap[0]) {
-            snprintf(cmd,sizeof(cmd),"swapon %s", st.db_swap);
-            run_stream(cmd, NULL, NULL, 1);
-            write_log_fmt("Swap enabled: %s", st.db_swap);
         }
 
         if (uefi && st.db_efi[0]) {
@@ -2003,20 +2340,22 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
     ib_pct(ib,77);
 
     {
-        char dlist[512]; strncpy(dlist, st.desktop_list, sizeof(dlist)-1);
-        char *dtok = strtok(dlist, " ");
+
         int any_desktop = 0;
         int dm_enabled  = 0;
         double de_start = 77.0, de_end = 91.0;
         int de_count = 0;
         {
             char tmp2[512]; strncpy(tmp2, st.desktop_list, sizeof(tmp2)-1);
-            char *t2 = strtok(tmp2, " ");
-            while (t2) { if (strcmp(t2,"None")) de_count++; t2 = strtok(NULL," "); }
+            char *t2 = strtok(tmp2, "|");
+            while (t2) { if (strcmp(t2,"None")) de_count++; t2 = strtok(NULL,"|"); }
         }
         if (de_count == 0) de_count = 1;
         double de_step = (de_end - de_start) / de_count;
         int de_idx = 0;
+
+        char dlist[512]; strncpy(dlist, st.desktop_list, sizeof(dlist)-1);
+        char *dtok = strtok(dlist, "|");
 
         while (dtok) {
             if (strcmp(dtok,"None") != 0) {
@@ -2053,7 +2392,7 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
                 }
                 de_idx++;
             }
-            dtok = strtok(NULL, " ");
+            dtok = strtok(NULL, "|");
         }
 
         if (any_desktop) {
@@ -2211,361 +2550,180 @@ if (!strcmp(fs,"btrfs"))    ib_setup_btrfs(ib, st.db_root, disk);
         }
     }
 
+    {
+        ib_stage(ib, L("Installing pkg-helper (package manager GUI)...",
+                       "Instalando pkg-helper (gestor de paquetes GUI)..."));
+
+        ib_chroot(ib,
+            "curl -sL --max-time 60 "
+            "-o /usr/local/bin/pkg-helper "
+            "'https://raw.githubusercontent.com/humrand/arch-installation-easy"
+            "/main/SourceCode/pkg-helper' "
+            "&& chmod +x /usr/local/bin/pkg-helper",
+            1);
+
+        ib_chroot(ib,
+            "mkdir -p /usr/share/icons/hicolor/256x256/apps && "
+            "curl -sL --max-time 30 "
+            "-o /usr/share/icons/hicolor/256x256/apps/pkg-helper.png "
+            "'https://raw.githubusercontent.com/humrand/arch-installation-easy"
+            "/main/SourceCode/images/pkg.png' && "
+            "gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true",
+            1);
+
+        ib_chroot(ib,
+            "pacman -S --noconfirm --needed gtk3 2>/dev/null || true",
+            1);
+
+        ib_chroot(ib,
+            "mkdir -p /usr/share/applications && "
+            "printf '"
+            "[Desktop Entry]\\n"
+            "Name=PKG Helper\\n"
+            "Comment=Arch Linux Package Manager (pacman/AUR/Flatpak)\\n"
+            "Exec=pkg-helper\\n"
+            "Icon=pkg-helper\\n"
+            "Terminal=false\\n"
+            "Type=Application\\n"
+            "Categories=System;PackageManager;\\n"
+            "Keywords=pacman;aur;flatpak;packages;\\n"
+            "' > /usr/share/applications/pkg-helper.desktop",
+            1);
+
+        write_log("pkg-helper: binary, icon and .desktop installed.");
+    }
+
+    pthread_mutex_lock(&ib->lock);
+    int had_error = ib->had_error;
+    char first_error[sizeof(ib->first_error)];
+    strncpy(first_error, ib->first_error, sizeof(first_error)-1);
+    first_error[sizeof(first_error)-1] = '\0';
+    pthread_mutex_unlock(&ib->lock);
+
+    if (had_error) {
+        if (!first_error[0]) {
+            snprintf(first_error, sizeof(first_error),
+                     "An installation command failed. Check %s.", LOG_FILE);
+        }
+        ib->on_done(0, first_error, ib->ud);
+        return NULL;
+    }
+
     ib_pct(ib,100);
     ib_stage(ib, L("Installation complete!","Instalacion completa!"));
     ib->on_done(1,"",ib->ud);
     return NULL;
 }
 
-#define IS_MODE_PROGRESS 0
-#define IS_MODE_DEBUG    1
-
-typedef struct {
-    double  pct;
-    char    stage[512];
-    char  **lines;
-    int     nlines;
-    int     cap_lines;
-    int     mode;
-    int     prev_mode;
-    char    keybuf[32];
-    int     running;
-    struct termios old_tty;
-    int            has_tty;
-    pthread_mutex_t lock;
-    pthread_t       render_tid;
-    pthread_t       key_tid;
-} IS;
-
-static void is_write(const char *s) { write(STDOUT_FILENO, s, strlen(s)); }
-static void is_writef(const char *fmt, ...) {
-    char buf[1024]; va_list ap; va_start(ap,fmt);
-    vsnprintf(buf,sizeof(buf),fmt,ap); va_end(ap);
-    is_write(buf);
-}
-
-static IS *g_is = NULL;
-
-static void is_feed(IS *is, const char *line) {
-    pthread_mutex_lock(&is->lock);
-    if (is->nlines >= MAX_LINES) {
-        int keep    = KEEP_LINES;
-        int discard = is->nlines - keep;
-        for (int i = 0; i < discard; i++) { free(is->lines[i]); is->lines[i] = NULL; }
-        memmove(is->lines, is->lines + discard, keep * sizeof(char*));
-        is->nlines = keep;
-    }
-    if (is->nlines >= is->cap_lines) {
-        is->cap_lines *= 2;
-        is->lines = realloc(is->lines, is->cap_lines * sizeof(char*));
-    }
-    is->lines[is->nlines++] = strdup(line);
-    pthread_mutex_unlock(&is->lock);
-}
-
-static void is_update(IS *is, double pct, const char *stage) {
-    pthread_mutex_lock(&is->lock);
-    is->pct = pct;
-    strncpy(is->stage, stage, sizeof(is->stage)-1);
-    pthread_mutex_unlock(&is->lock);
-}
-
-static void is_get_term_size(int *rows, int *cols) {
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)==0 && ws.ws_row>0)
-        { *rows = ws.ws_row; *cols = ws.ws_col; }
-    else { *rows=24; *cols=80; }
-}
-
-static void is_trunc(const char *s, char *out, int n) {
-    int len = (int)strlen(s);
-    if (len <= n) { strcpy(out,s); return; }
-    strncpy(out,s,n-3); out[n-3]='\0'; strcat(out,"...");
-}
-
-static void is_draw_progress(IS *is, double pct, const char *stage, int rows, int cols) {
-    int W = cols-2 < 74 ? cols-2 : 74;
-    if (W < 10) W=10;
-    int lft = (cols-W)/2; if(lft<0)lft=0;
-    int top = (rows-6)/2; if(top<1)top=1;
-
-    char pad[128]={0};
-    for (int i=0;i<lft&&i<(int)sizeof(pad)-1;i++) pad[i]=' ';
-
-    for (int r=1;r<top;r++) is_writef("\033[%d;1H\033[2K",r);
-    for (int r=top+7;r<=rows;r++) is_writef("\033[%d;1H\033[2K",r);
-
-    char title[128];
-    snprintf(title,sizeof(title)," %s  -  %s ",TITLE,VERSION);
-    int tlen=(int)strlen(title);
-    char title_padded[256]="";
-    int left_pad=(W-tlen)/2; if(left_pad<0)left_pad=0;
-    for(int i=0;i<left_pad;i++) strncat(title_padded," ",sizeof(title_padded)-strlen(title_padded)-1);
-    strncat(title_padded,title,sizeof(title_padded)-strlen(title_padded)-1);
-    while((int)strlen(title_padded)<W)
-        strncat(title_padded," ",sizeof(title_padded)-strlen(title_padded)-1);
-    is_writef("\033[%d;1H\033[2K%s\033[44m\033[97m\033[1m%s\033[0m",top,pad,title_padded);
-    is_writef("\033[%d;1H\033[2K",top+1);
-
-    char trunc_stage[512];
-    is_trunc(stage, trunc_stage, W-4);
-    is_writef("\033[%d;1H\033[2K%s  \033[1m%s\033[0m",top+2,pad,trunc_stage);
-    is_writef("\033[%d;1H\033[2K",top+3);
-
-    int bar_w = W-9; if(bar_w<4)bar_w=4;
-    int filled = (int)(bar_w * pct / 100.0);
-    int empty  = bar_w - filled;
-    char bar[512]="";
-    strncat(bar,"\033[44m\033[97m",sizeof(bar)-strlen(bar)-1);
-    for(int i=0;i<filled;i++) strncat(bar," ",sizeof(bar)-strlen(bar)-1);
-    strncat(bar,"\033[0m\033[100m",sizeof(bar)-strlen(bar)-1);
-    for(int i=0;i<empty;i++) strncat(bar," ",sizeof(bar)-strlen(bar)-1);
-    strncat(bar,"\033[0m",sizeof(bar)-strlen(bar)-1);
-    is_writef("\033[%d;1H\033[2K%s  [%s] \033[1m%3d%%\033[0m",top+4,pad,bar,(int)pct);
-    is_writef("\033[%d;1H\033[2K",top+5);
-    is_writef("\033[%d;1H\033[2K",top+6);
-}
-
-static void is_draw_debug(IS *is, double pct, const char *stage,
-                            char **lines, int nlines, int rows, int cols) {
-    char hdr_l[512], trunc[512];
-    is_trunc(stage, trunc, cols-28);
-    snprintf(hdr_l,sizeof(hdr_l)," DEBUG  %.0f%%  %s",pct,trunc);
-    const char *hdr_r = "write 'exit' to go back ";
-    int gap = cols - (int)strlen(hdr_l) - (int)strlen(hdr_r);
-    if (gap<0) gap=0;
-    is_writef("\033[1;1H\033[2K\033[44m\033[97m\033[1m%s",hdr_l);
-    for(int i=0;i<gap;i++) is_write(" ");
-    is_writef("%s\033[0m",hdr_r);
-    is_writef("\033[2;1H\033[2K\033[96m");
-    for(int i=0;i<cols;i++) is_write("-");
-    is_write("\033[0m");
-    int available = rows-2;
-    int start = nlines-available; if(start<0)start=0;
-    for (int i=0;i<available;i++) {
-        is_writef("\033[%d;1H\033[2K",3+i);
-        if (start+i < nlines) {
-            const char *ln = lines[start+i];
-            if (strstr(ln,"ERROR")||strstr(ln,"FATAL")||strstr(ln,"CRITICAL"))
-                is_write("\033[91m\033[1m");
-            else if (strstr(ln,">>>"))
-                is_write("\033[93m\033[1m");
-            else if (ln[0]=='[')
-                is_write("\033[90m");
-            char tln[4096]; is_trunc(ln,tln,cols-1);
-            is_write(tln);
-            is_write("\033[0m");
-        }
-    }
-}
-
-static void *is_render_loop(void *arg) {
-    IS *is = arg;
-    while (1) {
-        pthread_mutex_lock(&is->lock);
-        int running = is->running;
-        pthread_mutex_unlock(&is->lock);
-        if (!running) break;
-
-        pthread_mutex_lock(&is->lock);
-        double pct = is->pct;
-        char stage[512]; strncpy(stage,is->stage,511); stage[511]='\0';
-        int mode = is->mode;
-        int mode_changed = (mode != is->prev_mode);
-        is->prev_mode = mode;
-        int nlines = is->nlines;
-        char **lines_snap = NULL;
-        if (mode == IS_MODE_DEBUG && nlines > 0) {
-            lines_snap = malloc(nlines * sizeof(char*));
-            for (int i=0;i<nlines;i++) lines_snap[i] = strdup(is->lines[i]);
-        }
-        pthread_mutex_unlock(&is->lock);
-
-        int rows,cols; is_get_term_size(&rows,&cols);
-        if (mode_changed) is_write("\033[2J\033[H");
-        is_write("\033[?25l");
-
-        if (mode == IS_MODE_PROGRESS)
-            is_draw_progress(is, pct, stage, rows, cols);
-        else
-            is_draw_debug(is, pct, stage, lines_snap, nlines, rows, cols);
-
-        fflush(stdout);
-        if (lines_snap) {
-            for (int i=0;i<nlines;i++) free(lines_snap[i]);
-            free(lines_snap);
-        }
-        usleep(80000);
-    }
-    return NULL;
-}
-
-static void *is_key_loop(void *arg) {
-    IS *is = arg;
-    while (1) {
-        pthread_mutex_lock(&is->lock);
-        int running = is->running;
-        pthread_mutex_unlock(&is->lock);
-        if (!running) break;
-        fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO,&fds);
-        struct timeval tv = {0, 50000};
-        if (select(STDIN_FILENO+1,&fds,NULL,NULL,&tv) > 0) {
-            char ch[2]={0};
-            ssize_t n = read(STDIN_FILENO,ch,1);
-            if (n>0) {
-                pthread_mutex_lock(&is->lock);
-                size_t klen = strlen(is->keybuf);
-                if (klen < sizeof(is->keybuf)-2)
-                    is->keybuf[klen]=ch[0], is->keybuf[klen+1]='\0';
-                else {
-                    memmove(is->keybuf, is->keybuf+1, klen-1);
-                    is->keybuf[klen-1]=ch[0]; is->keybuf[klen]='\0';
-                }
-                char *kb = is->keybuf;
-                if (strstr(kb,"debug")) { is->mode=IS_MODE_DEBUG; kb[0]='\0'; }
-                else if (strstr(kb,"exit")) { is->mode=IS_MODE_PROGRESS; kb[0]='\0'; }
-                pthread_mutex_unlock(&is->lock);
-            }
-        }
-    }
-    return NULL;
-}
-
-static IS *is_create(void) {
-    IS *is = calloc(1,sizeof(IS));
-    is->cap_lines = 256;
-    is->lines     = malloc(is->cap_lines * sizeof(char*));
-    is->mode      = IS_MODE_PROGRESS;
-    is->prev_mode = IS_MODE_PROGRESS;
-    pthread_mutex_init(&is->lock, NULL);
-    strncpy(is->stage, L("Preparing...","Preparando..."), sizeof(is->stage)-1);
-    return is;
-}
-
-static void is_start(IS *is) {
-    pthread_mutex_lock(&is->lock);
-    is->running = 1;
-    pthread_mutex_unlock(&is->lock);
-    if (isatty(STDIN_FILENO)) {
-        struct termios raw;
-        tcgetattr(STDIN_FILENO, &is->old_tty);
-        is->has_tty = 1;
-        raw = is->old_tty;
-        raw.c_lflag &= ~(ICANON|ECHO);
-        tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-    }
-    is_write("\033[?25l\033[2J\033[H");
-    fflush(stdout);
-    pthread_create(&is->render_tid, NULL, is_render_loop, is);
-    pthread_create(&is->key_tid,    NULL, is_key_loop,    is);
-}
-
-static void is_stop(IS *is) {
-    pthread_mutex_lock(&is->lock);
-    is->running = 0;
-    pthread_mutex_unlock(&is->lock);
-    pthread_join(is->render_tid, NULL);
-    pthread_join(is->key_tid,    NULL);
-    if (is->has_tty) tcsetattr(STDIN_FILENO, TCSADRAIN, &is->old_tty);
-    is_write("\033[?25h\033[2J\033[H");
-    fflush(stdout);
-    for (int i=0;i<is->nlines;i++) free(is->lines[i]);
-    free(is->lines);
-    pthread_mutex_destroy(&is->lock);
-    free(is);
-}
-
-typedef struct { IS *is; volatile int *stop; } TailerArg;
-
-static void *tailer_thread(void *arg) {
-    TailerArg *ta = arg;
-    int fd = open(LOG_FILE, O_RDONLY);
-    if (fd<0) return NULL;
-    lseek(fd, 0, SEEK_END);
-    FILE *f = fdopen(fd,"r");
-    if (!f) { close(fd); return NULL; }
-    char line[4096];
-    while (!*ta->stop) {
-        if (fgets(line,sizeof(line),f)) {
-            size_t len=strlen(line);
-            while(len>0&&(line[len-1]=='\n'||line[len-1]=='\r')) line[--len]='\0';
-            if (len>0) is_feed(ta->is,line);
-        } else {
-            clearerr(f);
-            usleep(50000);
-        }
-    }
-    fclose(f);
-    return NULL;
-}
-
-typedef struct {
-    IS    *is;
-    double pct;
-    char   stage[512];
-    int    done;
-    int    success;
-    char   reason[1024];
-    pthread_mutex_t mu;
-    pthread_cond_t  cv;
-} InstallState;
+static int   g_prog_fd  = -1;
+static pid_t g_prog_pid = -1;
 
 static void on_progress_cb(double pct, void *ud) {
-    InstallState *iss = ud;
-    pthread_mutex_lock(&iss->mu);
-    iss->pct = pct;
-    is_update(iss->is, pct, iss->stage);
-    pthread_mutex_unlock(&iss->mu);
+    (void)ud;
+    if (g_prog_fd < 0) return;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d\n", (int)pct);
+    (void)write(g_prog_fd, buf, strlen(buf));
 }
 
 static void on_stage_cb(const char *msg, void *ud) {
-    InstallState *iss = ud;
-    pthread_mutex_lock(&iss->mu);
-    strncpy(iss->stage,msg,sizeof(iss->stage)-1);
-    is_update(iss->is, iss->pct, msg);
-    pthread_mutex_unlock(&iss->mu);
+    (void)ud;
+    if (g_prog_fd < 0) return;
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "# %s\n", msg);
+    (void)write(g_prog_fd, buf, strlen(buf));
 }
+
+typedef struct {
+    volatile int  done;
+    int           success;
+    char          reason[1024];
+    pthread_mutex_t mu;
+    pthread_cond_t  cv;
+} InstallState;
 
 static void on_done_cb(int ok, const char *reason, void *ud) {
     InstallState *iss = ud;
     pthread_mutex_lock(&iss->mu);
     iss->success = ok;
-    strncpy(iss->reason,reason?reason:"",sizeof(iss->reason)-1);
+    if (reason && *reason) {
+        strncpy(iss->reason, reason, sizeof(iss->reason) - 1);
+        iss->reason[sizeof(iss->reason) - 1] = '\0';
+    }
     iss->done = 1;
     pthread_cond_signal(&iss->cv);
     pthread_mutex_unlock(&iss->mu);
 }
 
 static int screen_install(void) {
-    { FILE *f=fopen(LOG_FILE,"a"); if(f) fclose(f); }
+    { FILE *f = fopen(LOG_FILE, "a"); if (f) fclose(f); }
 
-    IS           *is  = is_create();
-    InstallState  iss = {
-        .is      = is,
-        .pct     = 0.0,
-        .done    = 0,
-        .success = 0,
-        .mu      = PTHREAD_MUTEX_INITIALIZER,
-        .cv      = PTHREAD_COND_INITIALIZER,
-    };
-    strncpy(iss.stage, L("Preparing...","Preparando..."), sizeof(iss.stage)-1);
+    int pfd[2];
+    if (pipe(pfd) != 0) {
+        msgbox(L("Error","Error"),
+               L("Could not create pipe for progress display.",
+                 "No se pudo crear el pipe para progreso."));
+        return 0;
+    }
 
-    IB *ib = calloc(1,sizeof(IB));
+    pid_t yad_pid = fork();
+    if (yad_pid == 0) {
+        dup2(pfd[0], STDIN_FILENO);
+        close(pfd[1]);
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) dup2(dn, STDERR_FILENO);
+        set_dark_theme_env();
+        char *a[] = {
+            "yad", "--progress",
+            "--title",  TITLE "  " VERSION,
+            "--text",   L("Installing Arch Linux - please wait...",
+                          "Instalando Arch Linux - por favor espere..."),
+            "--percentage", "0",
+            "--maximize",
+            "--auto-kill",
+            "--auto-close",
+            "--no-buttons",
+            "--enable-log",
+            "--log-expanded",
+            "--log-height=200",
+            "--log-on-top",
+            "--center",
+            NULL
+        };
+        execvp("yad", a);
+        char *b[] = {
+            "yad", "--progress",
+            "--title",  TITLE "  " VERSION,
+            "--text",   L("Installing Arch Linux...", "Instalando Arch Linux..."),
+            "--percentage", "0",
+            "--maximize",
+            "--auto-kill",
+            "--auto-close",
+            "--no-buttons",
+            "--center",
+            NULL
+        };
+        execvp("yad", b);
+        _exit(1);
+    }
+    close(pfd[0]);
+    g_prog_fd  = pfd[1];
+    g_prog_pid = yad_pid;
+
+    InstallState iss;
+    memset(&iss, 0, sizeof(iss));
+    pthread_mutex_init(&iss.mu, NULL);
+    pthread_cond_init(&iss.cv,  NULL);
+
+    IB *ib = calloc(1, sizeof(IB));
     ib->on_progress = on_progress_cb;
     ib->on_stage    = on_stage_cb;
     ib->on_done     = on_done_cb;
     ib->ud          = &iss;
-    pthread_mutex_init(&ib->lock,NULL);
-
-    volatile int stop_tail = 0;
-    TailerArg ta = {is, &stop_tail};
-    pthread_t tailer_tid;
-    pthread_create(&tailer_tid, NULL, tailer_thread, &ta);
+    pthread_mutex_init(&ib->lock, NULL);
 
     IBRunArg *ra = malloc(sizeof(IBRunArg));
     ra->ib = ib;
-
-    is_start(is);
 
     pthread_t install_tid;
     pthread_create(&install_tid, NULL, ib_run_thread, ra);
@@ -2574,11 +2732,16 @@ static int screen_install(void) {
     while (!iss.done) pthread_cond_wait(&iss.cv, &iss.mu);
     pthread_mutex_unlock(&iss.mu);
 
-    stop_tail = 1;
-    pthread_join(tailer_tid,  NULL);
     pthread_join(install_tid, NULL);
-    usleep(150000);
-    is_stop(is);
+
+    if (iss.success && g_prog_fd >= 0) {
+        const char *final_msg = "100\n# Installation complete!\n";
+        (void)write(g_prog_fd, final_msg, strlen(final_msg));
+        sleep(1);
+    }
+
+    if (g_prog_fd >= 0) { close(g_prog_fd); g_prog_fd = -1; }
+    if (g_prog_pid > 0) { waitpid(g_prog_pid, NULL, 0); g_prog_pid = -1; }
 
     pthread_mutex_destroy(&ib->lock);
     free(ib);
@@ -2587,16 +2750,19 @@ static int screen_install(void) {
 
     if (!iss.success) {
         char msg[1536];
-        snprintf(msg,sizeof(msg),
+        if (!iss.reason[0]) {
+            snprintf(iss.reason, sizeof(iss.reason),
+                     "Installation failed. Check %s for details.", LOG_FILE);
+        }
+        snprintf(msg, sizeof(msg),
                  L("Installation failed.\n\n%s\n\nCheck %s for details.",
                    "La instalacion fallo.\n\n%s\n\nRevisa %s para detalles."),
                  iss.reason, LOG_FILE);
-        msgbox(L("Installation Failed","Instalacion fallida"),msg);
+        msgbox(L("Installation Failed", "Instalacion fallida"), msg);
         return 0;
     }
     return 1;
 }
-
 
 static void screen_welcome(void) {
     char text[1024];
@@ -2659,26 +2825,90 @@ static int screen_mode(void) {
 
 static int screen_identity(void) {
     while(1) {
+
+        char summary[256];
+        snprintf(summary, sizeof(summary),
+            L(" Summary: disk=%s  fs=%s  kernel=%s",
+              " Resumen: disco=%s  fs=%s  kernel=%s"),
+            st.disk[0]?st.disk:"?", st.filesystem, st.kernel);
+
+        char hn_text[512];
+        snprintf(hn_text, sizeof(hn_text),
+            L("%s\n\n"
+              " Computer name (hostname)\n"
+              "   Used to identify this computer on the network.\n"
+              "   Examples:  my-laptop   archpc   juan-desktop\n\n"
+              "   Rules: letters, numbers, hyphens (-). Max 32 chars.\n"
+              "          Must start with a letter.",
+              "%s\n\n"
+              " Nombre del equipo (hostname)\n"
+              "   Se usa para identificar este equipo en la red.\n"
+              "   Ejemplos:  mi-laptop   archpc   pc-de-juan\n\n"
+              "   Reglas: letras, números, guiones (-). Máx 32 chars.\n"
+              "           Debe empezar con una letra."),
+            summary);
+
         char hn[64]={0};
-        if (!inputbox_dlg(L("System Identity","Identidad del sistema"),
-                          L("Enter hostname (letters, digits, -, _ - max 32):",
-                            "Ingresa el nombre del equipo (letras, digitos, -, _ - max 32):"),
-                          st.hostname, hn, sizeof(hn))) return 0;
+        if (!inputbox_dlg(
+                L("Step: Who are you? (1/2)","Paso: ¿Quién eres? (1/2)"),
+                hn_text, st.hostname, hn, sizeof(hn))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
+
         if (!validate_name(hn)) {
-            msgbox(L("Invalid hostname","Hostname invalido"),
-                   L("Only letters, digits, hyphens and underscores. Max 32 chars. Must start with a letter.",
-                     "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres. Debe empezar con una letra."));
+            char err[512];
+            snprintf(err, sizeof(err),
+                L(" '%s' is not valid.\n\n"
+                  " Good:  my-pc   arch   juan2\n"
+                  " Bad:   123abc  my pc  -start\n\n"
+                  "Start with a letter, then letters/numbers/hyphens only.",
+                  " '%s' no es válido.\n\n"
+                  " Bien:  mi-pc   arch   juan2\n"
+                  " Mal:   123abc  mi pc  -inicio\n\n"
+                  "Empieza con letra, luego letras/números/guiones."),
+                hn);
+            msgbox(L("Invalid hostname","Nombre de equipo inválido"), err);
             continue;
         }
+
+        char un_text[512];
+        snprintf(un_text, sizeof(un_text),
+            L("%s\n\n"
+              " Your username\n"
+              "   This will be your personal account.\n"
+              "   Examples:  alice   bob   juan   myuser\n\n"
+              "   Rules: letters, numbers, hyphens (-). Max 32 chars.\n"
+              "          Must start with a letter. Use lowercase.",
+              "%s\n\n"
+              " Tu nombre de usuario\n"
+              "   Esta será tu cuenta personal en el sistema.\n"
+              "   Ejemplos:  alice   bob   juan   miusuario\n\n"
+              "   Reglas: letras, números, guiones (-). Máx 32 chars.\n"
+              "           Debe empezar con letra. Usa minúsculas."),
+            summary);
+
         char un[64]={0};
-        if (!inputbox_dlg(L("System Identity","Identidad del sistema"),
-                          L("Enter username (letters, digits, -, _ - max 32):",
-                            "Ingresa el nombre de usuario (letras, digitos, -, _ - max 32):"),
-                          st.username, un, sizeof(un))) return 0;
+        if (!inputbox_dlg(
+                L("Step: Who are you? (2/2)","Paso: ¿Quién eres? (2/2)"),
+                un_text, st.username, un, sizeof(un))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
+
         if (!validate_name(un)) {
-            msgbox(L("Invalid username","Usuario invalido"),
-                   L("Only letters, digits, hyphens and underscores. Max 32 chars. Must start with a letter.",
-                     "Solo letras, digitos, guiones y guiones bajos. Max 32 caracteres. Debe empezar con una letra."));
+            char err[512];
+            snprintf(err, sizeof(err),
+                L(" '%s' is not a valid username.\n\n"
+                  " Good:  alice   bob2   my-user\n"
+                  " Bad:   2bob   My User   root\n\n"
+                  "Start with a lowercase letter. Letters/numbers/hyphens only.",
+                  " '%s' no es un nombre de usuario válido.\n\n"
+                  " Bien:  alice   bob2   mi-usuario\n"
+                  " Mal:   2bob   Mi Usuario   root\n\n"
+                  "Empieza con letra minúscula. Solo letras/números/guiones."),
+                un);
+            msgbox(L("Invalid username","Nombre de usuario inválido"), err);
             continue;
         }
         strncpy(st.hostname,hn,sizeof(st.hostname)-1);
@@ -2688,29 +2918,139 @@ static int screen_identity(void) {
 }
 
 static int screen_passwords(void) {
+
+    char summary[256];
+    snprintf(summary,sizeof(summary),
+        L(" Summary: user=%s  hostname=%s",
+          " Resumen: usuario=%s  hostname=%s"),
+        st.username[0]?st.username:"?",
+        st.hostname[0]?st.hostname:"?");
+
     while(1) {
+
+        char rp_hdr[2048];
+        snprintf(rp_hdr,sizeof(rp_hdr),
+            L("%s\n\n"
+              " ROOT password (administrator / superuser)\n"
+              "   This is the most powerful account on the system.\n"
+              "   Choose something strong and write it down.",
+              "%s\n\n"
+              " Contraseña de ROOT (administrador)\n"
+              "   Es la cuenta más poderosa del sistema.\n"
+              "   Elige algo seguro y guárdalo en un lugar seguro."),
+            summary);
+
         char rp1[256]={0},rp2[256]={0};
-        if (!passwordbox_dlg(L("Passwords","Contrasenas"),
-                             L("Enter ROOT password:","Ingresa la contrasena de ROOT:"),
-                             rp1,sizeof(rp1))) return 0;
-        if (!passwordbox_dlg(L("Passwords","Contrasenas"),
-                             L("Confirm ROOT password:","Confirma la contrasena de ROOT:"),
-                             rp2,sizeof(rp2))) return 0;
-        if (!rp1[0]) { msgbox(L("Error","Error"),L("Root password cannot be empty.",
-                                                    "La contrasena root no puede estar vacia.")); continue; }
-        if (strcmp(rp1,rp2)) { msgbox(L("Error","Error"),L("Root passwords do not match.",
-                                                            "Las contrasenas root no coinciden.")); continue; }
+        if (!passwordbox_dlg(L(" Root password (1/2)"," Contraseña root (1/2)"),
+                             rp_hdr, rp1, sizeof(rp1))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
+
+        {
+            char slabel[64]; password_strength_label(rp1,slabel,sizeof(slabel),st.lang);
+            int s = password_strength(rp1);
+            if (s == 1) {
+                char warn[512];
+                snprintf(warn,sizeof(warn),
+                    L("  Password strength: %s\n\n"
+                      "Your root password is WEAK.\n\n"
+                      "Tips:\n"
+                      "  - Use at least 8 characters\n"
+                      "  - Mix UPPERCASE, lowercase, numbers and symbols\n"
+                      "  - Example: Arch!2025secured\n\n"
+                      "Continue anyway? (not recommended)",
+                      "  Fuerza de contraseña: %s\n\n"
+                      "Tu contraseña de root es DÉBIL.\n\n"
+                      "Consejos:\n"
+                      "  - Usa al menos 8 caracteres\n"
+                      "  - Mezcla MAYÚSCULAS, minúsculas, números y símbolos\n"
+                      "  - Ejemplo: Arch!2025seguro\n\n"
+                      "¿Continuar de todas formas? (no recomendado)"),
+                    slabel);
+                if (!yesno_dlg(L("Weak password!","¡Contraseña débil!"),warn))
+                    continue;
+            }
+        }
+
+        char rp2_hdr[256];
+        snprintf(rp2_hdr,sizeof(rp2_hdr),
+            L(" Confirm ROOT password\n   Type the same password again to verify.",
+              " Confirma la contraseña de ROOT\n   Escríbela otra vez para verificar."));
+        if (!passwordbox_dlg(L(" Root password (2/2)"," Contraseña root (2/2)"),
+                             rp2_hdr, rp2, sizeof(rp2))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
+        if (!rp1[0]) {
+            msgbox(L("Error","Error"),
+                   L("Root password cannot be empty.",
+                     "La contraseña root no puede estar vacía."));
+            continue;
+        }
+        if (strcmp(rp1,rp2)) {
+            msgbox(L("Passwords don't match","Las contraseñas no coinciden"),
+                   L("The two root passwords you entered are different.\nPlease try again.",
+                     "Las dos contraseñas de root no son iguales.\nInténtalo de nuevo."));
+            continue;
+        }
+
+        char up_hdr[2048];
+        snprintf(up_hdr,sizeof(up_hdr),
+            L(" Password for user: %s\n\n"
+              "   This is your everyday login password.\n"
+              "   Can be the same or different from root.",
+              " Contraseña del usuario: %s\n\n"
+              "   Es la contraseña con la que inicias sesión a diario.\n"
+              "   Puede ser igual o diferente a la de root."),
+            st.username[0]?st.username:"user");
+
         char up1[256]={0},up2[256]={0};
-        if (!passwordbox_dlg(L("Passwords","Contrasenas"),
-                             L("Enter USER password:","Ingresa la contrasena de USUARIO:"),
-                             up1,sizeof(up1))) return 0;
-        if (!passwordbox_dlg(L("Passwords","Contrasenas"),
-                             L("Confirm USER password:","Confirma la contrasena de USUARIO:"),
-                             up2,sizeof(up2))) return 0;
-        if (!up1[0]) { msgbox(L("Error","Error"),L("User password cannot be empty.",
-                                                    "La contrasena de usuario no puede estar vacia.")); continue; }
-        if (strcmp(up1,up2)) { msgbox(L("Error","Error"),L("User passwords do not match.",
-                                                            "Las contrasenas de usuario no coinciden.")); continue; }
+        if (!passwordbox_dlg(L(" User password (1/2)"," Contraseña usuario (1/2)"),
+                             up_hdr, up1, sizeof(up1))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
+
+        {
+            char slabel[64]; password_strength_label(up1,slabel,sizeof(slabel),st.lang);
+            int s = password_strength(up1);
+            if (s == 1) {
+                char warn[512];
+                snprintf(warn,sizeof(warn),
+                    L("  User password strength: %s\n\n"
+                      "This password is WEAK. It could be guessed easily.\n\n"
+                      "Continue anyway?",
+                      "  Fuerza de contraseña de usuario: %s\n\n"
+                      "Esta contraseña es DÉBIL. Podría adivinarse fácilmente.\n\n"
+                      "¿Continuar de todas formas?"),
+                    slabel);
+                if (!yesno_dlg(L("Weak password!","¡Contraseña débil!"),warn))
+                    continue;
+            }
+        }
+
+        char up2_hdr[256];
+        snprintf(up2_hdr,sizeof(up2_hdr),
+            L(" Confirm user password\n   Type it again to verify.",
+              " Confirma la contraseña de usuario\n   Escríbela otra vez."));
+        if (!passwordbox_dlg(L(" User password (2/2)"," Contraseña usuario (2/2)"),
+                             up2_hdr, up2, sizeof(up2))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
+        if (!up1[0]) {
+            msgbox(L("Error","Error"),
+                   L("User password cannot be empty.",
+                     "La contraseña de usuario no puede estar vacía."));
+            continue;
+        }
+        if (strcmp(up1,up2)) {
+            msgbox(L("Passwords don't match","Las contraseñas no coinciden"),
+                   L("The two user passwords you entered are different.\nPlease try again.",
+                     "Las dos contraseñas de usuario no son iguales.\nInténtalo de nuevo."));
+            continue;
+        }
         strncpy(st.root_pass,rp1,sizeof(st.root_pass)-1);
         strncpy(st.user_pass,up1,sizeof(st.user_pass)-1);
         return 1;
@@ -2718,31 +3058,60 @@ static int screen_passwords(void) {
 }
 
 static int screen_disk(void) {
+
+    char summary[256];
+    snprintf(summary,sizeof(summary),
+        L(" Summary: mode=%s  fs=%s  kernel=%s",
+          " Resumen: modo=%s  fs=%s  kernel=%s"),
+        is_uefi()?"UEFI":"BIOS", st.filesystem, st.kernel);
+
     {
         MenuItem mode_items[2];
         strncpy(mode_items[0].tag,"full",255);
         snprintf(mode_items[0].desc,511,"%s",
-            L("Full Install   - erase entire disk (recommended for new installs)",
-              "Instalacion completa - borrar todo el disco (recomendado para instalaciones nuevas)"));
+            L("Full Install    Easiest  — whole disk erased, Arch takes over",
+              "Instalación completa  Más fácil — borra todo el disco para Arch"));
         strncpy(mode_items[1].tag,"dual",255);
         snprintf(mode_items[1].desc,511,"%s",
-            L("Dual Boot      - install alongside existing OS (Windows / Linux)",
-              "Dual Boot      - instalar junto a un OS existente (Windows / Linux)"));
+            L("Dual Boot      — keep Windows/Linux, share disk with Arch",
+              "Dual Boot      — conservar Windows/Linux, compartir disco con Arch"));
+
+        char mode_text[4096];
+        snprintf(mode_text,sizeof(mode_text),"%s\n\n%s",summary,
+            L(" How do you want to install Arch Linux?\n\n"
+              "  FULL INSTALL (recommended for new installs)\n"
+              "    -> The whole selected disk is erased and Arch is installed on it.\n"
+              "    -> Simple, clean, no leftovers. Fastest option.\n"
+              "      ALL data on that disk will be permanently deleted!\n\n"
+              "  DUAL BOOT (keep another OS)\n"
+              "    -> You already have Windows or another Linux on the disk.\n"
+              "    -> You want to keep it and ALSO install Arch alongside it.\n"
+              "    -> A new partition is created automatically in the free space.\n"
+              "    -> At boot, a menu will let you choose which OS to start.\n"
+              "      You only need free unpartitioned space on the disk.\n"
+              "      Only the new Arch partition is touched — other OS is safe.",
+              " ¿Cómo quieres instalar Arch Linux?\n\n"
+              "  INSTALACIÓN COMPLETA (recomendado para instalaciones nuevas)\n"
+              "    -> Todo el disco seleccionado se borra y Arch se instala en él.\n"
+              "    -> Simple, limpio, sin restos. La opción más rápida.\n"
+              "      ¡TODOS los datos de ese disco se borrarán para siempre!\n\n"
+              "  DUAL BOOT (conservar otro sistema operativo)\n"
+              "    -> Ya tienes Windows u otro Linux en el disco.\n"
+              "    -> Quieres conservarlo E instalar Arch al lado.\n"
+              "    -> Se crea una nueva particion automaticamente en el espacio libre.\n"
+              "    -> Al arrancar, un menú te dejará elegir qué sistema iniciar.\n"
+              "      Solo necesitas espacio libre sin particionar en el disco.\n"
+              "      Solo se toca la nueva particion de Arch — el otro SO esta seguro."));
+
         char mode_out[16]={0};
         if (!radiolist_dlg(
-                L("Install Type","Tipo de instalacion"),
-                L("How do you want to install Arch Linux?\n\n"
-                  "DUAL BOOT: You will manually select which partition to use.\n"
-                  "           Your existing OS and other partitions are kept.\n\n"
-                  "FULL INSTALL: The selected disk is completely erased.",
-                  "Como quieres instalar Arch Linux?\n\n"
-                  "DUAL BOOT: Seleccionaras manualmente la particion a usar.\n"
-                  "           Tu OS existente y otras particiones se conservan.\n\n"
-                  "INSTALACION COMPLETA: El disco seleccionado se borra completamente."),
-                mode_items, 2,
+                L(" Install Type"," Tipo de instalación"),
+                mode_text, mode_items, 2,
                 st.dualboot ? "dual" : "full",
-                mode_out, sizeof(mode_out)))
+                mode_out, sizeof(mode_out))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
             return 0;
+        }
         st.dualboot = !strcmp(mode_out,"dual");
     }
 
@@ -2757,14 +3126,14 @@ static int screen_disk(void) {
 
         char lsblk[4096]={0};
         FILE *fp = popen("lsblk -f 2>/dev/null | head -40","r");
-        if (fp) { fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
+        if (fp) { (void)fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
         if (lsblk[0]) {
             char txt[MAX_OUT];
             snprintf(txt,sizeof(txt),
-                     L("Current disk layout (lsblk -f):\n\n%s\nWARNING: Selected disk will be ERASED.",
-                       "Layout actual de discos (lsblk -f):\n\n%s\nADVERTENCIA: El disco seleccionado se BORRARA."),
+                     L("Current disk layout:\n\n%s\n  WARNING: The selected disk will be COMPLETELY ERASED.",
+                       "Esquema actual de discos:\n\n%s\n  ADVERTENCIA: El disco seleccionado se BORRARÁ COMPLETAMENTE."),
                      lsblk);
-            msgbox(L("Disk Overview - Read before selecting!","Vista de discos - Lee antes de elegir!"),txt);
+            msgbox(L(" Disk overview — read before choosing!"," Vista de discos — ¡lee antes de elegir!"),txt);
         }
 
         MenuItem items[32];
@@ -2772,174 +3141,331 @@ static int screen_disk(void) {
         if (st.disk[0]) snprintf(cur_dev,sizeof(cur_dev),"/dev/%s",st.disk);
         for (int i=0;i<nd;i++) {
             snprintf(items[i].tag,256,"/dev/%s",disks[i].name);
-            snprintf(items[i].desc,512,"%lld GB  -  %s",disks[i].size_gb,disks[i].model);
+            int ssd = is_ssd(disks[i].name);
+            const char *dtype = ssd > 0 ? "SSD " : (ssd == 0 ? "HDD " : "");
+            snprintf(items[i].desc,512,"%lld GB  %s  %s",
+                     disks[i].size_gb, dtype, disks[i].model);
         }
 
         char sel[128]={0};
         if (!radiolist_dlg(
-                L("Disk Selection","Seleccion de disco"),
-                L("WARNING: ALL DATA on the selected disk will be ERASED!\n\nSelect the installation disk:",
-                  "ADVERTENCIA: Se borraran todos los datos del disco seleccionado!\n\nSelecciona el disco:"),
-                items,nd, cur_dev[0]?cur_dev:items[0].tag, sel, sizeof(sel))) return 0;
+                L(" Select Disk"," Selecciona el disco"),
+                L("  ALL DATA on the selected disk will be PERMANENTLY DELETED!\n\n"
+                  "   SSD  = fast solid-state drive\n"
+                  "   HDD  = traditional spinning hard drive\n\n"
+                  "   Select the disk where Arch Linux will be installed:",
+                  "  ¡TODOS los datos del disco seleccionado se BORRARÁN PERMANENTEMENTE!\n\n"
+                  "   SSD  = unidad de estado sólido rápida\n"
+                  "   HDD  = disco duro tradicional giratorio\n\n"
+                  "   Selecciona el disco donde se instalará Arch Linux:"),
+                items,nd, cur_dev[0]?cur_dev:items[0].tag, sel, sizeof(sel))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
 
-        char confirm_msg[512];
-        snprintf(confirm_msg,sizeof(confirm_msg),
-                 L("You selected: %s\n\nALL data will be permanently destroyed.\n\nAre you absolutely sure?",
-                   "Seleccionaste: %s\n\nTODOS los datos se destruiran permanentemente.\n\nEstas completamente seguro?"),
-                 sel);
-        if (!yesno_dlg(L("Confirm Disk Erase","Confirmar borrado de disco"),confirm_msg)) return 0;
+        {
+            const char *dname2 = sel; if (!strncmp(dname2,"/dev/",5)) dname2+=5;
+
+            long long dsize_gb = 0; char dmodel[128]="";
+            int ssd2 = -1;
+            for (int i=0;i<nd;i++) {
+                if (!strcmp(disks[i].name, dname2)) {
+                    dsize_gb = disks[i].size_gb;
+                    strncpy(dmodel, disks[i].model, sizeof(dmodel)-1);
+                    ssd2 = is_ssd(dname2);
+                    break;
+                }
+            }
+            char c1[512];
+            snprintf(c1,sizeof(c1),
+                L("You selected:\n\n"
+                  "  Disk:  %s\n"
+                  "  Size:  %lld GB\n"
+                  "  Type:  %s\n"
+                  "  Model: %s\n\n"
+                  "ALL data on this disk will be PERMANENTLY DELETED.\n\n"
+                  "Are you sure this is the correct disk?",
+                  "Has seleccionado:\n\n"
+                  "  Disco:  %s\n"
+                  "  Tamaño: %lld GB\n"
+                  "  Tipo:   %s\n"
+                  "  Modelo: %s\n\n"
+                  "TODOS los datos de este disco se BORRARÁN PERMANENTEMENTE.\n\n"
+                  "¿Estás seguro de que es el disco correcto?"),
+                sel, dsize_gb,
+                ssd2>0?"SSD ":(ssd2==0?"HDD ":"Unknown"),
+                dmodel[0]?dmodel:"Unknown");
+            if (!yesno_dlg(L(" Confirm disk selection"," Confirmar disco seleccionado"), c1))
+                return 0;
+
+            char c2[512];
+            snprintf(c2,sizeof(c2),
+                L(" LAST WARNING!\n\n"
+                  "   %s  (%lld GB) will be completely erased.\n\n"
+                  "   There is NO undo. All files, Windows, everything on it\n"
+                  "   will be gone FOREVER.\n\n"
+                  "   Are you ABSOLUTELY SURE you want to continue?",
+                  " ¡ÚLTIMA ADVERTENCIA!\n\n"
+                  "   %s  (%lld GB) se borrará completamente.\n\n"
+                  "   NO hay vuelta atrás. Todos los archivos, Windows, todo\n"
+                  "   lo que hay en él desaparecerá PARA SIEMPRE.\n\n"
+                  "   ¿Estás COMPLETAMENTE SEGURO de que quieres continuar?"),
+                sel, dsize_gb);
+            if (!yesno_dlg(L(" Final confirmation"," Confirmación final"), c2))
+                return 0;
+        }
 
         const char *dname = sel;
         if (!strncmp(dname,"/dev/",5)) dname+=5;
         strncpy(st.disk,dname,sizeof(st.disk)-1);
 
-        char sug[8]; snprintf(sug,sizeof(sug),"%d",suggest_swap_gb());
+        int sug_gb = suggest_swap_gb();
+        {
+
+            long long disk_gb = 0;
+            for (int i=0;i<nd;i++)
+                if (!strcmp(disks[i].name,st.disk)) { disk_gb=disks[i].size_gb; break; }
+            int efi_mb = is_uefi() ? 512 : 0;
+            long long swap_gb = sug_gb;
+            long long root_gb = disk_gb - (efi_mb/1024) - swap_gb;
+            char preview[1024];
+            snprintf(preview,sizeof(preview),
+                L(" Partition layout preview for /dev/%s (%lld GB):\n\n"
+                  "  +-------------------------------------┐\n"
+                  "  |  Partition 1: EFI boot   %4d MB    |\n"
+                  "  |  Partition 2: Swap        %3lld GB    |\n"
+                  "  |  Partition 3: Root (/)   ~%3lld GB    |  ← Arch installs here\n"
+                  "  +-------------------------------------┘\n\n"
+                  "  Filesystem: %s\n\n"
+                  "  This layout will be applied when you confirm installation.\n"
+                  "  Nothing is written to disk yet.",
+                  " Vista previa del particionado de /dev/%s (%lld GB):\n\n"
+                  "  +-------------------------------------┐\n"
+                  "  |  Partición 1: Arranque EFI  %4d MB |\n"
+                  "  |  Partición 2: Swap            %3lld GB |\n"
+                  "  |  Partición 3: Raíz (/)       ~%3lld GB |  ← Arch se instala aquí\n"
+                  "  +-------------------------------------┘\n\n"
+                  "  Sistema de archivos: %s\n\n"
+                  "  Este esquema se aplicará al confirmar la instalación.\n"
+                  "  Aún no se escribe nada en el disco."),
+                st.disk, disk_gb, efi_mb, swap_gb, root_gb, st.filesystem);
+            msgbox(L(" Partition Preview"," Vista previa del particionado"), preview);
+        }
+
+        char sug_str[8]; snprintf(sug_str,sizeof(sug_str),"%d",sug_gb);
         while(1) {
             char swap_hdr[512];
+
             snprintf(swap_hdr,sizeof(swap_hdr),
-                     L("Suggested swap: %s GB\n\nEnter swap size in GB (1-128):",
-                       "Swap sugerido: %s GB\n\nIngresa el tamano del swap en GB (1-128):"),
-                     sug);
+                L(" Swap size\n\n"
+                  "   Swap is extra 'emergency memory' on disk.\n"
+                  "   If your RAM fills up, the system uses swap instead of crashing.\n"
+                  "   It's also needed for hibernation (suspend-to-disk).\n\n"
+                  "   Suggested: %s GB  (based on your RAM size)\n\n"
+                  "   Enter swap size in GB (1–128):",
+                  " Tamaño del swap\n\n"
+                  "   El swap es 'memoria de emergencia' en el disco.\n"
+                  "   Si tu RAM se llena, el sistema usa swap en vez de colgarse.\n"
+                  "   También se necesita para hibernación (suspend-to-disk).\n\n"
+                  "   Sugerido: %s GB  (basado en tu cantidad de RAM)\n\n"
+                  "   Introduce el tamaño del swap en GB (1–128):"),
+                sug_str);
             char sw[16]={0};
-            if (!inputbox_dlg(L("Swap Size","Tamano de Swap"),swap_hdr,
-                              st.swap[0]?st.swap:sug, sw, sizeof(sw))) return 0;
+            if (!inputbox_dlg(L(" Swap Size"," Tamaño del swap"), swap_hdr,
+                              st.swap[0]?st.swap:sug_str, sw, sizeof(sw))) {
+                if (g_home_requested) { g_home_requested=0; return 2; }
+                return 0;
+            }
             trim_nl(sw);
             if (validate_swap(sw)) { strncpy(st.swap,sw,sizeof(st.swap)-1); return 1; }
-            msgbox(L("Invalid swap","Swap invalido"),
-                   L("Swap must be a number between 1 and 128.",
-                     "El swap debe ser un numero entre 1 y 128."));
+            msgbox(L("Invalid swap","Swap inválido"),
+                   L("Swap must be a number between 1 and 128.\nExample: 8",
+                     "El swap debe ser un número entre 1 y 128.\nEjemplo: 8"));
         }
 
     } else {
-        PartEntry parts[64];
-        int np = list_all_partitions(parts, 64);
-        if (np == 0) {
-            msgbox(L("No partitions found","Sin particiones"),
-                   L("No existing partitions were found.\n\nUse full-install mode or create partitions with a tool like GParted first.",
-                     "No se encontraron particiones existentes.\n\nUsa el modo de instalacion completa o crea particiones con GParted primero."));
+
+        DiskInfo disks[32]; int nd = list_disks(disks, 32);
+        if (nd == 0) {
+            msgbox(L("No disks found","Sin discos"),
+                   L("No disks were detected. Cannot continue.",
+                     "No se detectaron discos. No se puede continuar."));
             st.dualboot = 0;
             return 0;
         }
 
         {
-            char lsblk[4096]={0};
-            FILE *fp = popen("lsblk 2>/dev/null | head -50","r");
-            if (fp) { fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
+            char lsblk_out[4096]={0};
+            FILE *fp_lb = popen("lsblk 2>/dev/null | head -50","r");
+            if (fp_lb) { (void)fread(lsblk_out,1,sizeof(lsblk_out)-1,fp_lb); pclose(fp_lb); }
+
+            char overview[MAX_OUT];
+            snprintf(overview, sizeof(overview),
+                L("DUAL BOOT — current disk layout:\n\n%s\n\n"
+                  "Step 1 of 2: Select the disk that contains your existing OS\n"
+                  "(Windows, another Linux, etc.)\n\n"
+                  "A new partition for Arch will be created automatically\n"
+                  "in the free space of the selected disk.",
+                  "DUAL BOOT — esquema actual de discos:\n\n%s\n\n"
+                  "Paso 1 de 2: Selecciona el disco que contiene tu sistema actual\n"
+                  "(Windows, otro Linux, etc.)\n\n"
+                  "Se creara automaticamente una nueva particion para Arch\n"
+                  "en el espacio libre del disco seleccionado."),
+                lsblk_out);
+            msgbox(L("Dual Boot — Disk Overview","Dual Boot — Vista de discos"), overview);
+        }
+
+        MenuItem disk_items[32];
+        char cur_dev[128]="";
+        if (st.disk[0]) snprintf(cur_dev, sizeof(cur_dev), "/dev/%s", st.disk);
+        for (int i = 0; i < nd; i++) {
+            snprintf(disk_items[i].tag,  256, "/dev/%s", disks[i].name);
+            int ssd = is_ssd(disks[i].name);
+            snprintf(disk_items[i].desc, 512, "%lld GB  %s  %s",
+                     disks[i].size_gb,
+                     ssd > 0 ? "SSD" : (ssd == 0 ? "HDD" : ""),
+                     disks[i].model);
+        }
+
+        char sel_disk[128]={0};
+        if (!radiolist_dlg(
+                L("Dual Boot — Step 1/2: Select disk",
+                  "Dual Boot — Paso 1/2: Selecciona el disco"),
+                L("Which disk contains the OS you want to keep?\n"
+                  "(Arch Linux will also be installed on this disk.)\n\n"
+                  "A new partition will be created automatically\n"
+                  "in the available free space. Nothing is modified yet.",
+                  "¿En que disco esta el sistema operativo que quieres conservar?\n"
+                  "(Arch Linux tambien se instalara en este disco.)\n\n"
+                  "Se creara automaticamente una nueva particion\n"
+                  "en el espacio libre disponible. Todavia no se modifica nada."),
+                disk_items, nd,
+                cur_dev[0] ? cur_dev : disk_items[0].tag,
+                sel_disk, sizeof(sel_disk))) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
+
+        const char *dname_db = sel_disk;
+        if (!strncmp(dname_db,"/dev/",5)) dname_db += 5;
+        strncpy(st.disk, dname_db, sizeof(st.disk)-1);
+
+        {
+            char lsblk2[4096]={0};
+            char lsblk_cmd[256];
+            snprintf(lsblk_cmd, sizeof(lsblk_cmd), "lsblk %s 2>/dev/null", sel_disk);
+            FILE *fp2 = popen(lsblk_cmd, "r");
+            if (fp2) { (void)fread(lsblk2,1,sizeof(lsblk2)-1,fp2); pclose(fp2); }
+
+            char free_info[512]={0};
+            char free_cmd[256];
+            snprintf(free_cmd, sizeof(free_cmd),
+                "parted -s %s unit GB print free 2>/dev/null"
+                " | grep 'Free Space' | tail -1", sel_disk);
+            FILE *fp3 = popen(free_cmd, "r");
+            if (fp3) { (void)fread(free_info,1,sizeof(free_info)-1,fp3); pclose(fp3); trim_nl(free_info); }
+
             char txt[MAX_OUT];
-            snprintf(txt,sizeof(txt),
-                     L("Current partition layout:\n\n%s\n\n"
-                       "Select the partition where Arch Linux will be installed.\n"
-                       "WARNING: that partition WILL BE FORMATTED.",
-                       "Esquema de particiones actual:\n\n%s\n\n"
-                       "Selecciona la particion donde se instalara Arch Linux.\n"
-                       "ADVERTENCIA: esa particion sera FORMATEADA."),
-                     lsblk);
-            msgbox(L("Dual Boot - Partition Overview","Dual Boot - Vista de particiones"), txt);
+            snprintf(txt, sizeof(txt),
+                L("Partitions on %s:\n\n%s\n\n"
+                  "Step 2 of 2: Choose the size for the new Arch Linux partition.\n\n"
+                  "[+] A NEW partition will be created in the free space.\n"
+                  "[+] All existing partitions (Windows, etc.) stay untouched.\n\n"
+                  "Available free space: %s",
+                  "Particiones en %s:\n\n%s\n\n"
+                  "Paso 2 de 2: Elige el tamaño de la nueva particion de Arch Linux.\n\n"
+                  "[+] Se creara una NUEVA particion en el espacio libre.\n"
+                  "[+] Todas las particiones existentes (Windows, etc.) quedan intactas.\n\n"
+                  "Espacio libre disponible: %s"),
+                sel_disk, lsblk2,
+                free_info[0] ? free_info : L("unknown","desconocido"));
+            msgbox(L("Dual Boot — Partition Overview",
+                     "Dual Boot — Vista de particiones"), txt);
         }
 
-        MenuItem *part_items = malloc(np * sizeof(MenuItem));
-        for (int i = 0; i < np; i++) {
-            strncpy(part_items[i].tag, parts[i].path, 255);
-            snprintf(part_items[i].desc, 511, "%lld MB  [%s]  %s",
-                     parts[i].size_mb, parts[i].fstype,
-                     parts[i].label[0] ? parts[i].label : "");
+        while (1) {
+            char size_prompt[512];
+            snprintf(size_prompt, sizeof(size_prompt),
+                L("How many GB should the new Arch Linux partition be?\n\n"
+                  "   Minimum recommended: 20 GB\n"
+                  "   Typical desktop install: 40-80 GB\n\n"
+                  "   The partition will be created in the free space of %s.\n"
+                  "   Your existing OS data will NOT be touched.\n\n"
+                  "   Enter size in GB (10-2000):",
+                  "¿Cuantos GB debe tener la nueva particion de Arch Linux?\n\n"
+                  "   Minimo recomendado: 20 GB\n"
+                  "   Instalacion de escritorio tipica: 40-80 GB\n\n"
+                  "   La particion se creara en el espacio libre de %s.\n"
+                  "   Los datos de tu OS actual NO seran tocados.\n\n"
+                  "   Introduce el tamaño en GB (10-2000):"),
+                sel_disk);
+            char size_str[16]={0};
+            char init_size[8]; snprintf(init_size,sizeof(init_size),"%d",st.db_size_gb>0?st.db_size_gb:30);
+            if (!inputbox_dlg(
+                    L("Dual Boot — Step 2/2: Partition size",
+                      "Dual Boot — Paso 2/2: Tamaño de la particion"),
+                    size_prompt, init_size, size_str, sizeof(size_str))) {
+                if (g_home_requested) { g_home_requested=0; return 2; }
+                return 0;
+            }
+            trim_nl(size_str);
+            int gb = atoi(size_str);
+            if (gb >= 10 && gb <= 2000) {
+                st.db_size_gb = gb;
+                break;
+            }
+            msgbox(L("Invalid size","Tamaño invalido"),
+                   L("Please enter a number between 10 and 2000.\nExample: 40",
+                     "Por favor introduce un numero entre 10 y 2000.\nEjemplo: 40"));
         }
-        char sel_root[128]={0};
-        int ok = radiolist_dlg(
-            L("Dual Boot - Root Partition","Dual Boot - Particion raiz"),
-            L("Select the partition for Arch Linux root (/).\n"
-              "This partition WILL BE ERASED AND FORMATTED.\n\n"
-              "Choose a free/empty partition, NOT your Windows partition!",
-              "Selecciona la particion para la raiz (/) de Arch Linux.\n"
-              "Esta particion SE BORRARA Y FORMATEARA.\n\n"
-              "Elige una particion libre/vacia, NO la particion de Windows!"),
-            part_items, np,
-            st.db_root[0] ? st.db_root : part_items[0].tag,
-            sel_root, sizeof(sel_root));
-        free(part_items);
-        if (!ok || !sel_root[0]) return 0;
-
-        char conf_msg[256];
-        snprintf(conf_msg, sizeof(conf_msg),
-                 L("CONFIRM: %s will be ERASED and formatted.\n\nProceed?",
-                   "CONFIRMAR: %s sera BORRADA y formateada.\n\nProceder?"),
-                 sel_root);
-        if (!yesno_dlg(L("Confirm Format","Confirmar formateo"), conf_msg)) return 0;
-        strncpy(st.db_root, sel_root, sizeof(st.db_root)-1);
 
         if (is_uefi()) {
-            PartEntry parts2[64]; int np2 = list_all_partitions(parts2, 64);
-            MenuItem *efi_items = malloc((np2+1) * sizeof(MenuItem));
-            strncpy(efi_items[0].tag, "none", 255);
-            snprintf(efi_items[0].desc, 511, "%s",
-                     L("None / Auto-detect","Ninguna / Autodetectar"));
-            int ni2 = 1;
-            for (int i = 0; i < np2; i++) {
-                if (!strcmp(parts2[i].path, st.db_root)) continue;
-                strncpy(efi_items[ni2].tag, parts2[i].path, 255);
-                snprintf(efi_items[ni2].desc, 511, "%lld MB  [%s]  %s",
-                         parts2[i].size_mb, parts2[i].fstype,
-                         parts2[i].label[0] ? parts2[i].label : "");
-                ni2++;
+            char auto_efi[128]={0};
+            {
+                char efi_cmd[256];
+                snprintf(efi_cmd, sizeof(efi_cmd),
+                    "lsblk -b -p -n -l -o NAME,FSTYPE,PARTTYPE %s 2>/dev/null"
+                    " | grep -i 'c12a7328\\|vfat\\|fat32' | head -1", sel_disk);
+                FILE *fp3 = popen(efi_cmd, "r");
+                if (fp3) {
+                    char line[256]={0};
+                    if (fgets(line,sizeof(line),fp3))
+                        sscanf(line, "%127s", auto_efi);
+                    pclose(fp3);
+                }
+                if (!auto_efi[0]) {
+                    snprintf(efi_cmd, sizeof(efi_cmd),
+                        "blkid -o list 2>/dev/null | grep -i 'vfat\\|fat32' | grep '%s' | awk '{print $1}' | head -1",
+                        sel_disk);
+                    FILE *fp4 = popen(efi_cmd, "r");
+                    if (fp4) {
+                        char line[256]={0};
+                        if (fgets(line,sizeof(line),fp4)) {
+                            trim_nl(line);
+                            if (line[0]) strncpy(auto_efi, line, sizeof(auto_efi)-1);
+                        }
+                        pclose(fp4);
+                    }
+                }
             }
-            char sel_efi[128]={0};
-            radiolist_dlg(
-                L("Dual Boot - EFI Partition","Dual Boot - Particion EFI"),
-                L("Select the existing EFI System Partition (ESP).\n"
-                  "This is usually a small FAT32 partition (~100-500 MB).\n"
-                  "It will NOT be formatted - existing boot entries are preserved.",
-                  "Selecciona la particion EFI del sistema (ESP) existente.\n"
-                  "Suele ser una particion FAT32 pequena (~100-500 MB).\n"
-                  "NO se formateara - las entradas de arranque existentes se conservan."),
-                efi_items, ni2,
-                st.db_efi[0] ? st.db_efi : "none",
-                sel_efi, sizeof(sel_efi));
-            free(efi_items);
-            if (strcmp(sel_efi,"none") != 0)
-                strncpy(st.db_efi, sel_efi, sizeof(st.db_efi)-1);
-            else {
-                FILE *fp2 = popen(
-                    "lsblk -b -p -n -o PATH,FSTYPE,PARTTYPE --pairs 2>/dev/null | "
-                    "grep -i 'PARTTYPE=\"c12a7328' | head -1", "r");
-                if (fp2) {
-                    char line[256]={0}; fgets(line,sizeof(line),fp2); pclose(fp2);
+
+            if (auto_efi[0]) {
+                strncpy(st.db_efi, auto_efi, sizeof(st.db_efi)-1);
+            } else {
+                char efi_scan[256];
+                snprintf(efi_scan, sizeof(efi_scan),
+                    "lsblk -b -p -n -o PATH,FSTYPE,PARTTYPE --pairs %s 2>/dev/null"
+                    " | grep -i 'c12a7328' | head -1", sel_disk);
+                FILE *fp5 = popen(efi_scan,"r");
+                if (fp5) {
+                    char line[256]={0}; (void)fgets(line,sizeof(line),fp5); pclose(fp5);
                     char *pp = strstr(line,"PATH=\"");
-                    if (pp) { sscanf(pp+6,"%127[^\"]",st.db_efi); }
+                    if (pp) sscanf(pp+6,"%127[^\"]",st.db_efi);
                 }
             }
         }
 
-        {
-            PartEntry parts3[64]; int np3 = list_all_partitions(parts3, 64);
-            MenuItem *sw_items = malloc((np3+1) * sizeof(MenuItem));
-            strncpy(sw_items[0].tag, "none", 255);
-            snprintf(sw_items[0].desc, 511, "%s", L("None - no swap partition","Ninguno - sin swap"));
-            int ni3 = 1;
-            for (int i = 0; i < np3; i++) {
-                if (!strcmp(parts3[i].path, st.db_root)) continue;
-                if (!strcmp(parts3[i].path, st.db_efi))  continue;
-                strncpy(sw_items[ni3].tag, parts3[i].path, 255);
-                snprintf(sw_items[ni3].desc, 511, "%lld MB  [%s]  %s",
-                         parts3[i].size_mb, parts3[i].fstype,
-                         parts3[i].label[0] ? parts3[i].label : "");
-                ni3++;
-            }
-            char sel_swap[128]={0};
-            radiolist_dlg(
-                L("Dual Boot - Swap Partition","Dual Boot - Particion swap"),
-                L("Select an existing swap partition (optional).\n"
-                  "Choose 'None' to skip swap.",
-                  "Selecciona una particion swap existente (opcional).\n"
-                  "Elige 'Ninguno' para omitir el swap."),
-                sw_items, ni3,
-                st.db_swap[0] ? st.db_swap : "none",
-                sel_swap, sizeof(sel_swap));
-            free(sw_items);
-            if (strcmp(sel_swap,"none") != 0)
-                strncpy(st.db_swap, sel_swap, sizeof(st.db_swap)-1);
-            else
-                st.db_swap[0] = '\0';
-        }
+        st.db_swap[0] = '\0';
 
         return 1;
     }
@@ -2947,37 +3473,45 @@ static int screen_disk(void) {
 }
 
 static int screen_filesystem(void) {
+
+    char summary[256];
+    snprintf(summary,sizeof(summary),
+        L(" Summary: disk=%s  kernel=%s",
+          " Resumen: disco=%s  kernel=%s"),
+        st.disk[0]?st.disk:"?", st.kernel);
+
     MenuItem items[4];
     strncpy(items[0].tag,"ext4",255);
     snprintf(items[0].desc,511,"%s",L(
-        "ext4   - stable, widely supported, proven",
-        "ext4   - estable, amplio soporte, probado"));
+        "ext4    Stable, fast, universal   No snapshots",
+        "ext4    Estable, rápido, universal   Sin snapshots"));
     strncpy(items[1].tag,"btrfs",255);
     snprintf(items[1].desc,511,"%s",L(
-        "btrfs  - subvolumes + zstd compression + snapshots",
-        "btrfs  - subvolumenes + compresion zstd + snapshots"));
+        "btrfs   Snapshots, compression   Slightly more complex",
+        "btrfs   Snapshots, compresión    Algo más complejo"));
     strncpy(items[2].tag,"xfs",255);
     snprintf(items[2].desc,511,"%s",L(
-        "xfs    - high-performance, great for large files",
-        "xfs    - alto rendimiento, ideal para archivos grandes"));
+        "xfs     Great for large files    No snapshots, no shrink",
+        "xfs     Excelente para archivos grandes   Sin snapshots"));
     strncpy(items[3].tag,"zfs",255);
     snprintf(items[3].desc,511,"%s",L(
-        "zfs    - [EXPERIMENTAL] copy-on-write, checksums, snapshots (archzfs repo)",
-        "zfs    - [EXPERIMENTAL] copy-on-write, checksums, snapshots (repo archzfs)"));
+        "zfs     Advanced checksums       [EXPERIMENTAL] complex setup",
+        "zfs     Checksums avanzados      [EXPERIMENTAL] configuración compleja"));
+
+    char dlg_text[512];
+    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
+        L("Choose the filesystem for your root partition.\n"
+          "For most users: ext4 (simple) or btrfs (snapshots).",
+          "Elige el sistema de archivos para la partición raíz.\n"
+          "Para la mayoría: ext4 (simple) o btrfs (snapshots)."));
 
     char out[16]={0};
-    if (!radiolist_dlg(L("Filesystem","Sistema de archivos"),
-                       L("Choose the root filesystem:\n\n"
-                         "  ext4   - best general-purpose choice.\n"
-                         "  btrfs  - modern features, recommended with snapper.\n"
-                         "  xfs    - excellent for large files and servers.\n"
-                         "  zfs    - advanced but requires archzfs repo.",
-                         "Elige el sistema de archivos raiz:\n\n"
-                         "  ext4   - mejor opcion general.\n"
-                         "  btrfs  - funciones modernas, recomendado con snapper.\n"
-                         "  xfs    - excelente para archivos grandes y servidores.\n"
-                         "  zfs    - avanzado, requiere repo archzfs."),
-                       items, 4, st.filesystem, out, sizeof(out))) return 0;
+    if (!radiolist_dlg(L(" Filesystem"," Sistema de archivos"),
+                       dlg_text,
+                       items, 4, st.filesystem, out, sizeof(out))) {
+        if (g_home_requested) { g_home_requested=0; return 2; }
+        return 0;
+    }
 
     if (!strcmp(out,"zfs")) {
         msgbox(L("ZFS - Important Notes","ZFS - Notas importantes"),
@@ -2989,9 +3523,9 @@ static int screen_filesystem(void) {
                  "  - ZFS is experimental in this installer.\n\n"
                  "If you see ZFS-related errors, check the log.",
                  "ZFS en Arch Linux:\n\n"
-                 "  - Requiere el repositorio archzfs (se agrega automaticamente).\n"
-                 "  - Kernel forzado a 'linux' (modulos archzfs son version-especificos).\n"
-                 "  - Se usara GRUB como bootloader (forzado).\n"
+                 "  - Requiere el repositorio archzfs (se agrega automáticamente).\n"
+                 "  - Kernel forzado a 'linux' (módulos archzfs son versión-específicos).\n"
+                 "  - Se usará GRUB como bootloader (forzado).\n"
                  "  - Snapper desactivado (solo para btrfs).\n"
                  "  - ZFS es experimental en este instalador.\n\n"
                  "Si hay errores de ZFS, revisa el log."));
@@ -3005,45 +3539,57 @@ static int screen_filesystem(void) {
 }
 
 static int screen_kernel(void) {
+
+    char summary[256];
+    snprintf(summary,sizeof(summary),
+        L(" Summary: disk=%s  fs=%s",
+          " Resumen: disco=%s  fs=%s"),
+        st.disk[0]?st.disk:"?", st.filesystem);
+
     MenuItem items[5];
     strncpy(items[0].tag,"linux",255);
     snprintf(items[0].desc,511,"%s",L(
-        "linux         - latest stable kernel",
-        "linux         - kernel estable mas reciente"));
+        "linux           Latest stable   Best hardware support  (recommended)",
+        "linux           Último estable   Mejor soporte hw  (recomendado)"));
     strncpy(items[1].tag,"linux-lts",255);
     snprintf(items[1].desc,511,"%s",L(
-        "linux-lts     - long-term support kernel",
-        "linux-lts     - kernel de soporte a largo plazo"));
+        "linux-lts       Rock-solid   Longer support   Older features",
+        "linux-lts       Muy estable   Soporte largo   Funciones más antiguas"));
     strncpy(items[2].tag,"linux-zen",255);
     snprintf(items[2].desc,511,"%s",L(
-        "linux-zen     - optimized for desktop / gaming",
-        "linux-zen     - optimizado para escritorio / gaming"));
+        "linux-zen       Desktop/gaming tweaks   Slightly more power usage",
+        "linux-zen       Optimizado escritorio/gaming   Algo más consumo"));
     strncpy(items[3].tag,"linux-hardened",255);
     snprintf(items[3].desc,511,"%s",L(
-        "linux-hardened- security-hardened kernel",
-        "linux-hardened- kernel endurecido para seguridad"));
+        "linux-hardened  Security patches   Some apps may break",
+        "linux-hardened  Parches seguridad   Algunas apps pueden fallar"));
     strncpy(items[4].tag,"linux-cachyos",255);
     snprintf(items[4].desc,511,"%s",L(
-        "linux-cachyos - CachyOS kernel (max speed, needs cachyos repo)",
-        "linux-cachyos - kernel CachyOS (maxima velocidad, requiere repo cachyos)"));
+        "linux-cachyos   Max performance   Needs cachyos repo   Less tested",
+        "linux-cachyos   Máximo rendimiento   Requiere repo cachyos   Menos probado"));
 
     char kl_copy[512]; strncpy(kl_copy, st.kernel_list, sizeof(kl_copy)-1);
     const char *defs[8]={0}; int ndefs=0;
     char *tok = strtok(kl_copy, " ");
     while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL," "); }
 
+    char dlg_text[512];
+    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
+        L("Choose one or more kernels. SPACE to toggle.\n"
+          "The first selected kernel will be used for boot.",
+          "Elige uno o más kernels. ESPACIO para marcar.\n"
+          "El primer kernel seleccionado se usará para arrancar."));
+
     char sel[8][256]; int nsel = -1;
     while (nsel < 1) {
         nsel = checklist_dlg(
-            L("Kernel Selection","Seleccion de Kernel"),
-            L("Select one or more kernels to install.\n"
-              "Use SPACE to toggle. The first selected kernel is used for bootloader config.\n"
-              "Having linux + linux-lts gives you a fallback option.",
-              "Selecciona uno o mas kernels para instalar.\n"
-              "Usa ESPACIO para activar/desactivar. El primer kernel seleccionado se usa en el bootloader.\n"
-              "Tener linux + linux-lts te da una opcion de respaldo."),
+            L(" Kernel"," Kernel"),
+            dlg_text,
             items, 5, defs, ndefs, sel, 8);
-        if (nsel < 0) return 0;       
+        if (nsel < 0) {
+            if (g_home_requested) { g_home_requested=0; return 2; }
+            return 0;
+        }
         if (nsel == 0) {
             msgbox(L("No kernel selected","Sin kernel seleccionado"),
                    L("You must select at least one kernel.",
@@ -3062,33 +3608,75 @@ static int screen_kernel(void) {
 
 static int screen_bootloader(void) {
     int uefi = is_uefi();
+
+    char summary[256];
+    snprintf(summary,sizeof(summary),
+        L(" Summary: fs=%s  kernel=%s  mode=%s",
+          " Resumen: fs=%s  kernel=%s  modo=%s"),
+        st.filesystem, st.kernel, uefi?"UEFI":"BIOS");
+
     MenuItem items[3]; int ni;
     if (!uefi) {
         strncpy(items[0].tag,"grub",255);
-        snprintf(items[0].desc,511,"%s",L("GRUB         - stable, recommended for BIOS","GRUB         - estable, recomendado para BIOS"));
+        snprintf(items[0].desc,511,"%s",L(
+            "GRUB    Works everywhere   Dual-boot friendly  (recommended)",
+            "GRUB    Funciona en todo   Ideal para dual boot  (recomendado)"));
         strncpy(items[1].tag,"limine",255);
-        snprintf(items[1].desc,511,"%s",L("Limine       - modern, lightweight, BIOS + UEFI","Limine       - moderno, ligero, BIOS + UEFI"));
+        snprintf(items[1].desc,511,"%s",L(
+            "Limine  Fast, modern   Less common, less documentation",
+            "Limine  Rápido, moderno   Menos común, menos documentación"));
         ni=2;
     } else {
         strncpy(items[0].tag,"grub",255);
-        snprintf(items[0].desc,511,"%s",L("GRUB         - stable, UEFI and BIOS","GRUB         - estable, UEFI y BIOS"));
+        snprintf(items[0].desc,511,"%s",L(
+            "GRUB          Universal   Dual-boot   UEFI+BIOS  (recommended)",
+            "GRUB          Universal   Dual boot   UEFI+BIOS  (recomendado)"));
         strncpy(items[1].tag,"systemd-boot",255);
-        snprintf(items[1].desc,511,"%s",L("systemd-boot - fast, UEFI only","systemd-boot - rapido, solo UEFI"));
+        snprintf(items[1].desc,511,"%s",L(
+            "systemd-boot  Minimal & fast   UEFI only   No BIOS support",
+            "systemd-boot  Mínimo y rápido   Solo UEFI   Sin soporte BIOS"));
         strncpy(items[2].tag,"limine",255);
-        snprintf(items[2].desc,511,"%s",L("Limine       - modern, lightweight, UEFI only","Limine       - moderno, ligero, solo UEFI"));
+        snprintf(items[2].desc,511,"%s",L(
+            "Limine        Lightweight   UEFI   Less documentation",
+            "Limine        Ligero   UEFI   Menos documentación"));
         ni=3;
     }
+
+    char dlg_text[4096];
+    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
+        L(" The bootloader is the first program that runs when you turn on the PC.\n"
+          "   It loads your Linux kernel.\n\n"
+          "  GRUB -> The classic choice. Works on both old (BIOS) and new (UEFI) PCs.\n"
+          "          PROS: well documented, supports dual boot (Windows+Linux),\n"
+          "                theme support, rescue mode.\n"
+          "          CONS: slower to start than alternatives.\n\n"
+          "  systemd-boot -> Simple and fast (UEFI only).\n"
+          "          PROS: boots very quickly, minimal config, integrated with systemd.\n"
+          "          CONS: UEFI only, no graphical theme, limited dual-boot support.\n\n"
+          "  Limine -> Modern and lightweight.\n"
+          "          PROS: very fast, simple config file, supports UEFI and BIOS.\n"
+          "          CONS: less community documentation than GRUB.\n\n"
+          "   If unsure, choose GRUB.",
+          " El gestor de arranque es el primer programa que arranca al encender el PC.\n"
+          "   Carga el kernel de Linux.\n\n"
+          "  GRUB -> La opción clásica. Funciona en PCs antiguos (BIOS) y modernos (UEFI).\n"
+          "          PROS: muy documentado, soporta dual boot (Windows+Linux),\n"
+          "                temas visuales, modo de rescate.\n"
+          "          CONS: arranque algo más lento que las alternativas.\n\n"
+          "  systemd-boot -> Simple y rápido (solo UEFI).\n"
+          "          PROS: arranca muy rápido, config mínima, integrado con systemd.\n"
+          "          CONS: solo UEFI, sin temas gráficos, soporte dual boot limitado.\n\n"
+          "  Limine -> Moderno y ligero.\n"
+          "          PROS: muy rápido, config simple, soporta UEFI y BIOS.\n"
+          "          CONS: menos documentación en la comunidad que GRUB.\n\n"
+          "   Si no sabes cuál elegir, elige GRUB."));
+
     char out[16]={0};
-    if (!radiolist_dlg(L("Bootloader","Gestor de arranque"),
-                       L("Choose a bootloader:\n\n"
-                         "  GRUB         works on UEFI and BIOS legacy.\n"
-                         "  systemd-boot UEFI only, minimal and fast.\n"
-                         "  Limine       modern, lightweight, simple config.",
-                         "Elige un gestor de arranque:\n\n"
-                         "  GRUB         UEFI y BIOS.\n"
-                         "  systemd-boot Solo UEFI, minimalista y rapido.\n"
-                         "  Limine       Moderno, ligero, config sencilla."),
-                       items,ni,st.bootloader,out,sizeof(out))) return 0;
+    if (!radiolist_dlg(L(" Bootloader"," Gestor de arranque"),
+                       dlg_text, items, ni, st.bootloader, out, sizeof(out))) {
+        if (g_home_requested) { g_home_requested=0; return 2; }
+        return 0;
+    }
     strncpy(st.bootloader,out,sizeof(st.bootloader)-1);
     return 1;
 }
@@ -3198,7 +3786,7 @@ static int screen_keymap(void) {
     };
     char avail[8192]={0};
     FILE *fp = popen("localectl list-keymaps 2>/dev/null || true","r");
-    if (fp) { fread(avail,1,sizeof(avail)-1,fp); pclose(fp); }
+    if (fp) { (void)fread(avail,1,sizeof(avail)-1,fp); pclose(fp); }
 
     MenuItem items[32]; int ni=0;
     for (int i=0; wanted[i] && ni<32; i++) {
@@ -3235,7 +3823,7 @@ static int screen_keymap(void) {
 static int screen_timezone(void) {
     char zones_raw[65536]={0};
     FILE *fp = popen("timedatectl list-timezones 2>/dev/null || true","r");
-    if (fp) { fread(zones_raw,1,sizeof(zones_raw)-1,fp); pclose(fp); }
+    if (fp) { (void)fread(zones_raw,1,sizeof(zones_raw)-1,fp); pclose(fp); }
 
     char **zones=NULL; int nz=0, zc=0;
     if (zones_raw[0]) {
@@ -3289,14 +3877,17 @@ static int screen_timezone(void) {
                       reg_items,nr+1,cur_reg,sel_reg,sizeof(sel_reg))) {
         for(int i=0;i<nr;i++) free(regions[i]);
         free(reg_items);
-        for(int i=0;i<nz;i++) free(zones[i]); free(zones);
+        for(int i=0;i<nz;i++) free(zones[i]);
+        free(zones);
         return 0;
     }
-    for(int i=0;i<nr;i++) free(regions[i]); free(reg_items);
+    for(int i=0;i<nr;i++) free(regions[i]);
+    free(reg_items);
 
     if(!strcmp(sel_reg,"UTC")) {
         strncpy(st.timezone,"UTC",sizeof(st.timezone)-1);
-        for(int i=0;i<nz;i++) free(zones[i]); free(zones);
+        for(int i=0;i<nz;i++) free(zones[i]);
+        free(zones);
         return 1;
     }
 
@@ -3310,7 +3901,8 @@ static int screen_timezone(void) {
         strncpy(city_items[nc].desc,sl+1,511);
         nc++;
     }
-    for(int i=0;i<nz;i++) free(zones[i]); free(zones);
+    for(int i=0;i<nz;i++) free(zones[i]);
+    free(zones);
 
     if(nc==0) {
         if(city_items)free(city_items);
@@ -3330,6 +3922,78 @@ static int screen_timezone(void) {
     if(!ok) return 0;
     snprintf(st.timezone,sizeof(st.timezone),"%s/%s",sel_reg,sel_city);
     return 1;
+}
+
+static const char *get_desktop_preview_url(const char *name) {
+    if (!strcmp(name, "KDE Plasma")) return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/KDE-6.png";
+    if (!strcmp(name, "Cinnamon"))   return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/cinnamonn.jpg";
+    if (!strcmp(name, "GNOME"))      return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/gnome.jpg";
+    if (!strcmp(name, "Hyprland"))   return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/hyprland.png";
+    if (!strcmp(name, "LXQt"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/lxqt.jpg";
+    if (!strcmp(name, "MATE"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/mate.jpg";
+    if (!strcmp(name, "None"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/no.png";
+    if (!strcmp(name, "Sway"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/sway.jpg";
+    if (!strcmp(name, "XFCE"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/xfce.jpg";
+    return NULL;
+}
+
+static int desktop_preview_confirm(const char *desktop_name) {
+    const char *url = get_desktop_preview_url(desktop_name);
+    if (!url) return 1;
+
+    char safe[64]; int si = 0;
+    for (const char *p = desktop_name; *p && si < 60; p++)
+        safe[si++] = (*p == ' ') ? '_' : *p;
+    safe[si] = '\0';
+
+    const char *ext = strrchr(url, '.');
+    if (!ext) ext = ".png";
+
+    char local_path[256];
+    snprintf(local_path, sizeof(local_path), "/tmp/arch_preview_%s%s", safe, ext);
+
+    if (access(local_path, F_OK) != 0) {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+                 "curl -s -L --max-time 15 -o '%s' '%s' 2>/dev/null",
+                 local_path, url);
+        while (access(local_path, F_OK) != 0) {
+            (void)system(cmd);
+            if (access(local_path, F_OK) != 0)
+                sleep(3);  
+        }
+    }
+
+    if (access(local_path, F_OK) != 0) return 1;
+
+    char title[128];
+    snprintf(title, sizeof(title),
+             L("Preview: %s", "Vista previa: %s"), desktop_name);
+    char text[512];
+    snprintf(text, sizeof(text),
+             L("This is how <b>%s</b> looks.\nAre you sure you want to install it?",
+               "Así se verá <b>%s</b>.\n¿Estás seguro de que quieres instalarlo?"),
+             desktop_name);
+    char btn_ok[64], btn_back[64];
+    snprintf(btn_ok,   sizeof(btn_ok),   "--button=%s:0",
+             L("✓  Install this DE","✓  Instalar este escritorio"));
+    snprintf(btn_back, sizeof(btn_back), "--button=%s:1",
+             L("← Back","← Volver"));
+
+    char *argv[32]; int ai = 0;
+    argv[ai++] = "yad";
+    argv[ai++] = "--picture";
+    argv[ai++] = "--size=fit";
+    argv[ai++] = "--title";    argv[ai++] = title;
+    argv[ai++] = "--filename"; argv[ai++] = local_path;
+    argv[ai++] = "--width=1100";
+    argv[ai++] = "--height=650";
+    argv[ai++] = "--center";
+    argv[ai++] = btn_ok;
+    argv[ai++] = btn_back;
+    argv[ai] = NULL;
+
+    return yad_exec(argv, NULL, 0) == 0;
 }
 
 static int screen_desktop(void) {
@@ -3356,11 +4020,12 @@ static int screen_desktop(void) {
 
     char dl_copy[512]; strncpy(dl_copy, st.desktop_list, sizeof(dl_copy)-1);
     const char *defs[8]={0}; int ndefs=0;
-    char *tok = strtok(dl_copy," ");
-    while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL," "); }
+    char *tok = strtok(dl_copy,"|");
+    while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL,"|"); }
 
     char sel[8][256]; int nsel = -1;
-    while (nsel < 1) {
+    for (;;) {
+
         nsel = checklist_dlg(
             L("Desktop Environment","Entorno de escritorio"),
             L("Select one or more desktop environments to install.\n"
@@ -3375,26 +4040,35 @@ static int screen_desktop(void) {
             msgbox(L("No selection","Sin seleccion"),
                    L("Select at least one option (or 'None' for CLI).",
                      "Selecciona al menos una opcion (o 'None' para solo terminal)."));
+            continue;
         }
-    }
-    free(items);
 
-    char cleaned[8][256]; int nc=0;
-    int has_non_none = 0;
-    for(int i=0;i<nsel;i++) if(strcmp(sel[i],"None")) has_non_none=1;
-    for(int i=0;i<nsel;i++) {
-        if(has_non_none && !strcmp(sel[i],"None")) continue;
-        strncpy(cleaned[nc++], sel[i], 255);
-    }
-    if (nc == 0) { strncpy(cleaned[0],"None",255); nc=1; }
+        char cleaned[8][256]; int nc = 0;
+        int has_non_none = 0;
+        for (int i = 0; i < nsel; i++) if (strcmp(sel[i], "None")) has_non_none = 1;
+        for (int i = 0; i < nsel; i++) {
+            if (has_non_none && !strcmp(sel[i], "None")) continue;
+            strncpy(cleaned[nc++], sel[i], 255);
+        }
+        if (nc == 0) { strncpy(cleaned[0], "None", 255); nc = 1; }
 
-    st.desktop_list[0] = '\0';
-    for (int i=0;i<nc;i++) {
-        if(i) strncat(st.desktop_list," ",sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
-        strncat(st.desktop_list, cleaned[i], sizeof(st.desktop_list)-strlen(st.desktop_list)-1);
+        if (!desktop_preview_confirm(cleaned[0])) {
+
+            nsel = -1;
+            continue;
+        }
+
+        st.desktop_list[0] = '\0';
+        for (int i = 0; i < nc; i++) {
+            if (i) strncat(st.desktop_list, "|",
+                           sizeof(st.desktop_list) - strlen(st.desktop_list) - 1);
+            strncat(st.desktop_list, cleaned[i],
+                    sizeof(st.desktop_list) - strlen(st.desktop_list) - 1);
+        }
+        strncpy(st.desktop, cleaned[0], sizeof(st.desktop) - 1);
+        free(items);
+        return 1;
     }
-    strncpy(st.desktop, cleaned[0], sizeof(st.desktop)-1);
-    return 1;
 }
 
 static int screen_gpu(void) {
@@ -3455,51 +4129,156 @@ static int screen_gpu(void) {
 }
 
 static int screen_yay(void) {
+
+    char summary[256];
+    snprintf(summary,sizeof(summary),
+        L(" Summary: user=%s  desktop=%s  fs=%s",
+          " Resumen: usuario=%s  escritorio=%s  fs=%s"),
+        st.username[0]?st.username:"?", st.desktop, st.filesystem);
+
     MenuItem items[2];
     strncpy(items[0].tag,"yes",255);
-    snprintf(items[0].desc,511,"%s",L("Yes - install yay after base setup","Si - instalar yay al finalizar"));
+    snprintf(items[0].desc,511,"%s",L(
+        "Yes  Install yay  (recommended for most users)",
+        "Sí   Instalar yay  (recomendado para la mayoría)"));
     strncpy(items[1].tag,"no",255);
-    snprintf(items[1].desc,511,"%s",L("No  - skip","No  - omitir"));
+    snprintf(items[1].desc,511,"%s",L(
+        "No   Skip  (only use official Arch packages)",
+        "No   Omitir  (solo usar paquetes oficiales de Arch)"));
+
+    char dlg_text[4096];
+    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
+        L(" What is yay?\n\n"
+          "   Arch Linux has an official package repository (thousands of apps).\n"
+          "   But the AUR (Arch User Repository) has tens of thousands MORE packages\n"
+          "   contributed by the community — like Spotify, Discord, AnyDesk, etc.\n\n"
+          "   yay is an AUR helper: it lets you install AUR packages just as easily\n"
+          "   as official ones, using the same  'yay -S package'  command.\n\n"
+          "   PROS: access to 80,000+ extra packages, easy to use.\n"
+          "   CONS: AUR packages are community-maintained (review before installing).\n\n"
+          "    Recommended: YES",
+          " ¿Qué es yay?\n\n"
+          "   Arch Linux tiene un repositorio oficial (miles de apps).\n"
+          "   Pero el AUR (Arch User Repository) tiene decenas de miles MÁS,\n"
+          "   mantenidos por la comunidad — como Spotify, Discord, AnyDesk, etc.\n\n"
+          "   yay es un asistente AUR: te permite instalar paquetes del AUR igual\n"
+          "   de fácil que los oficiales, con el mismo comando  'yay -S paquete'.\n\n"
+          "   PROS: acceso a 80.000+ paquetes extra, fácil de usar.\n"
+          "   CONS: los paquetes AUR son de la comunidad (revísalos antes de instalar).\n\n"
+          "    Recomendado: SÍ"));
+
     char out[8]={0};
-    if(!radiolist_dlg(L("AUR Helper","AUR Helper"),
-                      L("Install yay? (AUR helper, lets you install packages from the AUR)",
-                        "Instalar yay? (AUR helper, permite instalar paquetes del AUR)"),
-                      items,2,st.yay?"yes":"no",out,sizeof(out))) return 0;
+    if (!radiolist_dlg(L(" AUR Helper (yay)"," AUR Helper (yay)"),
+                       dlg_text, items, 2, st.yay?"yes":"no", out, sizeof(out))) {
+        if (g_home_requested) { g_home_requested=0; return 2; }
+        return 0;
+    }
     st.yay=!strcmp(out,"yes");
     return 1;
 }
 
 static int screen_snapper(void) {
     if(strcmp(st.filesystem,"btrfs")) { st.snapper=0; return 1; }
+
+    char summary[256];
+    snprintf(summary,sizeof(summary),
+        L(" Summary: fs=btrfs  kernel=%s  yay=%s",
+          " Resumen: fs=btrfs  kernel=%s  yay=%s"),
+        st.kernel, st.yay?"yes":"no");
+
     MenuItem items[2];
     strncpy(items[0].tag,"yes",255);
-    snprintf(items[0].desc,511,"%s",L("Yes - automatic snapshots on every pacman transaction",
-                                       "Si - snapshots automaticos en cada transaccion pacman"));
+    snprintf(items[0].desc,511,"%s",L(
+        "Yes  Enable automatic snapshots  (recommended with btrfs)",
+        "Sí   Activar snapshots automáticos  (recomendado con btrfs)"));
     strncpy(items[1].tag,"no",255);
-    snprintf(items[1].desc,511,"%s",L("No  - skip","No  - omitir"));
+    snprintf(items[1].desc,511,"%s",L(
+        "No   Skip","No   Omitir"));
+
+    char dlg_text[4096];
+    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
+        L(" What is Snapper?\n\n"
+          "   Snapper is a tool that automatically takes a 'photo' (snapshot)\n"
+          "   of your system before and after every software installation or update.\n\n"
+          "   If an update breaks something, you can roll back to the previous\n"
+          "   snapshot in seconds — like a time machine for your system!\n\n"
+          "   This installer also sets up grub-btrfs so you can boot into\n"
+          "   any snapshot directly from the GRUB menu.\n\n"
+          "   PROS: automatic safety net, easy recovery, no extra effort needed.\n"
+          "   CONS: uses some extra disk space (snapshots store changed files).\n\n"
+          "     Requires btrfs filesystem — which you already selected. \n\n"
+          "    Recommended: YES",
+          " ¿Qué es Snapper?\n\n"
+          "   Snapper es una herramienta que toma automáticamente una 'foto' (snapshot)\n"
+          "   del sistema antes y después de cada instalación o actualización.\n\n"
+          "   Si una actualización rompe algo, puedes volver al estado anterior\n"
+          "   en segundos — ¡como una máquina del tiempo para tu sistema!\n\n"
+          "   Este instalador también configura grub-btrfs para que puedas arrancar\n"
+          "   desde cualquier snapshot directamente en el menú de GRUB.\n\n"
+          "   PROS: red de seguridad automática, recuperación fácil, sin esfuerzo.\n"
+          "   CONS: usa algo más de espacio en disco (los snapshots guardan cambios).\n\n"
+          "     Requiere el sistema de archivos btrfs — que ya tienes seleccionado. \n\n"
+          "    Recomendado: SÍ"));
+
     char out[8]={0};
-    if(!radiolist_dlg(L("BTRFS Snapshots","Snapshots BTRFS"),
-                      L("Install snapper + grub-btrfs for automatic rollback snapshots?\n"
-                        "(Requires BTRFS filesystem - already selected)",
-                        "Instalar snapper + grub-btrfs para snapshots y rollback automatico?\n"
-                        "(Requiere BTRFS - ya seleccionado)"),
-                      items,2,st.snapper?"yes":"no",out,sizeof(out))) return 0;
+    if (!radiolist_dlg(L(" BTRFS Snapshots (Snapper)"," Snapshots BTRFS (Snapper)"),
+                       dlg_text, items, 2, st.snapper?"yes":"no", out, sizeof(out))) {
+        if (g_home_requested) { g_home_requested=0; return 2; }
+        return 0;
+    }
     st.snapper=!strcmp(out,"yes");
     return 1;
 }
 
 static int screen_flatpak(void) {
     if(!strcmp(st.desktop,"None")) { st.flatpak=0; return 1; }
+
+    char summary[256];
+    snprintf(summary,sizeof(summary),
+        L(" Summary: desktop=%s  yay=%s",
+          " Resumen: escritorio=%s  yay=%s"),
+        st.desktop, st.yay?"yes":"no");
+
     MenuItem items[2];
     strncpy(items[0].tag,"yes",255);
-    snprintf(items[0].desc,511,"%s",L("Yes - install Flatpak + add Flathub","Si - instalar Flatpak + anadir Flathub"));
+    snprintf(items[0].desc,511,"%s",L(
+        "Yes  Install Flatpak + Flathub  (recommended)",
+        "Sí   Instalar Flatpak + Flathub  (recomendado)"));
     strncpy(items[1].tag,"no",255);
-    snprintf(items[1].desc,511,"%s",L("No  - skip","No  - omitir"));
+    snprintf(items[1].desc,511,"%s",L(
+        "No   Skip","No   Omitir"));
+
+    char dlg_text[4096];
+    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
+        L(" What is Flatpak?\n\n"
+          "   Flatpak is a universal way to install apps that works on ANY Linux distro.\n"
+          "   Apps installed via Flatpak run in a sandbox (isolated from the system).\n\n"
+          "   Flathub is the main Flatpak store — it has apps like:\n"
+          "   GIMP, VLC, Spotify, VS Code, LibreOffice, OBS, Signal, and many more.\n\n"
+          "   PROS: sandboxed (safer), always up to date, easy to install any app,\n"
+          "         great for apps not in Arch repos.\n"
+          "   CONS: apps are larger (each brings its own libraries),\n"
+          "         slightly slower first launch.\n\n"
+          "   With yay (AUR) AND Flatpak you'll have access to virtually any app.\n\n"
+          "    Recommended: YES",
+          " ¿Qué es Flatpak?\n\n"
+          "   Flatpak es una forma universal de instalar apps que funciona en CUALQUIER\n"
+          "   distribución Linux. Las apps se ejecutan en un sandbox (aisladas del sistema).\n\n"
+          "   Flathub es la tienda principal de Flatpak — tiene apps como:\n"
+          "   GIMP, VLC, Spotify, VS Code, LibreOffice, OBS, Signal, y muchas más.\n\n"
+          "   PROS: sandboxed (más seguro), siempre actualizado, fácil instalar cualquier app,\n"
+          "         ideal para apps no disponibles en los repos de Arch.\n"
+          "   CONS: las apps son más grandes (cada una trae sus propias librerías),\n"
+          "         primer arranque algo más lento.\n\n"
+          "   Con yay (AUR) Y Flatpak tendrás acceso a prácticamente cualquier app.\n\n"
+          "    Recomendado: SÍ"));
+
     char out[8]={0};
-    if(!radiolist_dlg(L("Flatpak","Flatpak"),
-                      L("Install Flatpak and add the Flathub repository?",
-                        "Instalar Flatpak y anadir el repositorio Flathub?"),
-                      items,2,st.flatpak?"yes":"no",out,sizeof(out))) return 0;
+    if (!radiolist_dlg(L(" Flatpak"," Flatpak"),
+                       dlg_text, items, 2, st.flatpak?"yes":"no", out, sizeof(out))) {
+        if (g_home_requested) { g_home_requested=0; return 2; }
+        return 0;
+    }
     st.flatpak=!strcmp(out,"yes");
     return 1;
 }
@@ -3664,6 +4443,25 @@ static int screen_extra_packages(void) {
     return 1;
 }
 
+static int review_confirm_dlg(const char *title, const char *text) {
+    const char *tmpfile = "/tmp/arch_review.txt";
+    FILE *f = fopen(tmpfile, "w");
+    if (!f) return yesno_dlg(title, text);
+    fprintf(f, "%s", text);
+    fclose(f);
+
+    char *a[] = {
+        "yad", "--text-info",
+        "--title",    (char*)title,
+        "--filename", (char*)tmpfile,
+        "--button",   L("Install:0","Instalar:0"),
+        "--button",   L("Back:1","Atras:1"),
+        "--width=700", "--height=500",
+        "--center",
+        NULL
+    };
+    return yad_exec(a, NULL, 0) == 0;
+}
 
 static int screen_review(void) {
     char microcode[32]; detect_cpu(microcode,sizeof(microcode));
@@ -3674,7 +4472,7 @@ static int screen_review(void) {
 
     char text[5120]={0};
     char line[512];
-#define ROW(label,val) snprintf(line,sizeof(line),"  %-22s %s\n",label,val); strncat(text,line,sizeof(text)-strlen(text)-1)
+#define ROW(label,val) do { snprintf(line,sizeof(line),"  %-22s %s\n",label,val); strncat(text,line,sizeof(text)-strlen(text)-1); } while(0)
     snprintf(line,sizeof(line),"%s\n\n",L("Review your settings:","Revisa tu configuracion:"));
     strncat(text,line,sizeof(text)-strlen(text)-1);
 
@@ -3690,9 +4488,11 @@ static int screen_review(void) {
     ROW("Bootloader",     st.bootloader);
     ROW("Microcode",      microcode);
     if (st.dualboot) {
-        ROW("Root part",  st.db_root[0]?st.db_root:"NOT SET");
+        char disk_str[128]; snprintf(disk_str,sizeof(disk_str),"/dev/%s",st.disk);
+        ROW("Disk (dual)",  st.disk[0]?disk_str:"NOT SET");
+        char sz_str[32]; snprintf(sz_str,sizeof(sz_str),"%d GB (new partition)", st.db_size_gb);
+        ROW("Arch size",    sz_str);
         if (is_uefi()) ROW("EFI part", st.db_efi[0]?st.db_efi:"auto-detect");
-        ROW("Swap part",  st.db_swap[0]?st.db_swap:"none");
     } else {
         char disk_str[128]; snprintf(disk_str,sizeof(disk_str),"/dev/%s",st.disk);
         ROW("Disk",       st.disk[0]?disk_str:"NOT SET");
@@ -3717,8 +4517,10 @@ static int screen_review(void) {
     if(!st.username[0]) strncat(missing,"username, ",sizeof(missing)-strlen(missing)-1);
     if (!st.dualboot && !st.disk[0])
         strncat(missing,"disk, ",sizeof(missing)-strlen(missing)-1);
-    if (st.dualboot && !st.db_root[0])
-        strncat(missing,"root partition, ",sizeof(missing)-strlen(missing)-1);
+    if (st.dualboot && !st.disk[0])
+        strncat(missing,"disk, ",sizeof(missing)-strlen(missing)-1);
+    if (st.dualboot && st.db_size_gb <= 0)
+        strncat(missing,"partition size, ",sizeof(missing)-strlen(missing)-1);
     if(!st.root_pass[0]) strncat(missing,L("root password","contrasena root"),sizeof(missing)-strlen(missing)-1);
 
     if(missing[0]) {
@@ -3734,11 +4536,12 @@ static int screen_review(void) {
     strncat(text,L("\nAll settings look good.","Todo listo."),sizeof(text)-strlen(text)-1);
     char confirm_msg[6144];
     if (st.dualboot) {
-        snprintf(confirm_msg,sizeof(confirm_msg),"%s%s%s%s",
-                 text,
-                 L("\n\nWARNING: THIS WILL FORMAT ","\n\nADVERTENCIA: SE FORMATEARA "),
-                 st.db_root,
-                 L(".\n\nProceed?",".\n\nProceder?"));
+        char dual_warn[256];
+        snprintf(dual_warn, sizeof(dual_warn),
+            L("\n\nWARNING: A new %d GB partition will be created on /dev/%s.\n\nProceed?",
+              "\n\nADVERTENCIA: Se creara una nueva particion de %d GB en /dev/%s.\n\nProceder?"),
+            st.db_size_gb, st.disk);
+        snprintf(confirm_msg,sizeof(confirm_msg),"%s%s", text, dual_warn);
     } else {
         snprintf(confirm_msg,sizeof(confirm_msg),"%s%s%s%s",
                  text,
@@ -3746,24 +4549,63 @@ static int screen_review(void) {
                  st.disk,
                  L(".\n\nProceed?",".\n\nProceder?"));
     }
-    return yesno_dlg(L("Review & Confirm","Revisar y confirmar"),confirm_msg);
+    return review_confirm_dlg(L("Review & Confirm","Revisar y confirmar"),confirm_msg);
 }
 
-
 static void screen_finish(void) {
-    if (yesno_dlg(L("Reboot?","¿Reiniciar?"),
-                  L("Arch Linux has been installed!\n\n"
-                    "Remove the installation media.\n\n"
-                    "Reboot now?",
-                    "¡Arch Linux se ha instalado!\n\n"
-                    "Extrae el medio de instalaci\xc3\xb3n.\n\n"
-                    "¿Reiniciar ahora?"))) {
-        infobox_dlg(L("Rebooting","Reiniciando"),
-                    L("Unmounting filesystems and rebooting...",
-                      "Desmontando sistemas de archivos y reiniciando..."));
-        system("umount -R /mnt 2>/dev/null");
-        system("reboot");
+    int cfd[2];
+    if (pipe(cfd) != 0) {
+        sleep(5);
+        (void)system("umount -R /mnt 2>/dev/null");
+        (void)system("reboot");
+        exit(0);
     }
+
+    pid_t yad_pid = fork();
+    if (yad_pid == 0) {
+        dup2(cfd[0], STDIN_FILENO);
+        close(cfd[1]);
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) dup2(dn, STDERR_FILENO);
+        set_dark_theme_env();
+        char *a[] = {
+            "yad", "--progress",
+            "--title",      L("Installation Complete!", "Instalacion Completa!"),
+            "--text",       L("Arch Linux installed successfully!\n\n"
+                              "<b>Remove the USB / installation media now.</b>\n\n"
+                              "The system will reboot automatically...",
+                              "Arch Linux instalado correctamente!\n\n"
+                              "<b>Extrae ahora el USB / medio de instalacion.</b>\n\n"
+                              "El sistema se reiniciara automaticamente..."),
+            "--percentage", "0",
+            "--maximize",
+            "--no-buttons",
+            "--auto-close",
+            "--center",
+            NULL
+        };
+        execvp("yad", a);
+        _exit(0);
+    }
+    close(cfd[0]);
+
+    for (int i = 1; i <= 10; i++) {
+        usleep(500000);
+        char buf[128];
+        int pct = i * 10;
+        int secs_left = 5 - (i / 2);
+        snprintf(buf, sizeof(buf),
+                 "# %s %d...\n%d\n",
+                 L("Rebooting in", "Reiniciando en"),
+                 secs_left > 0 ? secs_left : 0,
+                 pct);
+        (void)write(cfd[1], buf, strlen(buf));
+    }
+    close(cfd[1]);
+    if (yad_pid > 0) waitpid(yad_pid, NULL, 0);
+
+    (void)system("umount -R /mnt 2>/dev/null");
+    (void)system("reboot");
     exit(0);
 }
 
@@ -3775,24 +4617,357 @@ typedef struct {
 
 static int screen_welcome_wrap(void)  { screen_welcome();  return 1; }
 static int screen_language_wrap(void)  { screen_language(); return 1; }
-static int screen_network_wrap(void)   { screen_network();  return 1; }
+static int screen_network_wrap(void) {
+    g_fullscreen = 0;
+    screen_network();
+    g_fullscreen = 1;
+    return 1;
+}
 static int screen_finish_wrap(void)    { screen_finish();   return 1; }
 static int screen_install_wrap(void)   { return screen_install(); }
 static int screen_preflight_wrap(void) { return run_preflight(); }
 
+static void ensure_x11_deps(void) {
+    static const char *deps[] = {
+        "xorg-server", "xorg-xinit", "xorg-xinput",
+        "xf86-input-libinput", "xf86-video-fbdev", "xf86-video-vesa",
+        "xdotool", "xorg-xsetroot", "openbox", "yad",
+        "xterm", "pcmanfm", "feh", "imagemagick", "tint2",
+        NULL
+    };
+
+    int missing = 0;
+    for (int i = 0; deps[i]; i++) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "pacman -Q %s >/dev/null 2>&1", deps[i]);
+        if (system(cmd) != 0) {
+            printf("[!] Missing: %s\n", deps[i]);
+            missing = 1;
+        }
+    }
+
+    if (missing) {
+        printf("[*] Installing desktop session dependencies...\n");
+        fflush(stdout);
+        if (system("pacman -Sy --noconfirm "
+                   "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
+                   "xf86-video-fbdev xf86-video-vesa xdotool xorg-xsetroot "
+                   "openbox yad xterm pcmanfm feh imagemagick tint2") != 0) {
+            fprintf(stderr,
+                "[!] WARNING: Some deps failed to install.\n"
+                "    The installer will try to continue anyway.\n");
+        } else {
+            printf("[+] Desktop dependencies installed.\n");
+        }
+        fflush(stdout);
+    }
+}
+
+static void write_openbox_env(void) {
+    (void)system("mkdir -p /root/.config/openbox");
+    (void)system("mkdir -p /root/.config/tint2");
+    (void)system("mkdir -p /root/Desktop");
+
+    FILE *m = fopen("/root/.config/openbox/menu.xml", "w");
+    if (m) {
+        fprintf(m, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        fprintf(m, "<openbox_menu xmlns=\"http://openbox.org/3.4/menu\">\n");
+        fprintf(m, "  <menu id=\"root-menu\" label=\"Desktop\">\n");
+        fprintf(m, "    <item label=\"Terminal\">\n");
+        fprintf(m, "      <action name=\"Execute\"><command>xterm</command></action>\n");
+        fprintf(m, "    </item>\n");
+        fprintf(m, "    <item label=\"File Manager\">\n");
+        fprintf(m, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
+        fprintf(m, "    </item>\n");
+        fprintf(m, "    <separator/>\n");
+        fprintf(m, "    <item label=\"Reconfigure Openbox\">\n");
+        fprintf(m, "      <action name=\"Reconfigure\"/>\n");
+        fprintf(m, "    </item>\n");
+        fprintf(m, "  </menu>\n");
+        fprintf(m, "</openbox_menu>\n");
+        fclose(m);
+    }
+
+    FILE *r = fopen("/root/.config/openbox/rc.xml", "w");
+    if (r) {
+        fprintf(r, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        fprintf(r, "<openbox_config xmlns=\"http://openbox.org/3.4/rc\"\n");
+        fprintf(r, "  xmlns:xi=\"http://www.w3.org/2001/XInclude\">\n");
+        fprintf(r, "  <theme>\n");
+        fprintf(r, "    <n>Clearlooks</n>\n");
+        fprintf(r, "    <titleLayout>NLIMC</titleLayout>\n");
+        fprintf(r, "    <keepBorder>yes</keepBorder>\n");
+        fprintf(r, "    <animateIconify>no</animateIconify>\n");
+        fprintf(r, "    <font place=\"ActiveWindow\">\n");
+        fprintf(r, "      <n>Sans Bold</n><size>10</size>\n");
+        fprintf(r, "      <weight>Bold</weight><slant>Normal</slant>\n");
+        fprintf(r, "    </font>\n");
+        fprintf(r, "    <font place=\"InactiveWindow\">\n");
+        fprintf(r, "      <n>Sans</n><size>10</size>\n");
+        fprintf(r, "      <weight>Normal</weight><slant>Normal</slant>\n");
+        fprintf(r, "    </font>\n");
+        fprintf(r, "  </theme>\n");
+        fprintf(r, "  <desktops><number>1</number><firstdesk>1</firstdesk>"
+                   "<names><n>Desktop</n></names></desktops>\n");
+        fprintf(r, "  <resize><drawContents>yes</drawContents></resize>\n");
+        fprintf(r, "  <focus><focusNew>yes</focusNew>"
+                   "<followMouse>no</followMouse></focus>\n");
+        fprintf(r, "  <keyboard>\n");
+        fprintf(r, "    <chainQuitKey>C-g</chainQuitKey>\n");
+        fprintf(r, "    <keybind key=\"super-t\">\n");
+        fprintf(r, "      <action name=\"Execute\"><command>xterm</command></action>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"C-A-t\">\n");
+        fprintf(r, "      <action name=\"Execute\"><command>xterm</command></action>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"super-e\">\n");
+        fprintf(r, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"A-F4\">\n");
+        fprintf(r, "      <action name=\"Close\"/>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"super-Up\">\n");
+        fprintf(r, "      <action name=\"ToggleMaximizeFull\"/>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "    <keybind key=\"super-Down\">\n");
+        fprintf(r, "      <action name=\"Unmaximize\"/>\n");
+        fprintf(r, "    </keybind>\n");
+        fprintf(r, "  </keyboard>\n");
+        fprintf(r, "  <mouse>\n");
+        fprintf(r, "    <dragThreshold>1</dragThreshold>\n");
+        fprintf(r, "    <doubleClickTime>200</doubleClickTime>\n");
+        fprintf(r, "    <context name=\"Desktop\">\n");
+        fprintf(r, "      <mousebind button=\"Right\" action=\"Press\">\n");
+        fprintf(r, "        <action name=\"ShowMenu\"><menu>root-menu</menu></action>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Root\">\n");
+        fprintf(r, "      <mousebind button=\"Right\" action=\"Press\">\n");
+        fprintf(r, "        <action name=\"ShowMenu\"><menu>root-menu</menu></action>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Titlebar\">\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"Drag\">\n");
+        fprintf(r, "        <action name=\"Move\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"DoubleClick\">\n");
+        fprintf(r, "        <action name=\"ToggleMaximizeFull\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Frame\">\n");
+        fprintf(r, "      <mousebind button=\"A-Left\" action=\"Drag\">\n");
+        fprintf(r, "        <action name=\"Move\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "      <mousebind button=\"A-Right\" action=\"Drag\">\n");
+        fprintf(r, "        <action name=\"Resize\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Close\">\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
+        fprintf(r, "        <action name=\"Close\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Maximize\">\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
+        fprintf(r, "        <action name=\"ToggleMaximizeFull\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "    <context name=\"Iconify\">\n");
+        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
+        fprintf(r, "        <action name=\"Iconify\"/>\n");
+        fprintf(r, "      </mousebind>\n");
+        fprintf(r, "    </context>\n");
+        fprintf(r, "  </mouse>\n");
+        fprintf(r, "  <applications>\n");
+
+        fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
+        fprintf(r, "      <maximized>yes</maximized>\n");
+        fprintf(r, "      <decor>no</decor>\n");
+        fprintf(r, "    </application>\n");
+
+        fprintf(r, "    <application class=\"XTerm\" type=\"normal\">\n");
+        fprintf(r, "      <decor>yes</decor>\n");
+        fprintf(r, "    </application>\n");
+        fprintf(r, "    <application class=\"Pcmanfm\" type=\"normal\">\n");
+        fprintf(r, "      <decor>yes</decor>\n");
+        fprintf(r, "    </application>\n");
+        fprintf(r, "  </applications>\n");
+        fprintf(r, "</openbox_config>\n");
+        fclose(r);
+    }
+
+    FILE *t = fopen("/root/.config/tint2/tint2rc", "w");
+    if (t) {
+        fprintf(t, "rounded = 0\nborder_width = 0\n"
+                   "background_color = #0d1117 100\n"
+                   "border_color = #30363d 0\n\n");
+        fprintf(t, "rounded = 4\nborder_width = 1\n"
+                   "background_color = #1f2d45 100\n"
+                   "border_color = #58a6ff 70\n\n");
+        fprintf(t, "rounded = 4\nborder_width = 0\n"
+                   "background_color = #161b22 90\n"
+                   "border_color = #30363d 40\n\n");
+        fprintf(t, "panel_items = TSC\n");
+        fprintf(t, "panel_size = 100%% 36\n");
+        fprintf(t, "panel_margin = 0 0\n");
+        fprintf(t, "panel_padding = 4 2 4\n");
+        fprintf(t, "panel_background_id = 1\n");
+        fprintf(t, "panel_position = bottom center horizontal\n");
+        fprintf(t, "panel_layer = normal\n");
+        fprintf(t, "panel_monitor = all\n");
+        fprintf(t, "autohide = 0\n");
+        fprintf(t, "wm_menu = 1\n");
+        fprintf(t, "taskbar_mode = single_desktop\n\n");
+        fprintf(t, "taskbar_padding = 0 2 4\n");
+        fprintf(t, "taskbar_background_id = 0\n");
+        fprintf(t, "taskbar_active_background_id = 0\n\n");
+        fprintf(t, "task_icon = 1\n");
+        fprintf(t, "task_text = 1\n");
+        fprintf(t, "task_maximum_size = 200 30\n");
+        fprintf(t, "task_centered = 1\n");
+        fprintf(t, "task_padding = 4 2 4\n");
+        fprintf(t, "task_font = Sans 9\n");
+        fprintf(t, "task_font_color = #c9d1d9 100\n");
+        fprintf(t, "task_active_font_color = #79c0ff 100\n");
+        fprintf(t, "task_icon_asb = 100 0 0\n");
+        fprintf(t, "task_background_id = 3\n");
+        fprintf(t, "task_active_background_id = 2\n\n");
+        fprintf(t, "systray_padding = 4 4 6\n");
+        fprintf(t, "systray_background_id = 0\n");
+        fprintf(t, "systray_sort = ascending\n");
+        fprintf(t, "systray_icon_size = 22\n");
+        fprintf(t, "systray_icon_asb = 100 0 0\n\n");
+        fprintf(t, "time1_format = %%H:%%M\n");
+        fprintf(t, "time2_format = %%d/%%m/%%Y\n");
+        fprintf(t, "time1_font = Sans Bold 10\n");
+        fprintf(t, "time2_font = Sans 8\n");
+        fprintf(t, "clock_font_color = #c9d1d9 100\n");
+        fprintf(t, "clock_padding = 8 0\n");
+        fprintf(t, "clock_background_id = 0\n");
+        fprintf(t, "clock_tooltip = %%A %%d %%B %%Y\n");
+        fclose(t);
+    }
+
+    FILE *xr = fopen("/root/.Xresources", "w");
+    if (xr) {
+        fprintf(xr, "XTerm*background:   #0d1117\n");
+        fprintf(xr, "XTerm*foreground:   #c9d1d9\n");
+        fprintf(xr, "XTerm*cursorColor:  #58a6ff\n");
+        fprintf(xr, "XTerm*color0:  #161b22\nXTerm*color1:  #ff7b72\n");
+        fprintf(xr, "XTerm*color2:  #3fb950\nXTerm*color3:  #d29922\n");
+        fprintf(xr, "XTerm*color4:  #58a6ff\nXTerm*color5:  #bc8cff\n");
+        fprintf(xr, "XTerm*color6:  #39c5cf\nXTerm*color7:  #b1bac4\n");
+        fprintf(xr, "XTerm*color8:  #6e7681\nXTerm*color9:  #ffa198\n");
+        fprintf(xr, "XTerm*color10: #56d364\nXTerm*color11: #e3b341\n");
+        fprintf(xr, "XTerm*color12: #79c0ff\nXTerm*color13: #d2a8ff\n");
+        fprintf(xr, "XTerm*color14: #56d4dd\nXTerm*color15: #f0f6fc\n");
+        fprintf(xr, "XTerm*faceName:     Monospace\n");
+        fprintf(xr, "XTerm*faceSize:     11\n");
+        fprintf(xr, "XTerm*geometry:     100x28\n");
+        fprintf(xr, "XTerm*scrollBar:    false\n");
+        fprintf(xr, "XTerm*borderWidth:  0\n");
+        fprintf(xr, "XTerm*internalBorder: 8\n");
+        fprintf(xr, "XTerm*title:        Terminal\n");
+        fclose(xr);
+    }
+
+    FILE *d;
+    d = fopen("/root/Desktop/terminal.desktop", "w");
+    if (d) {
+        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
+        fprintf(d, "Name=Terminal\nComment=Open a terminal window\n");
+        fprintf(d, "Exec=xterm\nIcon=utilities-terminal\n");
+        fprintf(d, "Terminal=false\nCategories=System;TerminalEmulator;\n");
+        fclose(d);
+        (void)system("chmod +x /root/Desktop/terminal.desktop");
+    }
+    d = fopen("/root/Desktop/files.desktop", "w");
+    if (d) {
+        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
+        fprintf(d, "Name=File Manager\nComment=Browse the file system\n");
+        fprintf(d, "Exec=pcmanfm\nIcon=system-file-manager\n");
+        fprintf(d, "Terminal=false\nCategories=System;FileManager;\n");
+        fclose(d);
+        (void)system("chmod +x /root/Desktop/files.desktop");
+    }
+}
+
+static void ensure_display(void) {
+    if (getenv("DISPLAY") != NULL) return;
+
+    ensure_x11_deps();
+
+    write_openbox_env();
+
+    char exepath[1024] = {0};
+    ssize_t elen = readlink("/proc/self/exe", exepath, sizeof(exepath) - 1);
+    if (elen <= 0) strncpy(exepath, "/usr/local/bin/arch_installer", sizeof(exepath)-1);
+    else exepath[elen] = '\0';
+
+    const char *xinitrc = "/tmp/.arch_installer_xinitrc";
+    FILE *f = fopen(xinitrc, "w");
+    if (!f) {
+        fprintf(stderr, "[!] Cannot write xinitrc – starting without X.\n");
+        return;
+    }
+    fprintf(f, "#!/bin/sh\n");
+    fprintf(f, "export XDG_SESSION_TYPE=x11\n");
+    fprintf(f, "export LIBINPUT_ENABLE_DEVICE_GROUP=1\n");
+    fprintf(f, "xrandr --auto 2>/dev/null || true\n");
+    fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "xrdb -merge /root/.Xresources 2>/dev/null || true\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "openbox &\n");
+    fprintf(f, "sleep 0.5\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "xsetroot -solid '#0d1117'\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "tint2 &\n");
+    fprintf(f, "\n");
+
+    fprintf(f, "xsetroot -cursor_name left_ptr\n");
+    fprintf(f, "\n");
+    fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
+    fprintf(f, "exec \"%s\"\n", exepath);
+    fclose(f);
+    chmod(xinitrc, 0755);
+
+    printf("[*] Launching Xorg display server...\n");
+    printf("    Log: /tmp/xorg_installer.log\n");
+    fflush(stdout);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+             "startx %s -- :0 -nolisten tcp "
+             ">>/tmp/xorg_installer.log 2>&1",
+             xinitrc);
+    execl("/bin/sh", "sh", "-c", cmd, NULL);
+
+    perror("[!] startx failed");
+    fprintf(stderr, "    Continuing in terminal mode (no X).\n");
+}
+
 int main(void) {
-    if(geteuid()!=0) {
-        fprintf(stderr,"This installer must be run as root.\n"
-                       "Example: sudo ./arch_installer\n");
+    if (geteuid() != 0) {
+        fprintf(stderr,
+            "This installer must be run as root.\n"
+            "Example: sudo ./arch_installer\n");
         return 1;
     }
-    if(system("which dialog >/dev/null 2>&1")!=0) {
-        printf("[*] dialog not found - installing via pacman...\n");
-        if(system("pacman -Sy --noconfirm dialog")!=0) {
-            fprintf(stderr,"[!] Failed to install dialog. Check your network.\n");
+
+    ensure_display();
+
+    if (system("which yad >/dev/null 2>&1") != 0) {
+        printf("[*] yad not found - installing...\n");
+        if (system("pacman -Sy --noconfirm yad") != 0) {
+            fprintf(stderr, "[!] Failed to install yad. Check network.\n");
             return 1;
         }
-        printf("[+] dialog installed.\n\n");
     }
 
     screen_welcome_wrap();
@@ -3843,16 +5018,23 @@ int main(void) {
     };
 
     Step *steps = quick ? quick_steps : custom_steps;
-    int idx=0;
-    while(steps[idx].fn) {
+    int idx = 0;
+    while (steps[idx].fn) {
         int result = steps[idx].fn();
-        if(result==0 && steps[idx].can_go_back) {
-            if(idx==0) {
-                if(yesno_dlg(L("Exit","Salir"),
-                             L("Exit the installer?","Salir del instalador?")))
+        if (result == 2) {
+
+            idx = 0;
+        } else if (result == 0 && steps[idx].can_go_back) {
+            if (idx == 0) {
+                if (yesno_dlg(L("Exit","Salir"),
+                              L("Exit the installer?","¿Salir del instalador?")))
                     exit(0);
-            } else idx--;
-        } else idx++;
+            } else {
+                idx--;
+            }
+        } else {
+            idx++;
+        }
     }
     return 0;
 }
