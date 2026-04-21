@@ -12,7 +12,7 @@
 #define MAX_CMD     512
 #define MAX_LINE   1024
 
-#define APP_VERSION "0.0.5-beta"
+#define APP_VERSION "0.0.6-beta"
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
 static LangID g_lang = LANG_EN;
@@ -265,10 +265,12 @@ static void strip_ansi(char *dst, const char *src, size_t dstlen) {
     dst[di] = '\0';
 }
 
+
 static void filter_exact(GArray *pkgs, const char *query) {
+    size_t qlen = strlen(query);
     for (int i = (int)pkgs->len - 1; i >= 0; i--) {
         Pkg *p = &g_array_index(pkgs, Pkg, i);
-        if (strcasecmp(p->name, query) != 0)
+        if (strncasecmp(p->name, query, qlen) != 0)
             g_array_remove_index_fast(pkgs, i);
     }
 }
@@ -1027,7 +1029,11 @@ static void show_changelog_dialog(GtkWidget *parent) {
     typedef struct { const char *ver; const char *date; const char *body_es; const char *body_en; } Entry;
     static const Entry entries[] = {
 
-    
+            {
+            "v0.0.6-beta", "21 april 2026",
+            "• mejora de busqueda mas precisa.\n",
+            "• more precise search improvement.\n"
+        },
         {
             "v0.0.5-beta", "21 april 2026",
             "• boton de actualizacion de sistema y paquetes.\n",
