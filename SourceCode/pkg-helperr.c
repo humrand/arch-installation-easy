@@ -54,6 +54,10 @@ typedef enum {
     STR_TOOLTIP_UPDATE,
     STR_BTN_CHANGELOG,
     STR_CHANGELOG_TITLE,
+    STR_BTN_UPDATE_SYS,
+    STR_BTN_UPDATE_ALL,
+    STR_TOOLTIP_UPDATE_SYS,
+    STR_TOOLTIP_UPDATE_ALL,
     N_STRINGS
 } StrID;
 
@@ -130,6 +134,14 @@ static const char *g_strings[N_STRINGS][2] = {
       "Changelog"                                      },
     { "Historial de cambios — PKG Helper",
       "Changelog — PKG Helper"                         },
+    { "Actualizar sistema",
+      "Update system"                                  },
+    { "Actualizar todo",
+      "Update all"                                     },
+    { "sudo pacman -Syu",
+      "sudo pacman -Syu"                               },
+    { "sudo pacman -Syu && yay -Syu && flatpak update",
+      "sudo pacman -Syu && yay -Syu && flatpak update" },
 };
 
 #define T(id) g_strings[(id)][g_lang]
@@ -189,6 +201,8 @@ static GtkWidget         *g_btn_install;
 static GtkWidget         *g_btn_remove;
 static GtkWidget         *g_btn_update;
 static GtkWidget         *g_btn_changelog;
+static GtkWidget         *g_btn_update_sys;
+static GtkWidget         *g_btn_update_all;
 static GtkWidget         *g_ver_label;
 static GtkWidget         *g_status;
 static GtkWidget         *g_tree;
@@ -1002,7 +1016,13 @@ static void show_changelog_dialog(GtkWidget *parent) {
     typedef struct { const char *ver; const char *date; const char *body_es; const char *body_en; } Entry;
     static const Entry entries[] = {
 
-            {
+    
+        {
+            "v0.0.5-beta", "21 april 2026",
+            "• boton de actualizacion de sistema y paquetes.\n",
+            "• system update button and packages updater.\n"
+        },
+        {
             "v0.0.4-beta", "21 april 2026",
             "• mejora de rendimiento en yay.\n",
             "• performance improvement in yay.\n"
@@ -1053,6 +1073,18 @@ static void show_changelog_dialog(GtkWidget *parent) {
 
 static void on_changelog_clicked(GtkWidget *w, gpointer d) {
     show_changelog_dialog(g_win);
+}
+
+static void on_update_sys(GtkWidget *w, gpointer d) {
+    GString *script = g_string_new("sudo pacman -Syu");
+    run_in_alacritty(script, T(STR_TOOLTIP_UPDATE_SYS));
+    g_string_free(script, TRUE);
+}
+
+static void on_update_all(GtkWidget *w, gpointer d) {
+    GString *script = g_string_new("sudo pacman -Syu && yay -Syu && flatpak update");
+    run_in_alacritty(script, T(STR_TOOLTIP_UPDATE_ALL));
+    g_string_free(script, TRUE);
 }
 
 static void build_ui(void) {
@@ -1204,6 +1236,16 @@ static void build_ui(void) {
     gtk_widget_set_tooltip_text(g_btn_install, T(STR_TOOLTIP_INSTALL));
     g_signal_connect(g_btn_install, "clicked", G_CALLBACK(on_install), NULL);
     gtk_box_pack_end(GTK_BOX(hbox_bot), g_btn_install, FALSE, FALSE, 0);
+
+    g_btn_update_sys = gtk_button_new_with_label(T(STR_BTN_UPDATE_SYS));
+    gtk_widget_set_tooltip_text(g_btn_update_sys, T(STR_TOOLTIP_UPDATE_SYS));
+    g_signal_connect(g_btn_update_sys, "clicked", G_CALLBACK(on_update_sys), NULL);
+    gtk_box_pack_end(GTK_BOX(hbox_bot), g_btn_update_sys, FALSE, FALSE, 0);
+
+    g_btn_update_all = gtk_button_new_with_label(T(STR_BTN_UPDATE_ALL));
+    gtk_widget_set_tooltip_text(g_btn_update_all, T(STR_TOOLTIP_UPDATE_ALL));
+    g_signal_connect(g_btn_update_all, "clicked", G_CALLBACK(on_update_all), NULL);
+    gtk_box_pack_end(GTK_BOX(hbox_bot), g_btn_update_all, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox), hbox_bot, FALSE, FALSE, 0);
 }
