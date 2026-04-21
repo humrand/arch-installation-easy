@@ -1012,7 +1012,7 @@ static void show_changelog_dialog(GtkWidget *parent) {
             "v0.0.1-beta", "20 april 2026",
             "• Versión inicial de PKG Helper.\n"
             "• Búsqueda de paquetes vía flatpak yay y pacman.\n"
-            "• Instalación y eliminación de paquetes a través de Alacritty.\n"
+            "• Instalación y eliminación de paquetes a través de Alacritty.\n",
             "• Initial release of PKG Helper.\n"
             "• Package search via flatpak yay and pacman.\n"
             "• Package install and remove through Alacritty.\n"
