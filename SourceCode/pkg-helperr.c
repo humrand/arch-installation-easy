@@ -508,22 +508,76 @@ static void run_in_alacritty(GString *script, const char *status_msg) {
 
 static void on_install(GtkWidget *w, gpointer d) {
     GtkTreeModel *model = GTK_TREE_MODEL(g_store);
-    GtkTreeIter iter; GString *script = g_string_new(""); int count = 0;
+    GtkTreeIter iter; int count = 0;
     if (!gtk_tree_model_get_iter_first(model, &iter)) return;
+
+    GString *pacman_pkgs   = g_string_new("");
+    GString *aur_pkgs      = g_string_new("");
+    GString *flatpak_fh    = g_string_new("");  
+    GString *flatpak_other = g_string_new(""); 
+
+    static const char PFX_PACMAN[]  = "sudo pacman -S ";
+    static const char PFX_AUR[]     = "yay -S ";
+    static const char PFX_FLAT_FH[] = "flatpak install flathub ";
+    static const char PFX_FLAT[]    = "flatpak install ";
+
     do {
         gboolean checked, installed; gchar *pkg_cmd = NULL;
         gtk_tree_model_get(model, &iter,
             COL_CHECK, &checked, COL_INSTALLED, &installed, COL_CMD, &pkg_cmd, -1);
         if (checked && !installed && pkg_cmd && pkg_cmd[0]) {
-            if (count>0) g_string_append(script, " && ");
-            g_string_append(script, pkg_cmd); count++;
+            count++;
+            if (g_str_has_prefix(pkg_cmd, PFX_PACMAN)) {
+                if (pacman_pkgs->len) g_string_append_c(pacman_pkgs, ' ');
+                g_string_append(pacman_pkgs, pkg_cmd + strlen(PFX_PACMAN));
+            } else if (g_str_has_prefix(pkg_cmd, PFX_AUR)) {
+                if (aur_pkgs->len) g_string_append_c(aur_pkgs, ' ');
+                g_string_append(aur_pkgs, pkg_cmd + strlen(PFX_AUR));
+            } else if (g_str_has_prefix(pkg_cmd, PFX_FLAT_FH)) {
+                if (flatpak_fh->len) g_string_append_c(flatpak_fh, ' ');
+                g_string_append(flatpak_fh, pkg_cmd + strlen(PFX_FLAT_FH));
+            } else if (g_str_has_prefix(pkg_cmd, PFX_FLAT)) {
+                if (flatpak_other->len) g_string_append_c(flatpak_other, ' ');
+                g_string_append(flatpak_other, pkg_cmd + strlen(PFX_FLAT));
+            }
         }
         g_free(pkg_cmd);
     } while (gtk_tree_model_iter_next(model, &iter));
-    if (count==0) {
+
+    if (count == 0) {
         gtk_label_set_text(GTK_LABEL(g_status), T(STR_MARK_INSTALL));
-        g_string_free(script, TRUE); return;
+        g_string_free(pacman_pkgs,   TRUE);
+        g_string_free(aur_pkgs,      TRUE);
+        g_string_free(flatpak_fh,    TRUE);
+        g_string_free(flatpak_other, TRUE);
+        return;
     }
+
+    GString *script = g_string_new(""); gboolean first = TRUE;
+    if (pacman_pkgs->len) {
+        g_string_append_printf(script, "sudo pacman -S %s", pacman_pkgs->str);
+        first = FALSE;
+    }
+    if (aur_pkgs->len) {
+        if (!first) g_string_append(script, " && ");
+        g_string_append_printf(script, "yay -S %s", aur_pkgs->str);
+        first = FALSE;
+    }
+    if (flatpak_fh->len) {
+        if (!first) g_string_append(script, " && ");
+        g_string_append_printf(script, "flatpak install flathub %s", flatpak_fh->str);
+        first = FALSE;
+    }
+    if (flatpak_other->len) {
+        if (!first) g_string_append(script, " && ");
+        g_string_append_printf(script, "flatpak install %s", flatpak_other->str);
+    }
+
+    g_string_free(pacman_pkgs,   TRUE);
+    g_string_free(aur_pkgs,      TRUE);
+    g_string_free(flatpak_fh,    TRUE);
+    g_string_free(flatpak_other, TRUE);
+
     char msg[64]; snprintf(msg, sizeof(msg), T(STR_INSTALLING), count);
     run_in_alacritty(script, msg);
     g_string_free(script, TRUE);
@@ -531,22 +585,52 @@ static void on_install(GtkWidget *w, gpointer d) {
 
 static void on_remove(GtkWidget *w, gpointer d) {
     GtkTreeModel *model = GTK_TREE_MODEL(g_store);
-    GtkTreeIter iter; GString *script = g_string_new(""); int count = 0;
+    GtkTreeIter iter; int count = 0;
     if (!gtk_tree_model_get_iter_first(model, &iter)) return;
+
+    GString *pacman_pkgs  = g_string_new("");
+    GString *flatpak_pkgs = g_string_new("");
+
+    static const char PFX_PACMAN[]  = "sudo pacman -Rns ";
+    static const char PFX_FLATPAK[] = "flatpak uninstall ";
+
     do {
         gboolean checked, installed; gchar *rem_cmd = NULL;
         gtk_tree_model_get(model, &iter,
             COL_CHECK, &checked, COL_INSTALLED, &installed, COL_REMOVE_CMD, &rem_cmd, -1);
         if (checked && installed && rem_cmd && rem_cmd[0]) {
-            if (count>0) g_string_append(script, " && ");
-            g_string_append(script, rem_cmd); count++;
+            count++;
+            if (g_str_has_prefix(rem_cmd, PFX_PACMAN)) {
+                if (pacman_pkgs->len) g_string_append_c(pacman_pkgs, ' ');
+                g_string_append(pacman_pkgs, rem_cmd + strlen(PFX_PACMAN));
+            } else if (g_str_has_prefix(rem_cmd, PFX_FLATPAK)) {
+                if (flatpak_pkgs->len) g_string_append_c(flatpak_pkgs, ' ');
+                g_string_append(flatpak_pkgs, rem_cmd + strlen(PFX_FLATPAK));
+            }
         }
         g_free(rem_cmd);
     } while (gtk_tree_model_iter_next(model, &iter));
-    if (count==0) {
+
+    if (count == 0) {
         gtk_label_set_text(GTK_LABEL(g_status), T(STR_MARK_REMOVE));
-        g_string_free(script, TRUE); return;
+        g_string_free(pacman_pkgs,  TRUE);
+        g_string_free(flatpak_pkgs, TRUE);
+        return;
     }
+
+    GString *script = g_string_new(""); gboolean first = TRUE;
+    if (pacman_pkgs->len) {
+        g_string_append_printf(script, "sudo pacman -Rns %s", pacman_pkgs->str);
+        first = FALSE;
+    }
+    if (flatpak_pkgs->len) {
+        if (!first) g_string_append(script, " && ");
+        g_string_append_printf(script, "flatpak uninstall %s", flatpak_pkgs->str);
+    }
+
+    g_string_free(pacman_pkgs,  TRUE);
+    g_string_free(flatpak_pkgs, TRUE);
+
     char msg[64]; snprintf(msg, sizeof(msg), T(STR_REMOVING), count);
     run_in_alacritty(script, msg);
     g_string_free(script, TRUE);
