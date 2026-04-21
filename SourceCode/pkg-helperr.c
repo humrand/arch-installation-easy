@@ -1030,7 +1030,7 @@ static void show_changelog_dialog(GtkWidget *parent) {
     static const Entry entries[] = {
 
             {
-            "v0.0.6-beta", "21 april 2026",
+            "v0.0.6-stable", "21 april 2026",
             "• mejora de busqueda mas precisa.\n",
             "• more precise search improvement.\n"
         },
