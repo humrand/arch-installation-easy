@@ -12,6 +12,8 @@
 #define MAX_CMD     512
 #define MAX_LINE   1024
 
+#define APP_VERSION "0.0.3-beta"
+
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
 static LangID g_lang = LANG_EN;
 
@@ -50,6 +52,8 @@ typedef enum {
     STR_BTN_CHECK_UPDATES,
     STR_APPLYING_UPDATE,
     STR_TOOLTIP_UPDATE,
+    STR_BTN_CHANGELOG,
+    STR_CHANGELOG_TITLE,
     N_STRINGS
 } StrID;
 
@@ -122,6 +126,10 @@ static const char *g_strings[N_STRINGS][2] = {
       "Applying update..."                             },
     { "Comprueba si hay una nueva versión",
       "Check if a new version is available"            },
+    { "Historial de cambios",
+      "Changelog"                                      },
+    { "Historial de cambios — PKG Helper",
+      "Changelog — PKG Helper"                         },
 };
 
 #define T(id) g_strings[(id)][g_lang]
@@ -180,6 +188,8 @@ static GtkWidget         *g_btn_search;
 static GtkWidget         *g_btn_install;
 static GtkWidget         *g_btn_remove;
 static GtkWidget         *g_btn_update;
+static GtkWidget         *g_btn_changelog;
+static GtkWidget         *g_ver_label;
 static GtkWidget         *g_status;
 static GtkWidget         *g_tree;
 static GtkWidget         *g_spinner;
@@ -683,6 +693,8 @@ static void apply_lang(void) {
     gtk_widget_set_tooltip_text(g_btn_install, T(STR_TOOLTIP_INSTALL));
     gtk_button_set_label(GTK_BUTTON(g_btn_update), T(STR_BTN_CHECK_UPDATES));
     gtk_widget_set_tooltip_text(g_btn_update, T(STR_TOOLTIP_UPDATE));
+    gtk_button_set_label(GTK_BUTTON(g_btn_changelog), T(STR_BTN_CHANGELOG));
+    gtk_widget_set_tooltip_text(g_btn_changelog, T(STR_BTN_CHANGELOG));
 
     const char *cur = gtk_label_get_text(GTK_LABEL(g_status));
     if (strcmp(cur, g_strings[STR_STATUS_READY][LANG_ES]) == 0 ||
@@ -942,6 +954,104 @@ static void on_check_updates(GtkWidget *w, gpointer d) {
     launch_update_check();
 }
 
+static void show_changelog_dialog(GtkWidget *parent) {
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        T(STR_CHANGELOG_TITLE),
+        GTK_WINDOW(parent),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "_OK", GTK_RESPONSE_OK,
+        NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 560, 420);
+    gtk_window_set_resizable(GTK_WINDOW(dlg), TRUE);
+
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(content), 12);
+    gtk_box_set_spacing(GTK_BOX(content), 8);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_widget_set_hexpand(scroll, TRUE);
+
+    GtkWidget *tv = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(tv), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(tv), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(tv),  10);
+    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(tv), 10);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(tv),    6);
+    gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(tv), 6);
+
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv));
+
+    GtkTextTag *tag_ver = gtk_text_buffer_create_tag(buf, "version",
+        "weight", PANGO_WEIGHT_BOLD,
+        "scale",  1.15,
+        NULL);
+    GtkTextTag *tag_item = gtk_text_buffer_create_tag(buf, "item",
+        "left-margin", 16,
+        NULL);
+    (void)tag_ver; (void)tag_item;
+
+    typedef struct { const char *ver; const char *date; const char *body_es; const char *body_en; } Entry;
+    static const Entry entries[] = {
+        {
+            "v0.0.3-beta", "2025",
+            "• Rendimiento mejorado: todos los paquetes se descargan en paralelo en lugar de uno por uno.\n"
+            "• La interfaz ya respeta el idioma configurado al mostrar el historial de cambios.\n",
+            "• Performance improvement: all packages are now downloaded in parallel instead of one by one.\n"
+            "• The interface now respects the configured language when displaying the changelog.\n"
+        },
+        {
+            "v0.0.2-beta", "2025",
+            "• Soporte para AUR mediante yay.\n"
+            "• Soporte para paquetes Flatpak.\n"
+            "• Selector de fuentes (pacman / AUR / Flatpak) en la barra superior.\n"
+            "• Corrección de crash al buscar con fuentes desactivadas.\n",
+            "• AUR support via yay.\n"
+            "• Flatpak package support.\n"
+            "• Source selector (pacman / AUR / Flatpak) in the top bar.\n"
+            "• Fixed crash when searching with all sources disabled.\n"
+        },
+        {
+            "v0.0.1-beta", "2025",
+            "• Versión inicial de PKG Helper.\n"
+            "• Búsqueda de paquetes vía pacman.\n"
+            "• Instalación y eliminación de paquetes a través de Alacritty.\n"
+            "• Selector de idioma (ES / EN) con persistencia.\n",
+            "• Initial release of PKG Helper.\n"
+            "• Package search via pacman.\n"
+            "• Package install and remove through Alacritty.\n"
+            "• Language selector (ES / EN) with persistence.\n"
+        },
+    };
+
+    GtkTextIter it;
+    gtk_text_buffer_get_start_iter(buf, &it);
+
+    for (int i = 0; i < (int)(sizeof(entries)/sizeof(entries[0])); i++) {
+        const Entry *e = &entries[i];
+        char header[128];
+        snprintf(header, sizeof(header), "%s  (%s)\n", e->ver, e->date);
+        gtk_text_buffer_insert_with_tags_by_name(buf, &it, header, -1, "version", NULL);
+        const char *body = (g_lang == LANG_EN) ? e->body_en : e->body_es;
+        gtk_text_buffer_insert_with_tags_by_name(buf, &it, body, -1, "item", NULL);
+        if (i < (int)(sizeof(entries)/sizeof(entries[0])) - 1)
+            gtk_text_buffer_insert(buf, &it, "\n", -1);
+    }
+
+    gtk_container_add(GTK_CONTAINER(scroll), tv);
+    gtk_box_pack_start(GTK_BOX(content), scroll, TRUE, TRUE, 0);
+    gtk_widget_show_all(dlg);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
+static void on_changelog_clicked(GtkWidget *w, gpointer d) {
+    show_changelog_dialog(g_win);
+}
+
 static void build_ui(void) {
     g_win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(g_win), "PKG Helper - Arch Linux");
@@ -978,6 +1088,11 @@ static void build_ui(void) {
     gtk_widget_set_tooltip_text(g_btn_update, T(STR_TOOLTIP_UPDATE));
     g_signal_connect(g_btn_update, "clicked", G_CALLBACK(on_check_updates), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_update, FALSE, FALSE, 0);
+
+    g_btn_changelog = gtk_button_new_with_label(T(STR_BTN_CHANGELOG));
+    gtk_widget_set_tooltip_text(g_btn_changelog, T(STR_BTN_CHANGELOG));
+    g_signal_connect(g_btn_changelog, "clicked", G_CALLBACK(on_changelog_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_changelog, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox), hbox_top, FALSE, FALSE, 0);
 
@@ -1071,6 +1186,11 @@ static void build_ui(void) {
     gtk_label_set_xalign(GTK_LABEL(g_status), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(g_status), PANGO_ELLIPSIZE_END);
     gtk_box_pack_start(GTK_BOX(hbox_bot), g_status, TRUE, TRUE, 0);
+
+    g_ver_label = gtk_label_new(APP_VERSION);
+    gtk_widget_set_opacity(g_ver_label, 0.35);
+    gtk_widget_set_tooltip_text(g_ver_label, T(STR_BTN_CHANGELOG));
+    gtk_box_pack_start(GTK_BOX(hbox_bot), g_ver_label, FALSE, FALSE, 4);
 
     g_btn_remove = gtk_button_new_with_label(T(STR_BTN_REMOVE));
     gtk_widget_set_tooltip_text(g_btn_remove, T(STR_TOOLTIP_REMOVE));
