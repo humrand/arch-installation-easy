@@ -524,7 +524,8 @@ static void on_install(GtkWidget *w, gpointer d) {
     GString *pacman_pkgs   = g_string_new("");
     GString *aur_pkgs      = g_string_new("");
     GString *flatpak_fh    = g_string_new("");  
-    GString *flatpak_other = g_string_new(""); 
+    GString *flatpak_other = g_string_new("");
+    int aur_count = 0;
 
     static const char PFX_PACMAN[]  = "sudo pacman -S ";
     static const char PFX_AUR[]     = "yay -S ";
@@ -543,6 +544,7 @@ static void on_install(GtkWidget *w, gpointer d) {
             } else if (g_str_has_prefix(pkg_cmd, PFX_AUR)) {
                 if (aur_pkgs->len) g_string_append_c(aur_pkgs, ' ');
                 g_string_append(aur_pkgs, pkg_cmd + strlen(PFX_AUR));
+                aur_count++;
             } else if (g_str_has_prefix(pkg_cmd, PFX_FLAT_FH)) {
                 if (flatpak_fh->len) g_string_append_c(flatpak_fh, ' ');
                 g_string_append(flatpak_fh, pkg_cmd + strlen(PFX_FLAT_FH));
@@ -570,7 +572,10 @@ static void on_install(GtkWidget *w, gpointer d) {
     }
     if (aur_pkgs->len) {
         if (!first) g_string_append(script, " && ");
-        g_string_append_printf(script, "yay -S %s", aur_pkgs->str);
+        if (aur_count > 2)
+            g_string_append_printf(script, "yay -S --noconfirm %s", aur_pkgs->str);
+        else
+            g_string_append_printf(script, "yay -S %s", aur_pkgs->str);
         first = FALSE;
     }
     if (flatpak_fh->len) {
@@ -996,6 +1001,12 @@ static void show_changelog_dialog(GtkWidget *parent) {
 
     typedef struct { const char *ver; const char *date; const char *body_es; const char *body_en; } Entry;
     static const Entry entries[] = {
+
+            {
+            "v0.0.4-beta", "21 april 2026",
+            "• mejora de rendimiento en yay.\n",
+            "• performance improvement in yay.\n"
+        },
         {
             "v0.0.3-beta", "21 april 2026",
             "• Rendimiento mejorado: todos los paquetes se descargan en paralelo en lugar de uno por uno.\n"
