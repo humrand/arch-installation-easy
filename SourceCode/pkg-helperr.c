@@ -186,9 +186,10 @@ static void load_lang_pref(void) {
     g_free(path);
 }
 
-static gboolean       g_dark_mode      = FALSE;
-static GtkWidget     *g_btn_dark_mode  = NULL;
-static GtkCssProvider *g_css_dark      = NULL;
+static gboolean       g_dark_mode         = FALSE;
+static gboolean       g_dark_mode_setting = FALSE; 
+static GtkWidget     *g_btn_dark_mode     = NULL;
+static GtkCssProvider *g_css_dark         = NULL;
 
 static const char DARK_CSS[] =
     "window, box, scrolledwindow, viewport {"
@@ -318,15 +319,15 @@ static void apply_dark_mode(void) {
     }
 
     if (g_btn_dark_mode) {
-        gtk_toggle_button_set_active(
-            GTK_TOGGLE_BUTTON(g_btn_dark_mode), g_dark_mode);
-        gtk_button_set_label(GTK_BUTTON(g_btn_dark_mode),
-            g_dark_mode ? "On" : "Off");
+        g_dark_mode_setting = TRUE;
+        gtk_switch_set_active(GTK_SWITCH(g_btn_dark_mode), g_dark_mode);
+        g_dark_mode_setting = FALSE;
     }
 }
 
-static void on_dark_mode_toggled(GtkToggleButton *btn, gpointer d) {
-    g_dark_mode = gtk_toggle_button_get_active(btn);
+static void on_dark_mode_toggled(GObject *obj, GParamSpec *pspec, gpointer d) {
+    if (g_dark_mode_setting) return;   
+    g_dark_mode = gtk_switch_get_active(GTK_SWITCH(obj));
     apply_dark_mode();
     save_dark_pref();
 }
@@ -1263,8 +1264,12 @@ static void show_changelog_dialog(GtkWidget *parent) {
 
             {
             "v0.0.7-stable", "22 april 2026",
-            "• Modo oscuro: nuevo toggle On/Off en la barra superior para activar/desactivar el tema oscuro. La preferencia se guarda y se restaura al reiniciar.\n",
+            "• Modo oscuro: nuevo toggle On/Off en la barra superior para activar/desactivar el tema oscuro. La preferencia se guarda y se restaura al reiniciar.\n"
+            "• paginacion agregada para que no sea un caos.\n",
+
             "• Dark mode: new On/Off toggle button in the top bar to enable/disable the dark theme. Preference is saved and restored on restart.\n"
+            "• added pagination dix for not become a chaos search a package.\n"
+
         },
         {
             "v0.0.6-stable", "21 april 2026",
@@ -1383,10 +1388,12 @@ static void build_ui(void) {
     g_signal_connect(g_btn_changelog, "clicked", G_CALLBACK(on_changelog_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_changelog, FALSE, FALSE, 0);
 
-    g_btn_dark_mode = gtk_toggle_button_new_with_label(g_dark_mode ? "On" : "Off");
+    g_btn_dark_mode = gtk_switch_new();
+    gtk_switch_set_active(GTK_SWITCH(g_btn_dark_mode), g_dark_mode);
     gtk_widget_set_tooltip_text(g_btn_dark_mode, T(STR_TOOLTIP_DARK_MODE));
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_btn_dark_mode), g_dark_mode);
-    g_signal_connect(g_btn_dark_mode, "toggled", G_CALLBACK(on_dark_mode_toggled), NULL);
+    gtk_widget_set_valign(g_btn_dark_mode, GTK_ALIGN_CENTER);
+    g_signal_connect(g_btn_dark_mode, "notify::active",
+                     G_CALLBACK(on_dark_mode_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_dark_mode, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox), hbox_top, FALSE, FALSE, 0);
