@@ -810,6 +810,7 @@ static void recheck_installed(gchar **pkg_names, gint op) {
         }
     }
 
+    gboolean inst = FALSE;
     GtkTreeModel *model = GTK_TREE_MODEL(g_store);
     GtkTreeIter it;
     if (gtk_tree_model_get_iter_first(model, &it)) {
@@ -901,6 +902,7 @@ static void run_in_alacritty(GString *script, int op, gchar **pkg_names) {
 }
 
 static void on_install(GtkWidget *w, gpointer d) {
+    gboolean inst = FALSE;
     GtkTreeModel *model = GTK_TREE_MODEL(g_store);
     GtkTreeIter iter; int count = 0;
     if (!gtk_tree_model_get_iter_first(model, &iter)) return;
@@ -995,6 +997,7 @@ static void on_install(GtkWidget *w, gpointer d) {
 }
 
 static void on_remove(GtkWidget *w, gpointer d) {
+    gboolean inst = FALSE;
     GtkTreeModel *model = GTK_TREE_MODEL(g_store);
     GtkTreeIter iter; int count = 0;
     if (!gtk_tree_model_get_iter_first(model, &iter)) return;
@@ -1120,6 +1123,7 @@ static void apply_lang(void) {
         strcmp(cur, g_strings[STR_STATUS_READY][LANG_EN]) == 0)
         gtk_label_set_text(GTK_LABEL(g_status), T(STR_STATUS_READY));
 
+    gboolean inst = FALSE;
     GtkTreeModel *model = GTK_TREE_MODEL(g_store);
     GtkTreeIter iter;
     if (gtk_tree_model_get_iter_first(model, &iter)) {
