@@ -544,6 +544,41 @@ static void parse_flatpak_output(FILE *fp, GArray *results) {
 }
 
 
+
+static void store_append_pkg(Pkg *p) {
+    GtkTreeIter it;
+    gtk_list_store_append(g_store, &it);
+    gtk_list_store_set(g_store, &it,
+        COL_CHECK,      FALSE,
+        COL_STATUS,     p->installed ? T(STR_INSTALLED) : "",
+        COL_SOURCE,     p->source,
+        COL_NAME,       p->name,
+        COL_VERSION,    p->version,
+        COL_DESC,       p->desc,
+        COL_CMD,        p->cmd,
+        COL_REMOVE_CMD, p->remove_cmd,
+        COL_INSTALLED,  p->installed,
+        -1);
+}
+
+static void update_pagination(gint total) {
+    gint total_pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (total_pages < 1) total_pages = 1;
+
+    gboolean show = (total > PAGE_SIZE);
+    gtk_widget_set_visible(g_btn_prev,   show);
+    gtk_widget_set_visible(g_btn_next,   show);
+    gtk_widget_set_visible(g_page_label, show);
+
+    if (show) {
+        char txt[32];
+        snprintf(txt, sizeof(txt), "%d / %d", g_current_page + 1, total_pages);
+        gtk_label_set_text(GTK_LABEL(g_page_label), txt);
+        gtk_widget_set_sensitive(g_btn_prev, g_current_page > 0);
+        gtk_widget_set_sensitive(g_btn_next, g_current_page < total_pages - 1);
+    }
+}
+
 static void render_page(gint page) {
     if (!g_all_pkgs) return;
 
@@ -561,38 +596,13 @@ static void render_page(gint page) {
     gint start = page * PAGE_SIZE;
     gint end   = MIN(start + PAGE_SIZE, total);
 
-    for (gint i = start; i < end; i++) {
-        Pkg *p = &g_array_index(g_all_pkgs, Pkg, i);
-        GtkTreeIter it;
-        gtk_list_store_append(g_store, &it);
-        gtk_list_store_set(g_store, &it,
-            COL_CHECK,      FALSE,
-            COL_STATUS,     p->installed ? T(STR_INSTALLED) : "",
-            COL_SOURCE,     p->source,
-            COL_NAME,       p->name,
-            COL_VERSION,    p->version,
-            COL_DESC,       p->desc,
-            COL_CMD,        p->cmd,
-            COL_REMOVE_CMD, p->remove_cmd,
-            COL_INSTALLED,  p->installed,
-            -1);
-    }
+    for (gint i = start; i < end; i++)
+        store_append_pkg(&g_array_index(g_all_pkgs, Pkg, i));
 
     g_object_thaw_notify(G_OBJECT(g_store));
     gtk_widget_thaw_child_notify(g_tree);
 
-    gboolean show_pag = (total > PAGE_SIZE);
-    gtk_widget_set_visible(g_btn_prev,   show_pag);
-    gtk_widget_set_visible(g_btn_next,   show_pag);
-    gtk_widget_set_visible(g_page_label, show_pag);
-
-    if (show_pag) {
-        char pg_txt[32];
-        snprintf(pg_txt, sizeof(pg_txt), "%d / %d", page + 1, total_pages);
-        gtk_label_set_text(GTK_LABEL(g_page_label), pg_txt);
-        gtk_widget_set_sensitive(g_btn_prev, page > 0);
-        gtk_widget_set_sensitive(g_btn_next, page < total_pages - 1);
-    }
+    update_pagination(total);
 }
 
 static void on_page_prev(GtkWidget *w, gpointer d) { render_page(g_current_page - 1); }
@@ -601,14 +611,34 @@ static void on_page_next(GtkWidget *w, gpointer d) { render_page(g_current_page 
 static gboolean batch_add_cb(gpointer data) {
     BatchCtx *ctx = data;
 
+    gint old_total = (gint)g_all_pkgs->len;
+
     for (guint i = 0; i < ctx->pkgs->len; i++) {
         Pkg p = g_array_index(ctx->pkgs, Pkg, i);
         g_array_append_val(g_all_pkgs, p);
     }
 
-    if (ctx->is_last) {
-        render_page(0);
+    gint new_total  = (gint)g_all_pkgs->len;
+    gint page_start = g_current_page * PAGE_SIZE;
+    gint page_end   = page_start + PAGE_SIZE;
 
+    if (new_total > page_start && old_total < page_end) {
+        gint vis_start = MAX(old_total, page_start);
+        gint vis_end   = MIN(new_total, page_end);
+
+        gtk_widget_freeze_child_notify(g_tree);
+        g_object_freeze_notify(G_OBJECT(g_store));
+
+        for (gint i = vis_start; i < vis_end; i++)
+            store_append_pkg(&g_array_index(g_all_pkgs, Pkg, i));
+
+        g_object_thaw_notify(G_OBJECT(g_store));
+        gtk_widget_thaw_child_notify(g_tree);
+    }
+
+    update_pagination(new_total);
+
+    if (ctx->is_last) {
         char status[128];
         if (ctx->grand_total == 0)
             snprintf(status, sizeof(status), T(STR_NO_RESULTS), ctx->query);
