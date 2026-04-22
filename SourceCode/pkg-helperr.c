@@ -186,7 +186,6 @@ static void load_lang_pref(void) {
     g_free(path);
 }
 
-/* ── dark mode globals (forward-declared so the helpers below can use them) */
 static gboolean       g_dark_mode      = FALSE;
 static GtkWidget     *g_btn_dark_mode  = NULL;
 static GtkCssProvider *g_css_dark      = NULL;
@@ -269,7 +268,6 @@ static const char DARK_CSS[] =
     "  color: #89b4fa;"
     "}";
 
-/* ── dark mode persistence ─────────────────────────────────────────── */
 
 static char *dark_config_path(void) {
     const char *home = g_get_home_dir();
@@ -356,9 +354,7 @@ static GtkWidget         *g_btn_update;
 static GtkWidget         *g_btn_changelog;
 static GtkWidget         *g_btn_update_sys;
 static GtkWidget         *g_btn_update_all;
-/* g_btn_dark_mode and g_dark_mode declared earlier */
 static GtkWidget         *g_ver_label;
-/* ── pagination ─────────────────────────────────────────────────────── */
 static GArray            *g_all_pkgs     = NULL;
 static gint               g_current_page = 0;
 #define PAGE_SIZE         20
@@ -605,14 +601,12 @@ static void on_page_next(GtkWidget *w, gpointer d) { render_page(g_current_page 
 static gboolean batch_add_cb(gpointer data) {
     BatchCtx *ctx = data;
 
-    /* Accumulate all results into g_all_pkgs */
     for (guint i = 0; i < ctx->pkgs->len; i++) {
         Pkg p = g_array_index(ctx->pkgs, Pkg, i);
         g_array_append_val(g_all_pkgs, p);
     }
 
     if (ctx->is_last) {
-        /* All batches arrived — render first page */
         render_page(0);
 
         char status[128];
@@ -1238,7 +1232,7 @@ static void show_changelog_dialog(GtkWidget *parent) {
     static const Entry entries[] = {
 
             {
-            "v7.0.0-stable", "22 april 2026",
+            "v0.0.7-stable", "22 april 2026",
             "• Modo oscuro: nuevo toggle On/Off en la barra superior para activar/desactivar el tema oscuro. La preferencia se guarda y se restaura al reiniciar.\n",
             "• Dark mode: new On/Off toggle button in the top bar to enable/disable the dark theme. Preference is saved and restored on restart.\n"
         },
@@ -1449,7 +1443,6 @@ static void build_ui(void) {
     gtk_container_add(GTK_CONTAINER(scroll), g_tree);
     gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
 
-    /* ── pagination bar ─────────────────────────────────────────────── */
     GtkWidget *hbox_pag = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_set_halign(hbox_pag, GTK_ALIGN_CENTER);
 
@@ -1471,7 +1464,6 @@ static void build_ui(void) {
     gtk_widget_set_visible(g_page_label, FALSE);
 
     gtk_box_pack_start(GTK_BOX(vbox), hbox_pag, FALSE, FALSE, 4);
-    /* ───────────────────────────────────────────────────────────────── */
 
     gtk_box_pack_start(GTK_BOX(vbox),
         gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
