@@ -12,7 +12,7 @@
 #define MAX_CMD     512
 #define MAX_LINE   1024
 
-#define APP_VERSION "0.0.6-stable"
+#define APP_VERSION "7.0.0-stable"
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
 static LangID g_lang = LANG_EN;
@@ -58,6 +58,8 @@ typedef enum {
     STR_BTN_UPDATE_ALL,
     STR_TOOLTIP_UPDATE_SYS,
     STR_TOOLTIP_UPDATE_ALL,
+    STR_BTN_DARK_MODE,
+    STR_TOOLTIP_DARK_MODE,
     N_STRINGS
 } StrID;
 
@@ -142,6 +144,10 @@ static const char *g_strings[N_STRINGS][2] = {
       "sudo pacman -Syu"                               },
     { "sudo pacman -Syu && yay -Syu && flatpak update",
       "sudo pacman -Syu && yay -Syu && flatpak update" },
+    { "Modo oscuro",
+      "Dark mode"                                       },
+    { "Activar/desactivar modo oscuro",
+      "Toggle dark mode"                                },
 };
 
 #define T(id) g_strings[(id)][g_lang]
@@ -181,6 +187,53 @@ static void load_lang_pref(void) {
 }
 
 
+static char *dark_config_path(void) {
+    const char *home = g_get_home_dir();
+    return g_build_filename(home, ".config", "pkg-helper", "darkmode", NULL);
+}
+
+static void save_dark_pref(void) {
+    char *path = dark_config_path();
+    char *dir  = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    FILE *fp = fopen(path, "w");
+    if (fp) {
+        fputs(g_dark_mode ? "1" : "0", fp);
+        fclose(fp);
+    }
+    g_free(dir);
+    g_free(path);
+}
+
+static void load_dark_pref(void) {
+    char *path = dark_config_path();
+    FILE *fp = fopen(path, "r");
+    if (fp) {
+        char buf[4] = {0};
+        fgets(buf, sizeof(buf), fp);
+        fclose(fp);
+        g_dark_mode = (buf[0] == '1');
+    }
+    g_free(path);
+}
+
+static void apply_dark_mode(void) {
+    GtkSettings *settings = gtk_settings_get_default();
+    g_object_set(settings,
+        "gtk-application-prefer-dark-theme", g_dark_mode,
+        NULL);
+    if (g_btn_dark_mode)
+        gtk_toggle_button_set_active(
+            GTK_TOGGLE_BUTTON(g_btn_dark_mode), g_dark_mode);
+}
+
+static void on_dark_mode_toggled(GtkToggleButton *btn, gpointer d) {
+    g_dark_mode = gtk_toggle_button_get_active(btn);
+    apply_dark_mode();
+    save_dark_pref();
+}
+
+
 enum {
     COL_CHECK = 0,
     COL_STATUS,
@@ -203,6 +256,8 @@ static GtkWidget         *g_btn_update;
 static GtkWidget         *g_btn_changelog;
 static GtkWidget         *g_btn_update_sys;
 static GtkWidget         *g_btn_update_all;
+static GtkWidget         *g_btn_dark_mode;
+static gboolean           g_dark_mode = FALSE;
 static GtkWidget         *g_ver_label;
 static GtkWidget         *g_status;
 static GtkWidget         *g_tree;
@@ -752,7 +807,8 @@ static void on_lang_changed(GtkComboBox *combo, gpointer d) {
 }
 
 static gboolean on_window_destroy(GtkWidget *w, GdkEvent *event, gpointer d) {
-    save_lang_pref();   
+    save_lang_pref();
+    save_dark_pref();
     gtk_main_quit();
     return FALSE;
 }
@@ -1030,6 +1086,11 @@ static void show_changelog_dialog(GtkWidget *parent) {
     static const Entry entries[] = {
 
             {
+            "v7.0.0-stable", "22 april 2026",
+            "• Modo oscuro: nuevo toggle (🌙) en la barra superior para activar/desactivar el tema oscuro. La preferencia se guarda y se restaura al reiniciar.\n",
+            "• Dark mode: new toggle button (🌙) in the top bar to enable/disable the dark theme. Preference is saved and restored on restart.\n"
+        },
+        {
             "v0.0.6-stable", "21 april 2026",
             "• mejora de busqueda mas precisa.\n",
             "• more precise search improvement.\n"
@@ -1145,6 +1206,12 @@ static void build_ui(void) {
     gtk_widget_set_tooltip_text(g_btn_changelog, T(STR_BTN_CHANGELOG));
     g_signal_connect(g_btn_changelog, "clicked", G_CALLBACK(on_changelog_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_changelog, FALSE, FALSE, 0);
+
+    g_btn_dark_mode = gtk_toggle_button_new_with_label("🌙");
+    gtk_widget_set_tooltip_text(g_btn_dark_mode, T(STR_TOOLTIP_DARK_MODE));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_btn_dark_mode), g_dark_mode);
+    g_signal_connect(g_btn_dark_mode, "toggled", G_CALLBACK(on_dark_mode_toggled), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_dark_mode, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox), hbox_top, FALSE, FALSE, 0);
 
@@ -1271,8 +1338,10 @@ int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
 
     load_lang_pref();   
+    load_dark_pref();
 
     build_ui();
+    apply_dark_mode();
 
     GdkPixbuf *win_icon = gdk_pixbuf_new_from_file(UPD_ICO_DST, NULL);
     if (win_icon) {
