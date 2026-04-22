@@ -186,6 +186,9 @@ static void load_lang_pref(void) {
     g_free(path);
 }
 
+static gboolean  g_dark_mode     = FALSE;
+static GtkWidget *g_btn_dark_mode = NULL;
+
 
 static char *dark_config_path(void) {
     const char *home = g_get_home_dir();
@@ -256,8 +259,6 @@ static GtkWidget         *g_btn_update;
 static GtkWidget         *g_btn_changelog;
 static GtkWidget         *g_btn_update_sys;
 static GtkWidget         *g_btn_update_all;
-static GtkWidget         *g_btn_dark_mode;
-static gboolean           g_dark_mode = FALSE;
 static GtkWidget         *g_ver_label;
 static GtkWidget         *g_status;
 static GtkWidget         *g_tree;
