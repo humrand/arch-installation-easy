@@ -13,7 +13,7 @@
 #define MAX_CMD     512
 #define MAX_LINE   1024
 
-#define APP_VERSION "0.0.8-stable"
+#define APP_VERSION "1.0.0-stable"
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
 static LangID g_lang = LANG_EN;
@@ -75,6 +75,14 @@ typedef enum {
     STR_OPT_CLOSE,
     STR_INST_LOADING,
     STR_INST_TOTAL,
+    STR_FILTER_PLACEHOLDER,
+    STR_CONFIRM_TITLE_INSTALL,
+    STR_CONFIRM_TITLE_REMOVE,
+    STR_CONFIRM_MSG_INSTALL,
+    STR_CONFIRM_MSG_REMOVE,
+    STR_PKG_INFO_TITLE,
+    STR_NO_TERMINAL,
+    STR_SYS_UPDATES_BADGE,
     N_STRINGS
 } StrID;
 
@@ -191,6 +199,22 @@ static const char *g_strings[N_STRINGS][2] = {
       "Loading installed packages..."                   },
     { "Total: %d paquetes instalados",
       "Total: %d packages installed"                    },
+    { "Filtrar instalados...",
+      "Filter installed..."                             },
+    { "Confirmar instalación",
+      "Confirm install"                                 },
+    { "Confirmar eliminación",
+      "Confirm removal"                                 },
+    { "¿Instalar los siguientes paquetes?\n\n%s",
+      "Install the following packages?\n\n%s"           },
+    { "¿Eliminar los siguientes paquetes?\n\n%s",
+      "Remove the following packages?\n\n%s"            },
+    { "Información del paquete — %s",
+      "Package info — %s"                               },
+    { "No se encontró ningún terminal compatible.",
+      "No compatible terminal emulator found."          },
+    { "Actualizar sistema (%d)",
+      "Update system (%d)"                              },
 };
 
 #define T(id) g_strings[(id)][g_lang]
@@ -460,6 +484,15 @@ static GtkWidget         *g_inst_total_label;
 static GtkWidget         *g_inst_spinner;
 static GtkWidget         *g_options_btn;
 
+static char               g_inst_filter[256]   = {0};
+static GtkWidget         *g_inst_filter_entry  = NULL;
+static GArray            *g_installed_filtered = NULL;
+
+static GtkListStore      *g_hist_store         = NULL;
+#define HISTORY_MAX 10
+
+static gint               g_sys_update_count   = -1;
+
 static void apply_lang(void);
 
 typedef struct {
@@ -724,6 +757,25 @@ static void inst_store_append_pkg(GtkListStore *store, Pkg *p) {
         -1);
 }
 
+static void rebuild_installed_filtered(void) {
+    if (g_installed_filtered) {
+        g_array_free(g_installed_filtered, TRUE);
+        g_installed_filtered = NULL;
+    }
+    if (!g_installed_all) return;
+    g_installed_filtered = g_array_new(FALSE, TRUE, sizeof(Pkg));
+    const char *f = g_inst_filter;
+    for (guint i = 0; i < g_installed_all->len; i++) {
+        Pkg *p = &g_array_index(g_installed_all, Pkg, i);
+        if (!f[0]
+            || strcasestr(p->name,   f)
+            || strcasestr(p->source, f)
+            || strcasestr(p->desc,   f)) {
+            g_array_append_val(g_installed_filtered, *p);
+        }
+    }
+}
+
 static void update_inst_pagination(gint total) {
     gint total_pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
     if (total_pages < 1) total_pages = 1;
@@ -749,9 +801,10 @@ static void update_inst_pagination(gint total) {
 }
 
 static void render_installed_page(gint page) {
-    if (!g_installed_all) return;
+    GArray *src = g_installed_filtered ? g_installed_filtered : g_installed_all;
+    if (!src) return;
 
-    gint total = (gint)g_installed_all->len;
+    gint total       = (gint)src->len;
     gint total_pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
     if (total_pages < 1) total_pages = 1;
     if (page < 0) page = 0;
@@ -764,7 +817,7 @@ static void render_installed_page(gint page) {
     gint end   = MIN(start + PAGE_SIZE, total);
 
     for (gint i = start; i < end; i++)
-        inst_store_append_pkg(g_inst_store, &g_array_index(g_installed_all, Pkg, i));
+        inst_store_append_pkg(g_inst_store, &g_array_index(src, Pkg, i));
 
     update_inst_pagination(total);
 }
@@ -791,6 +844,11 @@ static gboolean inst_batch_add_cb(gpointer data) {
     }
 
     gint new_total = (gint)g_installed_all->len;
+
+    rebuild_installed_filtered();
+    GArray *src = g_installed_filtered ? g_installed_filtered : g_installed_all;
+    gint filtered_total = src ? (gint)src->len : 0;
+
     gint page_start = g_inst_page * PAGE_SIZE;
     gint page_end   = page_start + PAGE_SIZE;
 
@@ -802,7 +860,7 @@ static gboolean inst_batch_add_cb(gpointer data) {
             inst_store_append_pkg(g_inst_store, &g_array_index(g_installed_all, Pkg, i));
     }
 
-    update_inst_pagination(new_total);
+    update_inst_pagination(filtered_total);
 
     if (ctx->is_last) {
         gtk_spinner_stop(GTK_SPINNER(g_inst_spinner));
@@ -927,6 +985,10 @@ static void on_installed_refresh(GtkWidget *w, gpointer d) {
         g_array_free(g_installed_all, TRUE);
         g_installed_all = NULL;
     }
+    if (g_installed_filtered) {
+        g_array_free(g_installed_filtered, TRUE);
+        g_installed_filtered = NULL;
+    }
     g_inst_page = 0;
     GThread *t = g_thread_new("load-installed", load_installed_thread, NULL);
     g_thread_unref(t);
@@ -946,6 +1008,17 @@ static void on_installed_select_all(GtkWidget *w, gpointer d) {
         gtk_list_store_set(g_inst_store, &iter, COL_CHECK, new_state, -1);
         valid = gtk_tree_model_iter_next(model, &iter);
     }
+}
+
+static void on_inst_filter_changed(GtkEditable *editable, gpointer d) {
+    const char *text = gtk_entry_get_text(GTK_ENTRY(editable));
+    strncpy(g_inst_filter, text ? text : "", sizeof(g_inst_filter) - 1);
+    g_inst_filter[sizeof(g_inst_filter) - 1] = '\0';
+    rebuild_installed_filtered();
+    g_inst_page = 0;
+    GArray *src = g_installed_filtered ? g_installed_filtered : g_installed_all;
+    render_installed_page(0);
+    (void)src;
 }
 
 static gboolean batch_add_cb(gpointer data) {
@@ -1091,13 +1164,73 @@ static void on_toggle(GtkCellRendererToggle *cell, gchar *path_str, gpointer sto
     gtk_tree_path_free(path);
 }
 
+static void show_pkg_info_dialog(GtkListStore *store, GtkTreePath *path) {
+    GtkTreeIter iter;
+    if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, path)) return;
+    gchar *name = NULL, *src = NULL, *cmd = NULL;
+    gtk_tree_model_get(GTK_TREE_MODEL(store), &iter,
+        COL_NAME, &name, COL_SOURCE, &src, COL_CMD, &cmd, -1);
+    if (!name) { g_free(src); g_free(cmd); return; }
+
+    char title[256];
+    snprintf(title, sizeof(title), T(STR_PKG_INFO_TITLE), name);
+
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        title, GTK_WINDOW(g_win),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "_OK", GTK_RESPONSE_OK, NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 600, 460);
+
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(content), 10);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_widget_set_hexpand(scroll, TRUE);
+
+    GtkWidget *tv = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(tv), TRUE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(tv), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(tv), 8);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(tv), 6);
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv));
+
+    char info_cmd[512];
+    if (src && (strcmp(src, "aur") == 0))
+        snprintf(info_cmd, sizeof(info_cmd), "yay -Si '%s' 2>&1", name);
+    else if (src && strcmp(src, "flatpak") == 0) {
+        gchar *appid = cmd ? g_strdup(strrchr(cmd, ' ') ? strrchr(cmd, ' ') + 1 : name) : g_strdup(name);
+        snprintf(info_cmd, sizeof(info_cmd), "flatpak info '%s' 2>&1", appid);
+        g_free(appid);
+    } else
+        snprintf(info_cmd, sizeof(info_cmd), "pacman -Si '%s' 2>/dev/null || pacman -Qi '%s' 2>&1", name, name);
+
+    FILE *fp = popen(info_cmd, "r");
+    GString *out = g_string_new("");
+    if (fp) {
+        char line[512];
+        while (fgets(line, sizeof(line), fp)) g_string_append(out, line);
+        pclose(fp);
+    }
+    if (!out->len) g_string_append(out, "(no info available)");
+    gtk_text_buffer_set_text(buf, out->str, -1);
+    g_string_free(out, TRUE);
+
+    gtk_container_add(GTK_CONTAINER(scroll), tv);
+    gtk_box_pack_start(GTK_BOX(content), scroll, TRUE, TRUE, 0);
+    gtk_widget_show_all(dlg);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+
+    g_free(name); g_free(src); g_free(cmd);
+}
+
 static void on_row_activated(GtkTreeView *tv, GtkTreePath *path,
                              GtkTreeViewColumn *col, gpointer store_ptr) {
-    GtkListStore *store = GTK_LIST_STORE(store_ptr);
-    GtkTreeIter iter; gboolean val;
-    gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, path);
-    gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, COL_CHECK, &val, -1);
-    gtk_list_store_set(store, &iter, COL_CHECK, !val, -1);
+    show_pkg_info_dialog(GTK_LIST_STORE(store_ptr), path);
 }
 
 static GtkCssProvider *g_css_status_orange = NULL;
@@ -1211,16 +1344,51 @@ static void on_terminal_exit(GPid pid, gint status, gpointer user_data) {
     g_free(ctx);
 }
 
-static void run_in_alacritty(GString *script, int op, gchar **pkg_names) {
+static const char *find_terminal(void) {
+    static const struct { const char *bin; } terms[] = {
+        {"alacritty"}, {"kitty"}, {"xterm"}, {"gnome-terminal"},
+        {"konsole"}, {"xfce4-terminal"}, {"mate-terminal"},
+        {"lxterminal"}, {"tilix"}, {"foot"}, {NULL}
+    };
+    for (int i = 0; terms[i].bin; i++) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "which %s >/dev/null 2>&1", terms[i].bin);
+        if (system(cmd) == 0) return terms[i].bin;
+    }
+    return NULL;
+}
+
+static void run_in_terminal(GString *script, int op, gchar **pkg_names) {
     char done_line[128];
     snprintf(done_line, sizeof(done_line),
              "; echo; echo '%s'; read", T(STR_ALACRITTY_DONE));
     g_string_append(script, done_line);
 
-    char *argv[] = { "alacritty", "-e", "sh", "-c", script->str, NULL };
-    GError *err  = NULL;
-    GPid    pid;
+    const char *term = find_terminal();
+    if (!term) {
+        status_clear_orange();
+        gtk_label_set_text(GTK_LABEL(g_status), T(STR_NO_TERMINAL));
+        gtk_widget_set_sensitive(g_btn_install, TRUE);
+        gtk_widget_set_sensitive(g_btn_remove,  TRUE);
+        gtk_widget_set_sensitive(g_btn_search,  TRUE);
+        g_strfreev(pkg_names);
+        return;
+    }
 
+    char *argv[8] = {0};
+    int ai = 0;
+    argv[ai++] = (char *)term;
+    if (strcmp(term, "gnome-terminal") == 0)
+        argv[ai++] = "--";
+    else if (strcmp(term, "kitty") != 0)
+        argv[ai++] = "-e";
+    argv[ai++] = "sh";
+    argv[ai++] = "-c";
+    argv[ai++] = script->str;
+    argv[ai]   = NULL;
+
+    GError *err = NULL;
+    GPid    pid;
     if (!g_spawn_async(NULL, argv, NULL,
                        G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
                        NULL, NULL, &pid, &err)) {
@@ -1233,7 +1401,7 @@ static void run_in_alacritty(GString *script, int op, gchar **pkg_names) {
         return;
     }
 
-    WatchCtx *ctx = g_new0(WatchCtx, 1);
+    WatchCtx *ctx  = g_new0(WatchCtx, 1);
     ctx->pkg_names = pkg_names;
     ctx->op        = op;
     g_child_watch_add(pid, on_terminal_exit, ctx);
@@ -1324,12 +1492,32 @@ static void on_install(GtkWidget *w, gpointer d) {
     g_ptr_array_add(names, NULL);
     gchar **pkg_names = (gchar **)g_ptr_array_free(names, FALSE);
 
+    {
+        GString *list = g_string_new("");
+        for (int i = 0; pkg_names[i]; i++)
+            g_string_append_printf(list, "  \342\200\242 %s\n", pkg_names[i]);
+        char conf_msg[2048];
+        snprintf(conf_msg, sizeof(conf_msg), T(STR_CONFIRM_MSG_INSTALL), list->str);
+        g_string_free(list, TRUE);
+        GtkWidget *conf_dlg = gtk_message_dialog_new(GTK_WINDOW(g_win),
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_QUESTION, GTK_BUTTONS_OK_CANCEL, "%s", conf_msg);
+        gtk_window_set_title(GTK_WINDOW(conf_dlg), T(STR_CONFIRM_TITLE_INSTALL));
+        gint resp = gtk_dialog_run(GTK_DIALOG(conf_dlg));
+        gtk_widget_destroy(conf_dlg);
+        if (resp != GTK_RESPONSE_OK) {
+            g_strfreev(pkg_names);
+            g_string_free(script, TRUE);
+            return;
+        }
+    }
+
     char msg[64]; snprintf(msg, sizeof(msg), T(STR_DOWNLOADING), count);
     status_set_orange(msg);
     gtk_widget_set_sensitive(g_btn_install, FALSE);
     gtk_widget_set_sensitive(g_btn_remove,  FALSE);
     gtk_widget_set_sensitive(g_btn_search,  FALSE);
-    run_in_alacritty(script, +1, pkg_names);
+    run_in_terminal(script, +1, pkg_names);
     g_string_free(script, TRUE);
 }
 
@@ -1389,18 +1577,131 @@ static void on_remove(GtkWidget *w, gpointer d) {
     g_ptr_array_add(names, NULL);
     gchar **pkg_names = (gchar **)g_ptr_array_free(names, FALSE);
 
+    {
+        GString *list = g_string_new("");
+        for (int i = 0; pkg_names[i]; i++)
+            g_string_append_printf(list, "  \342\200\242 %s\n", pkg_names[i]);
+        char conf_msg[2048];
+        snprintf(conf_msg, sizeof(conf_msg), T(STR_CONFIRM_MSG_REMOVE), list->str);
+        g_string_free(list, TRUE);
+        GtkWidget *conf_dlg = gtk_message_dialog_new(GTK_WINDOW(g_win),
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_WARNING, GTK_BUTTONS_OK_CANCEL, "%s", conf_msg);
+        gtk_window_set_title(GTK_WINDOW(conf_dlg), T(STR_CONFIRM_TITLE_REMOVE));
+        gint resp = gtk_dialog_run(GTK_DIALOG(conf_dlg));
+        gtk_widget_destroy(conf_dlg);
+        if (resp != GTK_RESPONSE_OK) {
+            g_strfreev(pkg_names);
+            g_string_free(script, TRUE);
+            return;
+        }
+    }
+
     char msg[64]; snprintf(msg, sizeof(msg), T(STR_DOWNLOADING), count);
     status_set_orange(msg);
     gtk_widget_set_sensitive(g_btn_install, FALSE);
     gtk_widget_set_sensitive(g_btn_remove,  FALSE);
     gtk_widget_set_sensitive(g_btn_search,  FALSE);
-    run_in_alacritty(script, -1, pkg_names);
+    run_in_terminal(script, -1, pkg_names);
     g_string_free(script, TRUE);
+}
+
+static gboolean sys_updates_badge_cb(gpointer data) {
+    gint n = GPOINTER_TO_INT(data);
+    g_sys_update_count = n;
+    if (g_btn_update_sys) {
+        if (n > 0) {
+            char lbl[64];
+            snprintf(lbl, sizeof(lbl), T(STR_SYS_UPDATES_BADGE), n);
+            gtk_button_set_label(GTK_BUTTON(g_btn_update_sys), lbl);
+        } else {
+            gtk_button_set_label(GTK_BUTTON(g_btn_update_sys), T(STR_BTN_UPDATE_SYS));
+        }
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer check_sys_updates_thread(gpointer data) {
+    (void)data;
+    FILE *fp = popen("checkupdates 2>/dev/null | wc -l", "r");
+    if (!fp) return NULL;
+    char buf[32] = {0};
+    fgets(buf, sizeof(buf), fp);
+    pclose(fp);
+    gint n = atoi(buf);
+    g_idle_add(sys_updates_badge_cb, GINT_TO_POINTER(n));
+    return NULL;
+}
+
+static void load_search_history(void) {
+    g_hist_store = gtk_list_store_new(1, G_TYPE_STRING);
+    char *path = config_path("search_history");
+    FILE *fp = fopen(path, "r");
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp)) {
+            trim(line);
+            if (!line[0]) continue;
+            GtkTreeIter it;
+            gtk_list_store_append(g_hist_store, &it);
+            gtk_list_store_set(g_hist_store, &it, 0, line, -1);
+        }
+        fclose(fp);
+    }
+    g_free(path);
+}
+
+static void save_search_history(void) {
+    if (!g_hist_store) return;
+    char *path = config_path("search_history");
+    char *dir  = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    FILE *fp = fopen(path, "w");
+    if (fp) {
+        GtkTreeIter it;
+        gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(g_hist_store), &it);
+        while (valid) {
+            gchar *s = NULL;
+            gtk_tree_model_get(GTK_TREE_MODEL(g_hist_store), &it, 0, &s, -1);
+            if (s) { fprintf(fp, "%s\n", s); g_free(s); }
+            valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(g_hist_store), &it);
+        }
+        fclose(fp);
+    }
+    g_free(path);
+}
+
+static void add_to_history(const char *query) {
+    if (!g_hist_store || !query || !query[0]) return;
+    GtkTreeIter it;
+    gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(g_hist_store), &it);
+    while (valid) {
+        gchar *s = NULL;
+        gtk_tree_model_get(GTK_TREE_MODEL(g_hist_store), &it, 0, &s, -1);
+        gboolean match = s && strcmp(s, query) == 0;
+        g_free(s);
+        if (match) { gtk_list_store_remove(g_hist_store, &it); break; }
+        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(g_hist_store), &it);
+    }
+    gtk_list_store_insert(g_hist_store, &it, 0);
+    gtk_list_store_set(g_hist_store, &it, 0, query, -1);
+    gint n = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(g_hist_store), NULL);
+    while (n > HISTORY_MAX) {
+        GtkTreePath *last = gtk_tree_path_new_from_indices(n - 1, -1);
+        GtkTreeIter lit;
+        if (gtk_tree_model_get_iter(GTK_TREE_MODEL(g_hist_store), &lit, last))
+            gtk_list_store_remove(g_hist_store, &lit);
+        gtk_tree_path_free(last);
+        n--;
+    }
+    save_search_history();
 }
 
 static void on_search(GtkWidget *w, gpointer d) {
     const char *query = gtk_entry_get_text(GTK_ENTRY(g_entry));
     if (!query || !query[0]) return;
+    add_to_history(query);
     gtk_widget_set_sensitive(g_btn_search,  FALSE);
     gtk_widget_set_sensitive(g_btn_install, FALSE);
     gtk_widget_set_sensitive(g_btn_remove,  FALSE);
@@ -1554,14 +1855,17 @@ static gboolean upd_notify_idle(gpointer data) {
     }
     g_string_free(sh, TRUE);
 
-    char *argv[] = { "alacritty", "-e", "sudo",
+    const char *term = find_terminal();
+    char *term_exec = term ? (char *)term : "xterm";
+    char *exec_flag = (term && strcmp(term, "gnome-terminal") == 0) ? "--" : "-e";
+    char *argv_upd[] = { term_exec, exec_flag, "sudo",
                      "/tmp/.pkg-helper-upd.sh", NULL };
     GPid  pid;
     GError *err = NULL;
 
     gtk_label_set_text(GTK_LABEL(g_status), T(STR_APPLYING_UPDATE));
 
-    if (g_spawn_async(NULL, argv, NULL,
+    if (g_spawn_async(NULL, argv_upd, NULL,
             G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
             NULL, NULL, &pid, &err)) {
         g_child_watch_add(pid, on_pkexec_done, r);
@@ -1698,7 +2002,23 @@ static void show_changelog_dialog(GtkWidget *parent, gboolean only_latest) {
     static const Entry entries[] = {
 
         {
-            "v0.0.8-stable", "21 april 2026",
+            "v1.0.0-stable", "23 april 2026",
+            "• Filtro en tiempo real en 'Paquetes instalados'.\n"
+            "• Detección automática de terminal (alacritty, kitty, xterm, gnome-terminal...).\n"
+            "• Doble clic en paquete muestra información detallada (pacman -Si / flatpak info).\n"
+            "• Diálogo de confirmación antes de instalar o eliminar paquetes.\n"
+            "• Badge con número de actualizaciones pendientes del sistema.\n"
+            "• Historial de las últimas 10 búsquedas con autocompletado.\n",
+
+            "• Real-time filter in the 'Installed packages' tab.\n"
+            "• Auto-detection of terminal emulator (alacritty, kitty, xterm, gnome-terminal...).\n"
+            "• Double-click on a package shows detailed info (pacman -Si / flatpak info).\n"
+            "• Confirmation dialog before installing or removing packages.\n"
+            "• Badge showing pending system update count on the Update button.\n"
+            "• Search history for the last 10 queries with autocomplete.\n"
+        },
+        {
+            "v0.0.8-stable", "23 april 2026",
             "• boton de discord añadido.\n",
             "• added discord toggle.\n"
         },
@@ -1783,14 +2103,14 @@ static void on_changelog_clicked(GtkWidget *w, gpointer d) {
 static void on_update_sys(GtkWidget *w, gpointer d) {
     GString *script = g_string_new("sudo pacman -Syu");
     gchar **no_names = g_new0(gchar *, 1);
-    run_in_alacritty(script, 0, no_names);
+    run_in_terminal(script, 0, no_names);
     g_string_free(script, TRUE);
 }
 
 static void on_update_all(GtkWidget *w, gpointer d) {
     GString *script = g_string_new("sudo pacman -Syu && yay -Syu && flatpak update");
     gchar **no_names = g_new0(gchar *, 1);
-    run_in_alacritty(script, 0, no_names);
+    run_in_terminal(script, 0, no_names);
     g_string_free(script, TRUE);
 }
 
@@ -1900,6 +2220,20 @@ static void apply_lang(void) {
     gtk_button_set_label(GTK_BUTTON(g_inst_select_all_btn), T(STR_BTN_SELECT_ALL_PAGE));
     gtk_button_set_label(GTK_BUTTON(g_options_btn), "⋮");
     gtk_widget_set_tooltip_text(g_options_btn, T(STR_OPTIONS_MENU));
+
+    if (g_inst_filter_entry)
+        gtk_entry_set_placeholder_text(GTK_ENTRY(g_inst_filter_entry), T(STR_FILTER_PLACEHOLDER));
+
+    if (g_btn_update_sys) {
+        if (g_sys_update_count > 0) {
+            char lbl[64];
+            snprintf(lbl, sizeof(lbl), T(STR_SYS_UPDATES_BADGE), g_sys_update_count);
+            gtk_button_set_label(GTK_BUTTON(g_btn_update_sys), lbl);
+        } else {
+            gtk_button_set_label(GTK_BUTTON(g_btn_update_sys), T(STR_BTN_UPDATE_SYS));
+        }
+    }
+    gtk_button_set_label(GTK_BUTTON(g_btn_update_all), T(STR_BTN_UPDATE_ALL));
 
     GtkWidget *tab_label = gtk_label_new(T(STR_TAB_SEARCH));
     gtk_notebook_set_tab_label(GTK_NOTEBOOK(g_notebook), gtk_notebook_get_nth_page(GTK_NOTEBOOK(g_notebook), 0), tab_label);
@@ -2031,6 +2365,15 @@ static void build_ui(void) {
     g_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_entry), T(STR_PLACEHOLDER));
     g_signal_connect(g_entry, "activate", G_CALLBACK(on_entry_activate), NULL);
+    if (g_hist_store) {
+        GtkEntryCompletion *comp = gtk_entry_completion_new();
+        gtk_entry_completion_set_model(comp, GTK_TREE_MODEL(g_hist_store));
+        gtk_entry_completion_set_text_column(comp, 0);
+        gtk_entry_completion_set_minimum_key_length(comp, 1);
+        gtk_entry_completion_set_inline_completion(comp, TRUE);
+        gtk_entry_set_completion(GTK_ENTRY(g_entry), comp);
+        g_object_unref(comp);
+    }
     gtk_box_pack_start(GTK_BOX(hbox_top), g_entry, TRUE, TRUE, 0);
 
     g_btn_search = gtk_button_new_with_label(T(STR_BTN_SEARCH));
@@ -2184,6 +2527,18 @@ static void build_ui(void) {
     g_inst_select_all_btn = gtk_button_new_with_label(T(STR_BTN_SELECT_ALL_PAGE));
     g_signal_connect(g_inst_select_all_btn, "clicked", G_CALLBACK(on_installed_select_all), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_inst_top), g_inst_select_all_btn, FALSE, FALSE, 0);
+
+    g_inst_filter_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_inst_filter_entry), T(STR_FILTER_PLACEHOLDER));
+    gtk_entry_set_icon_from_icon_name(GTK_ENTRY(g_inst_filter_entry),
+        GTK_ENTRY_ICON_PRIMARY, "edit-find-symbolic");
+    gtk_entry_set_icon_from_icon_name(GTK_ENTRY(g_inst_filter_entry),
+        GTK_ENTRY_ICON_SECONDARY, "edit-clear-symbolic");
+    g_signal_connect(g_inst_filter_entry, "changed",
+        G_CALLBACK(on_inst_filter_changed), NULL);
+    g_signal_connect(g_inst_filter_entry, "icon-press",
+        G_CALLBACK(gtk_entry_set_text), (gpointer)"");
+    gtk_box_pack_start(GTK_BOX(hbox_inst_top), g_inst_filter_entry, TRUE, TRUE, 4);
 
     g_inst_spinner = gtk_spinner_new();
     gtk_box_pack_end(GTK_BOX(hbox_inst_top), g_inst_spinner, FALSE, FALSE, 4);
@@ -2352,6 +2707,7 @@ int main(int argc, char *argv[]) {
     load_lang_pref();
     load_dark_pref();
     load_show_whats_new_pref();
+    load_search_history();
 
     g_all_pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
 
@@ -2367,6 +2723,11 @@ int main(int argc, char *argv[]) {
     gtk_widget_show_all(g_win);
 
     on_installed_refresh(NULL, NULL);
+
+    {
+        GThread *t = g_thread_new("sys-updates", check_sys_updates_thread, NULL);
+        g_thread_unref(t);
+    }
 
     check_and_show_whats_new();
 
