@@ -12,7 +12,7 @@
 #define MAX_CMD     512
 #define MAX_LINE   1024
 
-#define APP_VERSION "7.0.0-stable"
+#define APP_VERSION "0.0.7-stable"
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
 static LangID g_lang = LANG_EN;
@@ -1182,7 +1182,7 @@ static void show_changelog_dialog(GtkWidget *parent) {
     static const Entry entries[] = {
 
             {
-            "v7.0.0-stable", "22 april 2026",
+            "v0.0.7-stable", "22 april 2026",
             "• Modo oscuro: nuevo toggle On/Off en la barra superior para activar/desactivar el tema oscuro. La preferencia se guarda y se restaura al reiniciar.\n",
             "• Dark mode: new On/Off toggle button in the top bar to enable/disable the dark theme. Preference is saved and restored on restart.\n"
         },
