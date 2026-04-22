@@ -13,7 +13,7 @@
 #define MAX_CMD     512
 #define MAX_LINE   1024
 
-#define APP_VERSION "0.0.7-stable"
+#define APP_VERSION "0.0.8-stable"
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
 static LangID g_lang = LANG_EN;
@@ -1696,6 +1696,12 @@ static void show_changelog_dialog(GtkWidget *parent, gboolean only_latest) {
 
     typedef struct { const char *ver; const char *date; const char *body_es; const char *body_en; } Entry;
     static const Entry entries[] = {
+
+        {
+            "v0.0.8-stable", "21 april 2026",
+            "• boton de discord añadido.\n",
+            "• added discord toggle.\n"
+        },
         {
             "v0.0.7-stable", "22 april 2026",
             "• Modo oscuro: nuevo toggle On/Off.\n"
@@ -1956,6 +1962,58 @@ static void check_and_show_whats_new(void) {
         }
     }
     g_free(version_path);
+}
+
+static const char DISCORD_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 127.14 96.36\">"
+    "<path fill=\"white\" d=\"M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,"
+    "6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,"
+    "32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,"
+    "68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,"
+    "2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C"
+    "129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S"
+    "54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S"
+    "96.23,46,96.12,53,91.08,65.69,84.69,65.69Z\"/>"
+    "</svg>";
+
+static const char DISCORD_BTN_CSS[] =
+    "#discord_btn {"
+    "  background-color: #5865F2;"
+    "  background-image: none;"
+    "  color: white;"
+    "  border-color: #4752c4;"
+    "  border-radius: 4px;"
+    "  padding: 0 8px;"
+    "}"
+    "#discord_btn:hover {"
+    "  background-color: #4752c4;"
+    "  background-image: none;"
+    "}"
+    "#discord_btn:active {"
+    "  background-color: #3c45a5;"
+    "  background-image: none;"
+    "}"
+    "#discord_btn label {"
+    "  color: white;"
+    "}";
+
+static GdkPixbuf *create_discord_pixbuf(int size) {
+    GInputStream *stream = g_memory_input_stream_new_from_data(
+        DISCORD_SVG, (gssize)strlen(DISCORD_SVG), NULL);
+    GError *err = NULL;
+    GdkPixbuf *pb = gdk_pixbuf_new_from_stream_at_scale(
+        stream, size, size, TRUE, NULL, &err);
+    g_object_unref(stream);
+    if (err) {
+        g_error_free(err);
+        return NULL;
+    }
+    return pb;
+}
+
+static void on_discord_clicked(GtkWidget *btn, gpointer data) {
+    (void)btn; (void)data;
+    gtk_show_uri(NULL, "https://discord.gg/esSm9wEcHQ", GDK_CURRENT_TIME, NULL);
 }
 
 static void build_ui(void) {
@@ -2234,6 +2292,36 @@ static void build_ui(void) {
     gtk_widget_set_opacity(g_ver_label, 0.35);
     gtk_widget_set_tooltip_text(g_ver_label, T(STR_BTN_CHANGELOG));
     gtk_box_pack_start(GTK_BOX(hbox_bot), g_ver_label, FALSE, FALSE, 4);
+
+    {
+        GtkCssProvider *discord_css = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(discord_css, DISCORD_BTN_CSS, -1, NULL);
+        gtk_style_context_add_provider_for_screen(
+            gdk_screen_get_default(),
+            GTK_STYLE_PROVIDER(discord_css),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        g_object_unref(discord_css);
+
+        GtkWidget *btn_discord = gtk_button_new();
+        gtk_widget_set_name(btn_discord, "discord_btn");
+        gtk_widget_set_tooltip_text(btn_discord, "Join our Discord — discord.gg/esSm9wEcHQ");
+        g_signal_connect(btn_discord, "clicked", G_CALLBACK(on_discord_clicked), NULL);
+
+        GtkWidget *discord_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+        gtk_widget_set_valign(discord_hbox, GTK_ALIGN_CENTER);
+
+        GdkPixbuf *discord_pb = create_discord_pixbuf(16);
+        if (discord_pb) {
+            GtkWidget *discord_img = gtk_image_new_from_pixbuf(discord_pb);
+            g_object_unref(discord_pb);
+            gtk_box_pack_start(GTK_BOX(discord_hbox), discord_img, FALSE, FALSE, 0);
+        }
+
+        GtkWidget *discord_lbl = gtk_label_new("Discord");
+        gtk_box_pack_start(GTK_BOX(discord_hbox), discord_lbl, FALSE, FALSE, 0);
+        gtk_container_add(GTK_CONTAINER(btn_discord), discord_hbox);
+        gtk_box_pack_start(GTK_BOX(hbox_bot), btn_discord, FALSE, FALSE, 0);
+    }
 
     g_btn_remove = gtk_button_new_with_label(T(STR_BTN_REMOVE));
     gtk_widget_set_tooltip_text(g_btn_remove, T(STR_TOOLTIP_REMOVE));
