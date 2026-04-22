@@ -186,9 +186,90 @@ static void load_lang_pref(void) {
     g_free(path);
 }
 
-static gboolean  g_dark_mode     = FALSE;
-static GtkWidget *g_btn_dark_mode = NULL;
+/* ── dark mode globals (forward-declared so the helpers below can use them) */
+static gboolean       g_dark_mode      = FALSE;
+static GtkWidget     *g_btn_dark_mode  = NULL;
+static GtkCssProvider *g_css_dark      = NULL;
 
+static const char DARK_CSS[] =
+    "window, box, scrolledwindow, viewport {"
+    "  background-color: #1e1e2e;"
+    "  color: #cdd6f4;"
+    "}"
+    "entry {"
+    "  background-color: #313244;"
+    "  color: #cdd6f4;"
+    "  border-color: #45475a;"
+    "  caret-color: #cdd6f4;"
+    "}"
+    "entry:focus {"
+    "  border-color: #89b4fa;"
+    "}"
+    "button {"
+    "  background-color: #313244;"
+    "  background-image: none;"
+    "  color: #cdd6f4;"
+    "  border-color: #45475a;"
+    "  box-shadow: none;"
+    "}"
+    "button:hover {"
+    "  background-color: #45475a;"
+    "}"
+    "button:active, button:checked {"
+    "  background-color: #89b4fa;"
+    "  color: #1e1e2e;"
+    "}"
+    "checkbutton, checkbutton label {"
+    "  color: #cdd6f4;"
+    "}"
+    "combobox, combobox * {"
+    "  background-color: #313244;"
+    "  color: #cdd6f4;"
+    "  border-color: #45475a;"
+    "}"
+    "treeview {"
+    "  background-color: #181825;"
+    "  color: #cdd6f4;"
+    "}"
+    "treeview:selected {"
+    "  background-color: #89b4fa;"
+    "  color: #1e1e2e;"
+    "}"
+    "treeview header button {"
+    "  background-color: #1e1e2e;"
+    "  background-image: none;"
+    "  color: #a6adc8;"
+    "  border-color: #45475a;"
+    "}"
+    "label {"
+    "  color: #cdd6f4;"
+    "}"
+    "scrollbar {"
+    "  background-color: #1e1e2e;"
+    "}"
+    "scrollbar slider {"
+    "  background-color: #45475a;"
+    "  min-width: 8px;"
+    "  min-height: 8px;"
+    "}"
+    "scrollbar slider:hover {"
+    "  background-color: #585b70;"
+    "}"
+    "textview, textview text {"
+    "  background-color: #181825;"
+    "  color: #cdd6f4;"
+    "}"
+    "separator {"
+    "  background-color: #45475a;"
+    "}"
+    "dialog {"
+    "  background-color: #1e1e2e;"
+    "}"
+    "spinner {"
+    "  color: #89b4fa;"
+    "}";
+
+/* ── dark mode persistence ─────────────────────────────────────────── */
 
 static char *dark_config_path(void) {
     const char *home = g_get_home_dir();
@@ -221,13 +302,29 @@ static void load_dark_pref(void) {
 }
 
 static void apply_dark_mode(void) {
-    GtkSettings *settings = gtk_settings_get_default();
-    g_object_set(settings,
-        "gtk-application-prefer-dark-theme", g_dark_mode,
-        NULL);
-    if (g_btn_dark_mode)
+    GdkScreen *screen = gdk_screen_get_default();
+
+    if (g_dark_mode) {
+        if (!g_css_dark) {
+            g_css_dark = gtk_css_provider_new();
+            gtk_css_provider_load_from_data(g_css_dark, DARK_CSS, -1, NULL);
+        }
+        gtk_style_context_add_provider_for_screen(screen,
+            GTK_STYLE_PROVIDER(g_css_dark),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    } else {
+        if (g_css_dark) {
+            gtk_style_context_remove_provider_for_screen(screen,
+                GTK_STYLE_PROVIDER(g_css_dark));
+        }
+    }
+
+    if (g_btn_dark_mode) {
         gtk_toggle_button_set_active(
             GTK_TOGGLE_BUTTON(g_btn_dark_mode), g_dark_mode);
+        gtk_button_set_label(GTK_BUTTON(g_btn_dark_mode),
+            g_dark_mode ? "On" : "Off");
+    }
 }
 
 static void on_dark_mode_toggled(GtkToggleButton *btn, gpointer d) {
@@ -259,6 +356,7 @@ static GtkWidget         *g_btn_update;
 static GtkWidget         *g_btn_changelog;
 static GtkWidget         *g_btn_update_sys;
 static GtkWidget         *g_btn_update_all;
+/* g_btn_dark_mode and g_dark_mode declared earlier */
 static GtkWidget         *g_ver_label;
 static GtkWidget         *g_status;
 static GtkWidget         *g_tree;
@@ -1088,8 +1186,8 @@ static void show_changelog_dialog(GtkWidget *parent) {
 
             {
             "v7.0.0-stable", "22 april 2026",
-            "• Modo oscuro: nuevo toggle (🌙) en la barra superior para activar/desactivar el tema oscuro. La preferencia se guarda y se restaura al reiniciar.\n",
-            "• Dark mode: new toggle button (🌙) in the top bar to enable/disable the dark theme. Preference is saved and restored on restart.\n"
+            "• Modo oscuro: nuevo toggle On/Off en la barra superior para activar/desactivar el tema oscuro. La preferencia se guarda y se restaura al reiniciar.\n",
+            "• Dark mode: new On/Off toggle button in the top bar to enable/disable the dark theme. Preference is saved and restored on restart.\n"
         },
         {
             "v0.0.6-stable", "21 april 2026",
@@ -1208,7 +1306,7 @@ static void build_ui(void) {
     g_signal_connect(g_btn_changelog, "clicked", G_CALLBACK(on_changelog_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_top), g_btn_changelog, FALSE, FALSE, 0);
 
-    g_btn_dark_mode = gtk_toggle_button_new_with_label("🌙");
+    g_btn_dark_mode = gtk_toggle_button_new_with_label(g_dark_mode ? "On" : "Off");
     gtk_widget_set_tooltip_text(g_btn_dark_mode, T(STR_TOOLTIP_DARK_MODE));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_btn_dark_mode), g_dark_mode);
     g_signal_connect(g_btn_dark_mode, "toggled", G_CALLBACK(on_dark_mode_toggled), NULL);
