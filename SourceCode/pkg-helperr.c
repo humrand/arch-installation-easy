@@ -12,7 +12,7 @@
 #define MAX_CMD     512
 #define MAX_LINE   1024
 
-#define APP_VERSION "0.0.7-stable"
+#define APP_VERSION "7.0.0-stable"
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
 static LangID g_lang = LANG_EN;
@@ -186,6 +186,7 @@ static void load_lang_pref(void) {
     g_free(path);
 }
 
+/* ── dark mode globals (forward-declared so the helpers below can use them) */
 static gboolean       g_dark_mode      = FALSE;
 static GtkWidget     *g_btn_dark_mode  = NULL;
 static GtkCssProvider *g_css_dark      = NULL;
@@ -268,6 +269,7 @@ static const char DARK_CSS[] =
     "  color: #89b4fa;"
     "}";
 
+/* ── dark mode persistence ─────────────────────────────────────────── */
 
 static char *dark_config_path(void) {
     const char *home = g_get_home_dir();
@@ -354,7 +356,15 @@ static GtkWidget         *g_btn_update;
 static GtkWidget         *g_btn_changelog;
 static GtkWidget         *g_btn_update_sys;
 static GtkWidget         *g_btn_update_all;
+/* g_btn_dark_mode and g_dark_mode declared earlier */
 static GtkWidget         *g_ver_label;
+/* ── pagination ─────────────────────────────────────────────────────── */
+static GArray            *g_all_pkgs     = NULL;
+static gint               g_current_page = 0;
+#define PAGE_SIZE         20
+static GtkWidget         *g_btn_prev     = NULL;
+static GtkWidget         *g_btn_next     = NULL;
+static GtkWidget         *g_page_label   = NULL;
 static GtkWidget         *g_status;
 static GtkWidget         *g_tree;
 static GtkWidget         *g_spinner;
@@ -538,14 +548,25 @@ static void parse_flatpak_output(FILE *fp, GArray *results) {
 }
 
 
-static gboolean batch_add_cb(gpointer data) {
-    BatchCtx *ctx = data;
+static void render_page(gint page) {
+    if (!g_all_pkgs) return;
+
+    gint total       = (gint)g_all_pkgs->len;
+    gint total_pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (total_pages < 1) total_pages = 1;
+    if (page < 0) page = 0;
+    if (page >= total_pages) page = total_pages - 1;
+    g_current_page = page;
 
     gtk_widget_freeze_child_notify(g_tree);
     g_object_freeze_notify(G_OBJECT(g_store));
+    gtk_list_store_clear(g_store);
 
-    for (guint i = 0; i < ctx->pkgs->len; i++) {
-        Pkg *p = &g_array_index(ctx->pkgs, Pkg, i);
+    gint start = page * PAGE_SIZE;
+    gint end   = MIN(start + PAGE_SIZE, total);
+
+    for (gint i = start; i < end; i++) {
+        Pkg *p = &g_array_index(g_all_pkgs, Pkg, i);
         GtkTreeIter it;
         gtk_list_store_append(g_store, &it);
         gtk_list_store_set(g_store, &it,
@@ -564,7 +585,36 @@ static gboolean batch_add_cb(gpointer data) {
     g_object_thaw_notify(G_OBJECT(g_store));
     gtk_widget_thaw_child_notify(g_tree);
 
+    gboolean show_pag = (total > PAGE_SIZE);
+    gtk_widget_set_visible(g_btn_prev,   show_pag);
+    gtk_widget_set_visible(g_btn_next,   show_pag);
+    gtk_widget_set_visible(g_page_label, show_pag);
+
+    if (show_pag) {
+        char pg_txt[32];
+        snprintf(pg_txt, sizeof(pg_txt), "%d / %d", page + 1, total_pages);
+        gtk_label_set_text(GTK_LABEL(g_page_label), pg_txt);
+        gtk_widget_set_sensitive(g_btn_prev, page > 0);
+        gtk_widget_set_sensitive(g_btn_next, page < total_pages - 1);
+    }
+}
+
+static void on_page_prev(GtkWidget *w, gpointer d) { render_page(g_current_page - 1); }
+static void on_page_next(GtkWidget *w, gpointer d) { render_page(g_current_page + 1); }
+
+static gboolean batch_add_cb(gpointer data) {
+    BatchCtx *ctx = data;
+
+    /* Accumulate all results into g_all_pkgs */
+    for (guint i = 0; i < ctx->pkgs->len; i++) {
+        Pkg p = g_array_index(ctx->pkgs, Pkg, i);
+        g_array_append_val(g_all_pkgs, p);
+    }
+
     if (ctx->is_last) {
+        /* All batches arrived — render first page */
+        render_page(0);
+
         char status[128];
         if (ctx->grand_total == 0)
             snprintf(status, sizeof(status), T(STR_NO_RESULTS), ctx->query);
@@ -836,6 +886,12 @@ static void on_search(GtkWidget *w, gpointer d) {
     gtk_widget_set_sensitive(g_btn_install, FALSE);
     gtk_widget_set_sensitive(g_btn_remove,  FALSE);
     gtk_list_store_clear(g_store);
+    if (g_all_pkgs) g_array_free(g_all_pkgs, TRUE);
+    g_all_pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
+    g_current_page = 0;
+    gtk_widget_set_visible(g_btn_prev,   FALSE);
+    gtk_widget_set_visible(g_btn_next,   FALSE);
+    gtk_widget_set_visible(g_page_label, FALSE);
     gtk_label_set_text(GTK_LABEL(g_status), T(STR_SEARCHING));
     gtk_spinner_start(GTK_SPINNER(g_spinner));
     SearchCtx *ctx   = g_new0(SearchCtx, 1);
@@ -1182,7 +1238,7 @@ static void show_changelog_dialog(GtkWidget *parent) {
     static const Entry entries[] = {
 
             {
-            "v0.0.7-stable", "22 april 2026",
+            "v7.0.0-stable", "22 april 2026",
             "• Modo oscuro: nuevo toggle On/Off en la barra superior para activar/desactivar el tema oscuro. La preferencia se guarda y se restaura al reiniciar.\n",
             "• Dark mode: new On/Off toggle button in the top bar to enable/disable the dark theme. Preference is saved and restored on restart.\n"
         },
@@ -1393,6 +1449,30 @@ static void build_ui(void) {
     gtk_container_add(GTK_CONTAINER(scroll), g_tree);
     gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
 
+    /* ── pagination bar ─────────────────────────────────────────────── */
+    GtkWidget *hbox_pag = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_set_halign(hbox_pag, GTK_ALIGN_CENTER);
+
+    g_btn_prev = gtk_button_new_with_label("◀  Anterior");
+    g_signal_connect(g_btn_prev, "clicked", G_CALLBACK(on_page_prev), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox_pag), g_btn_prev, FALSE, FALSE, 0);
+
+    g_page_label = gtk_label_new("1 / 1");
+    gtk_widget_set_margin_start(g_page_label, 8);
+    gtk_widget_set_margin_end(g_page_label, 8);
+    gtk_box_pack_start(GTK_BOX(hbox_pag), g_page_label, FALSE, FALSE, 0);
+
+    g_btn_next = gtk_button_new_with_label("Siguiente  ▶");
+    g_signal_connect(g_btn_next, "clicked", G_CALLBACK(on_page_next), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox_pag), g_btn_next, FALSE, FALSE, 0);
+
+    gtk_widget_set_visible(g_btn_prev,   FALSE);
+    gtk_widget_set_visible(g_btn_next,   FALSE);
+    gtk_widget_set_visible(g_page_label, FALSE);
+
+    gtk_box_pack_start(GTK_BOX(vbox), hbox_pag, FALSE, FALSE, 4);
+    /* ───────────────────────────────────────────────────────────────── */
+
     gtk_box_pack_start(GTK_BOX(vbox),
         gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
 
@@ -1435,6 +1515,8 @@ int main(int argc, char *argv[]) {
 
     load_lang_pref();   
     load_dark_pref();
+
+    g_all_pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
 
     build_ui();
     apply_dark_mode();
