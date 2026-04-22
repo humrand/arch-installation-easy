@@ -186,7 +186,6 @@ static void load_lang_pref(void) {
     g_free(path);
 }
 
-/* ── dark mode globals (forward-declared so the helpers below can use them) */
 static gboolean       g_dark_mode      = FALSE;
 static GtkWidget     *g_btn_dark_mode  = NULL;
 static GtkCssProvider *g_css_dark      = NULL;
@@ -269,7 +268,6 @@ static const char DARK_CSS[] =
     "  color: #89b4fa;"
     "}";
 
-/* ── dark mode persistence ─────────────────────────────────────────── */
 
 static char *dark_config_path(void) {
     const char *home = g_get_home_dir();
@@ -356,7 +354,6 @@ static GtkWidget         *g_btn_update;
 static GtkWidget         *g_btn_changelog;
 static GtkWidget         *g_btn_update_sys;
 static GtkWidget         *g_btn_update_all;
-/* g_btn_dark_mode and g_dark_mode declared earlier */
 static GtkWidget         *g_ver_label;
 static GtkWidget         *g_status;
 static GtkWidget         *g_tree;
