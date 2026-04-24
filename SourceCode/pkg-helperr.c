@@ -83,6 +83,16 @@ typedef enum {
     STR_PKG_INFO_TITLE,
     STR_NO_TERMINAL,
     STR_SYS_UPDATES_BADGE,
+    STR_TAB_ORPHANS,
+    STR_BTN_REMOVE_ORPHANS,
+    STR_TOOLTIP_REMOVE_ORPHANS,
+    STR_ORPHANS_LOADING,
+    STR_ORPHANS_NONE,
+    STR_ORPHANS_FOUND,
+    STR_BTN_CLEAN_CACHE,
+    STR_TOOLTIP_CLEAN_CACHE,
+    STR_COL_SIZE,
+    STR_DEPS_WARNING,
     N_STRINGS
 } StrID;
 
@@ -215,6 +225,26 @@ static const char *g_strings[N_STRINGS][2] = {
       "No compatible terminal emulator found."          },
     { "Actualizar sistema (%d)",
       "Update system (%d)"                              },
+    { "Huérfanos",
+      "Orphans"                                         },
+    { "Eliminar huérfanos",
+      "Remove orphans"                                  },
+    { "pacman -Rns $(pacman -Qdtq)",
+      "pacman -Rns $(pacman -Qdtq)"                    },
+    { "Cargando paquetes huérfanos...",
+      "Loading orphan packages..."                      },
+    { "No hay paquetes huérfanos.",
+      "No orphan packages found."                       },
+    { "%d paquete(s) huérfano(s)",
+      "%d orphan package(s)"                            },
+    { "Limpiar caché",
+      "Clean cache"                                     },
+    { "paccache -r (elimina versiones antiguas)",
+      "paccache -r (removes old versions)"              },
+    { "Tamaño",
+      "Size"                                            },
+    { "⚠ Dependencias inversas detectadas:\n%s\nEstos paquetes dependen de lo que vas a eliminar.\n¿Continuar de todas formas?",
+      "⚠ Reverse dependencies detected:\n%s\nThese packages depend on what you are removing.\nContinue anyway?"  },
 };
 
 #define T(id) g_strings[(id)][g_lang]
@@ -436,6 +466,7 @@ enum {
     COL_CMD,
     COL_REMOVE_CMD,
     COL_INSTALLED,
+    COL_SIZE,
     N_COLS
 };
 
@@ -488,12 +519,66 @@ static char               g_inst_filter[256]   = {0};
 static GtkWidget         *g_inst_filter_entry  = NULL;
 static GArray            *g_installed_filtered = NULL;
 
+static GtkWidget         *g_orphan_tree        = NULL;
+static GtkListStore      *g_orphan_store       = NULL;
+static GtkWidget         *g_orphan_spinner     = NULL;
+static GtkWidget         *g_orphan_remove_btn  = NULL;
+static GtkWidget         *g_orphan_status_lbl  = NULL;
+static GtkWidget         *g_btn_clean_cache    = NULL;
+
+static volatile gint      g_search_generation  = 0;
+
+static GtkTreeViewColumn *g_inst_col_size_w    = NULL;
+
 static GtkListStore      *g_hist_store         = NULL;
 #define HISTORY_MAX 10
 
 static gint               g_sys_update_count   = -1;
 
 static void apply_lang(void);
+
+
+typedef struct { const char *key; GtkTreeViewColumn **col; } ColDef;
+
+static void save_column_widths(void) {
+    char *path = config_path("columns");
+    char *dir  = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    FILE *fp = fopen(path, "w");
+    if (!fp) { g_free(path); return; }
+    ColDef defs[] = {
+        { "inst_size", &g_inst_col_size_w },
+        { NULL,         NULL              }
+    };
+    for (int i = 0; defs[i].key; i++) {
+        if (*defs[i].col) {
+            gint w = gtk_tree_view_column_get_width(*defs[i].col);
+            if (w > 0) fprintf(fp, "%s=%d\n", defs[i].key, w);
+        }
+    }
+    fclose(fp);
+    g_free(path);
+}
+
+static void load_column_widths(void) {
+    char *path = config_path("columns");
+    FILE *fp = fopen(path, "r");
+    if (!fp) { g_free(path); return; }
+    char line[128];
+    while (fgets(line, sizeof(line), fp)) {
+        char *nl = strchr(line, '\n'); if (nl) *nl = '\0';
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        int w = atoi(eq + 1);
+        if (w <= 0) continue;
+        if (strcmp(line, "inst_size") == 0 && g_inst_col_size_w)
+            gtk_tree_view_column_set_fixed_width(g_inst_col_size_w, w);
+    }
+    fclose(fp);
+    g_free(path);
+}
 
 typedef struct {
     char     source[16];
@@ -502,6 +587,7 @@ typedef struct {
     char     desc[MAX_DESC];
     char     cmd[MAX_CMD];
     char     remove_cmd[MAX_CMD];
+    char     size[32];
     gboolean installed;
 } Pkg;
 
@@ -510,6 +596,7 @@ typedef struct {
     gboolean use_pacman;
     gboolean use_aur;
     gboolean use_flatpak;
+    gint     generation;
 } SearchCtx;
 
 typedef struct {
@@ -674,6 +761,7 @@ static void store_append_pkg(Pkg *p) {
         COL_CMD,        p->cmd,
         COL_REMOVE_CMD, p->remove_cmd,
         COL_INSTALLED,  p->installed,
+        COL_SIZE,       p->size,
         -1);
 }
 
@@ -754,6 +842,7 @@ static void inst_store_append_pkg(GtkListStore *store, Pkg *p) {
         COL_CMD,        p->cmd,
         COL_REMOVE_CMD, p->remove_cmd,
         COL_INSTALLED,  TRUE,
+        COL_SIZE,       p->size,
         -1);
 }
 
@@ -906,18 +995,23 @@ static gpointer load_installed_thread(gpointer data) {
             snprintf(p.remove_cmd, sizeof(p.remove_cmd), "sudo pacman -Rns %s", p.name);
             p.installed = TRUE;
             char qcmd[512];
-            snprintf(qcmd, sizeof(qcmd), "pacman -Qi '%s' 2>/dev/null | grep -i description | head -1", p.name);
+            snprintf(qcmd, sizeof(qcmd), "pacman -Qi '%s' 2>/dev/null | grep -iE '^(Description|Installed Size)' | head -2", p.name);
             FILE *fp2 = popen(qcmd, "r");
             if (fp2) {
-                char desc[512] = "";
-                fgets(desc, sizeof(desc), fp2);
-                pclose(fp2);
-                char *colon = strchr(desc, ':');
-                if (colon) {
-                    char *d = colon+1;
-                    trim(d);
-                    strncpy(p.desc, d, sizeof(p.desc)-1);
+                char desc_line[512] = "";
+                char size_line[512] = "";
+                char tmp[512];
+                while (fgets(tmp, sizeof(tmp), fp2)) {
+                    if (strncasecmp(tmp, "Description", 11) == 0 && !desc_line[0])
+                        strncpy(desc_line, tmp, sizeof(desc_line)-1);
+                    else if (strncasecmp(tmp, "Installed Size", 14) == 0 && !size_line[0])
+                        strncpy(size_line, tmp, sizeof(size_line)-1);
                 }
+                pclose(fp2);
+                char *colon = strchr(desc_line, ':');
+                if (colon) { char *d = colon+1; trim(d); strncpy(p.desc, d, sizeof(p.desc)-1); }
+                colon = strchr(size_line, ':');
+                if (colon) { char *s = colon+1; trim(s); strncpy(p.size, s, sizeof(p.size)-1); }
             }
             g_array_append_val(pkgs, p);
             count++;
@@ -1085,6 +1179,11 @@ static gpointer search_thread(gpointer data) {
     char cmd[512]; FILE *fp;
     guint grand_total = 0;
 
+    if (ctx->generation != g_atomic_int_get(&g_search_generation)) {
+        g_free(ctx);
+        return NULL;
+    }
+
     GHashTable *pacman_ht  = build_pacman_installed();
     GHashTable *flatpak_ht = build_flatpak_installed();
 
@@ -1101,7 +1200,9 @@ static gpointer search_thread(gpointer data) {
 
     if (ctx->use_pacman) {
         GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
-        snprintf(cmd, sizeof(cmd), "pacman -Ss '%s' 2>/dev/null", ctx->query);
+        gchar *quoted = g_shell_quote(ctx->query);
+        snprintf(cmd, sizeof(cmd), "pacman -Ss %s 2>/dev/null", quoted);
+        g_free(quoted);
         fp = popen(cmd, "r");
         if (fp) { parse_pacman_output(fp, pkgs, "pacman", "sudo pacman -S"); pclose(fp); }
         filter_exact(pkgs, ctx->query);
@@ -1116,7 +1217,9 @@ static gpointer search_thread(gpointer data) {
 
     if (do_aur) {
         GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
-        snprintf(cmd, sizeof(cmd), "yay --color=never -Ss --aur '%s' 2>/dev/null", ctx->query);
+        gchar *quoted = g_shell_quote(ctx->query);
+        snprintf(cmd, sizeof(cmd), "yay --color=never -Ss --aur %s 2>/dev/null", quoted);
+        g_free(quoted);
         fp = popen(cmd, "r");
         if (fp) { parse_pacman_output(fp, pkgs, "aur", "yay -S"); pclose(fp); }
         filter_exact(pkgs, ctx->query);
@@ -1131,7 +1234,9 @@ static gpointer search_thread(gpointer data) {
 
     if (do_flatpak) {
         GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
-        snprintf(cmd, sizeof(cmd), "flatpak search '%s' 2>/dev/null", ctx->query);
+        gchar *quoted = g_shell_quote(ctx->query);
+        snprintf(cmd, sizeof(cmd), "flatpak search %s 2>/dev/null", quoted);
+        g_free(quoted);
         fp = popen(cmd, "r");
         if (fp) { parse_flatpak_output(fp, pkgs); pclose(fp); }
         filter_exact(pkgs, ctx->query);
@@ -1578,6 +1683,40 @@ static void on_remove(GtkWidget *w, gpointer d) {
     gchar **pkg_names = (gchar **)g_ptr_array_free(names, FALSE);
 
     {
+        GString *rdep_list = g_string_new("");
+        for (int i = 0; pkg_names[i]; i++) {
+            char dep_cmd[512];
+            snprintf(dep_cmd, sizeof(dep_cmd),
+                "pactree -r '%s' 2>/dev/null | grep -v '^%s$'", pkg_names[i], pkg_names[i]);
+            FILE *fp_dep = popen(dep_cmd, "r");
+            if (fp_dep) {
+                char dep_line[256];
+                while (fgets(dep_line, sizeof(dep_line), fp_dep)) {
+                    trim(dep_line);
+                    if (dep_line[0]) g_string_append_printf(rdep_list, "  %s\n", dep_line);
+                }
+                pclose(fp_dep);
+            }
+        }
+        if (rdep_list->len > 0) {
+            char warn_msg[4096];
+            snprintf(warn_msg, sizeof(warn_msg), T(STR_DEPS_WARNING), rdep_list->str);
+            GtkWidget *warn_dlg = gtk_message_dialog_new(GTK_WINDOW(g_win),
+                GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                GTK_MESSAGE_WARNING, GTK_BUTTONS_OK_CANCEL, "%s", warn_msg);
+            gint resp_warn = gtk_dialog_run(GTK_DIALOG(warn_dlg));
+            gtk_widget_destroy(warn_dlg);
+            if (resp_warn != GTK_RESPONSE_OK) {
+                g_string_free(rdep_list, TRUE);
+                g_strfreev(pkg_names);
+                g_string_free(script, TRUE);
+                return;
+            }
+        }
+        g_string_free(rdep_list, TRUE);
+    }
+
+    {
         GString *list = g_string_new("");
         for (int i = 0; pkg_names[i]; i++)
             g_string_append_printf(list, "  \342\200\242 %s\n", pkg_names[i]);
@@ -1702,6 +1841,7 @@ static void on_search(GtkWidget *w, gpointer d) {
     const char *query = gtk_entry_get_text(GTK_ENTRY(g_entry));
     if (!query || !query[0]) return;
     add_to_history(query);
+    g_atomic_int_inc(&g_search_generation);
     gtk_widget_set_sensitive(g_btn_search,  FALSE);
     gtk_widget_set_sensitive(g_btn_install, FALSE);
     gtk_widget_set_sensitive(g_btn_remove,  FALSE);
@@ -1719,6 +1859,7 @@ static void on_search(GtkWidget *w, gpointer d) {
     ctx->use_pacman  = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_chk_pacman));
     ctx->use_aur     = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_chk_aur));
     ctx->use_flatpak = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_chk_flatpak));
+    ctx->generation  = g_atomic_int_get(&g_search_generation);
     strncpy(ctx->query, query, sizeof(ctx->query)-1);
     GThread *t = g_thread_new("pkg-search", search_thread, ctx);
     g_thread_unref(t);
@@ -2239,6 +2380,17 @@ static void apply_lang(void) {
     gtk_notebook_set_tab_label(GTK_NOTEBOOK(g_notebook), gtk_notebook_get_nth_page(GTK_NOTEBOOK(g_notebook), 0), tab_label);
     tab_label = gtk_label_new(T(STR_TAB_INSTALLED));
     gtk_notebook_set_tab_label(GTK_NOTEBOOK(g_notebook), gtk_notebook_get_nth_page(GTK_NOTEBOOK(g_notebook), 1), tab_label);
+    tab_label = gtk_label_new(T(STR_TAB_ORPHANS));
+    gtk_notebook_set_tab_label(GTK_NOTEBOOK(g_notebook), gtk_notebook_get_nth_page(GTK_NOTEBOOK(g_notebook), 2), tab_label);
+
+    if (g_btn_clean_cache) {
+        gtk_button_set_label(GTK_BUTTON(g_btn_clean_cache), T(STR_BTN_CLEAN_CACHE));
+        gtk_widget_set_tooltip_text(g_btn_clean_cache, T(STR_TOOLTIP_CLEAN_CACHE));
+    }
+    if (g_orphan_remove_btn)
+        gtk_button_set_label(GTK_BUTTON(g_orphan_remove_btn), T(STR_BTN_REMOVE_ORPHANS));
+    if (g_inst_col_size_w)
+        gtk_tree_view_column_set_title(g_inst_col_size_w, T(STR_COL_SIZE));
 
     const char *cur = gtk_label_get_text(GTK_LABEL(g_status));
     if (strcmp(cur, g_strings[STR_STATUS_READY][LANG_ES]) == 0 ||
@@ -2267,6 +2419,7 @@ static gboolean on_window_destroy(GtkWidget *w, GdkEvent *event, gpointer d) {
     save_lang_pref();
     save_dark_pref();
     save_show_whats_new_pref();
+    save_column_widths();
     gtk_main_quit();
     return FALSE;
 }
@@ -2345,9 +2498,156 @@ static GdkPixbuf *create_discord_pixbuf(int size) {
     return pb;
 }
 
+
+typedef struct { GArray *pkgs; int count; } OrphanCtx;
+
+static gboolean orphan_load_done_cb(gpointer data) {
+    OrphanCtx *ctx = data;
+    gtk_list_store_clear(g_orphan_store);
+    for (guint i = 0; i < ctx->pkgs->len; i++) {
+        Pkg *p = &g_array_index(ctx->pkgs, Pkg, i);
+        GtkTreeIter it;
+        gtk_list_store_append(g_orphan_store, &it);
+        gtk_list_store_set(g_orphan_store, &it,
+            COL_CHECK,  FALSE,
+            COL_SOURCE, p->source,
+            COL_NAME,   p->name,
+            COL_VERSION,p->version,
+            COL_DESC,   p->desc,
+            COL_CMD,    p->cmd,
+            COL_REMOVE_CMD, p->remove_cmd,
+            COL_INSTALLED, TRUE,
+            COL_SIZE,   p->size,
+            -1);
+    }
+    char lbl[64];
+    if (ctx->count == 0)
+        gtk_label_set_text(GTK_LABEL(g_orphan_status_lbl), T(STR_ORPHANS_NONE));
+    else {
+        snprintf(lbl, sizeof(lbl), T(STR_ORPHANS_FOUND), ctx->count);
+        gtk_label_set_text(GTK_LABEL(g_orphan_status_lbl), lbl);
+    }
+    gtk_widget_set_sensitive(g_orphan_remove_btn, ctx->count > 0);
+    gtk_spinner_stop(GTK_SPINNER(g_orphan_spinner));
+    g_array_free(ctx->pkgs, TRUE);
+    g_free(ctx);
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer load_orphans_thread(gpointer data) {
+    (void)data;
+    GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
+    FILE *fp = popen("pacman -Qdtq 2>/dev/null", "r");
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp)) {
+            trim(line);
+            if (!line[0]) continue;
+            Pkg p = {0};
+            strncpy(p.source,  "pacman",          sizeof(p.source)-1);
+            strncpy(p.name,    line,               sizeof(p.name)-1);
+            char qcmd[512];
+            snprintf(qcmd, sizeof(qcmd),
+                "pacman -Qi '%s' 2>/dev/null | grep -iE '^(Version|Installed Size|Description)'",
+                p.name);
+            FILE *fp2 = popen(qcmd, "r");
+            if (fp2) {
+                char tmp[512];
+                while (fgets(tmp, sizeof(tmp), fp2)) {
+                    char *col = strchr(tmp, ':'); if (!col) continue;
+                    *col = '\0'; trim(tmp); char *val = col+1; trim(val);
+                    if (strcasecmp(tmp, "Version") == 0)
+                        strncpy(p.version, val, sizeof(p.version)-1);
+                    else if (strcasecmp(tmp, "Installed Size") == 0)
+                        strncpy(p.size, val, sizeof(p.size)-1);
+                    else if (strcasecmp(tmp, "Description") == 0)
+                        strncpy(p.desc, val, sizeof(p.desc)-1);
+                }
+                pclose(fp2);
+            }
+            snprintf(p.remove_cmd, sizeof(p.remove_cmd), "sudo pacman -Rns %s", p.name);
+            g_array_append_val(pkgs, p);
+        }
+        pclose(fp);
+    }
+    OrphanCtx *ctx = g_new0(OrphanCtx, 1);
+    ctx->pkgs  = pkgs;
+    ctx->count = (int)pkgs->len;
+    g_idle_add(orphan_load_done_cb, ctx);
+    return NULL;
+}
+
+static void on_orphan_refresh(GtkWidget *w, gpointer d) {
+    (void)w; (void)d;
+    gtk_list_store_clear(g_orphan_store);
+    gtk_label_set_text(GTK_LABEL(g_orphan_status_lbl), T(STR_ORPHANS_LOADING));
+    gtk_widget_set_sensitive(g_orphan_remove_btn, FALSE);
+    gtk_spinner_start(GTK_SPINNER(g_orphan_spinner));
+    GThread *t = g_thread_new("load-orphans", load_orphans_thread, NULL);
+    g_thread_unref(t);
+}
+
+static void on_orphan_remove(GtkWidget *w, gpointer d) {
+    (void)w; (void)d;
+    GtkTreeModel *model = GTK_TREE_MODEL(g_orphan_store);
+    GtkTreeIter iter;
+    GPtrArray *names = g_ptr_array_new_with_free_func(g_free);
+    GString   *script = g_string_new("sudo pacman -Rns");
+    gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
+    while (valid) {
+        gchar *nm = NULL;
+        gtk_tree_model_get(model, &iter, COL_NAME, &nm, -1);
+        if (nm) { g_string_append_printf(script, " %s", nm); g_ptr_array_add(names, nm); }
+        valid = gtk_tree_model_iter_next(model, &iter);
+    }
+    if (!names->len) { g_ptr_array_free(names, TRUE); g_string_free(script, TRUE); return; }
+    g_ptr_array_add(names, NULL);
+    gchar **pkg_names = (gchar **)g_ptr_array_free(names, FALSE);
+    gtk_widget_set_sensitive(g_orphan_remove_btn, FALSE);
+    run_in_terminal(script, -1, pkg_names);
+    g_string_free(script, TRUE);
+}
+
+
+static void on_clean_cache(GtkWidget *w, gpointer d) {
+    (void)w; (void)d;
+    GString *script = g_string_new(
+        "if which paccache >/dev/null 2>&1; then sudo paccache -r; "
+        "else sudo pacman -Sc; fi");
+    gchar **no_names = g_new0(gchar *, 1);
+    run_in_terminal(script, 0, no_names);
+    g_string_free(script, TRUE);
+}
+
 static void on_discord_clicked(GtkWidget *btn, gpointer data) {
     (void)btn; (void)data;
-    gtk_show_uri(NULL, "https://discord.gg/esSm9wEcHQ", GDK_CURRENT_TIME, NULL);
+    gtk_show_uri_on_window(GTK_WINDOW(g_win), "https://discord.gg/esSm9wEcHQ", GDK_CURRENT_TIME, NULL);
+}
+
+static gboolean on_window_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data) {
+    (void)widget; (void)data;
+    guint key  = event->keyval;
+    guint mods = event->state & gtk_accelerator_get_default_mod_mask();
+
+    if (key == GDK_KEY_f && mods == GDK_CONTROL_MASK) {
+        gtk_widget_grab_focus(g_entry);
+        return TRUE;
+    }
+    if (key == GDK_KEY_F5 && mods == 0) {
+        gint tab = gtk_notebook_get_current_page(GTK_NOTEBOOK(g_notebook));
+        if (tab == 1)
+            on_installed_refresh(NULL, NULL);
+        else if (tab == 2)
+            on_orphan_refresh(NULL, NULL);
+        return TRUE;
+    }
+    if (key == GDK_KEY_Escape && mods == 0) {
+        if (gtk_widget_has_focus(g_entry)) {
+            gtk_entry_set_text(GTK_ENTRY(g_entry), "");
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 static void build_ui(void) {
@@ -2356,6 +2656,7 @@ static void build_ui(void) {
     gtk_window_set_default_size(GTK_WINDOW(g_win), 920, 580);
     gtk_window_set_position(GTK_WINDOW(g_win), GTK_WIN_POS_CENTER);
     g_signal_connect(g_win, "delete-event", G_CALLBACK(on_window_destroy), NULL);
+    g_signal_connect(g_win, "key-press-event", G_CALLBACK(on_window_key_press), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
@@ -2433,7 +2734,8 @@ static void build_ui(void) {
         G_TYPE_STRING,
         G_TYPE_STRING,
         G_TYPE_STRING,
-        G_TYPE_BOOLEAN);
+        G_TYPE_BOOLEAN,
+        G_TYPE_STRING);
 
     g_tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(g_store));
     g_object_unref(g_store);
@@ -2554,7 +2856,8 @@ static void build_ui(void) {
         G_TYPE_STRING,
         G_TYPE_STRING,
         G_TYPE_STRING,
-        G_TYPE_BOOLEAN);
+        G_TYPE_BOOLEAN,
+        G_TYPE_STRING);
 
     g_inst_tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(g_inst_store));
     g_object_unref(g_inst_store);
@@ -2578,13 +2881,14 @@ static void build_ui(void) {
     }
 
     {
-        struct { int id; const char *title; int min_w; gboolean expand; } cols[] = {
-            { COL_SOURCE,  T(STR_COL_SOURCE),  80,  FALSE },
-            { COL_NAME,    T(STR_COL_NAME),    160, FALSE },
-            { COL_VERSION, T(STR_COL_VERSION), 90,  FALSE },
-            { COL_DESC,    T(STR_COL_DESC),    200, TRUE  },
+        struct { int id; const char *title; int min_w; gboolean expand; GtkTreeViewColumn **ref; } cols[] = {
+            { COL_SOURCE,  T(STR_COL_SOURCE),  80,  FALSE, NULL              },
+            { COL_NAME,    T(STR_COL_NAME),    160, FALSE, NULL              },
+            { COL_VERSION, T(STR_COL_VERSION), 90,  FALSE, NULL              },
+            { COL_SIZE,    T(STR_COL_SIZE),    90,  FALSE, &g_inst_col_size_w},
+            { COL_DESC,    T(STR_COL_DESC),    200, TRUE,  NULL              },
         };
-        for (int i=0; i<4; i++) {
+        for (int i=0; i<5; i++) {
             GtkCellRenderer *r = gtk_cell_renderer_text_new();
             GtkTreeViewColumn *c = gtk_tree_view_column_new_with_attributes(
                 cols[i].title, r, "text", cols[i].id, NULL);
@@ -2595,6 +2899,7 @@ static void build_ui(void) {
                 gtk_tree_view_column_set_expand(c, TRUE);
                 g_object_set(r, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
             }
+            if (cols[i].ref) *cols[i].ref = c;
             gtk_tree_view_append_column(GTK_TREE_VIEW(g_inst_tree), c);
         }
     }
@@ -2633,6 +2938,72 @@ static void build_ui(void) {
     gtk_notebook_append_page(GTK_NOTEBOOK(g_notebook), inst_tab,
                              gtk_label_new(T(STR_TAB_INSTALLED)));
 
+    {
+        GtkWidget *orp_tab = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        gtk_container_set_border_width(GTK_CONTAINER(orp_tab), 6);
+
+        GtkWidget *hbox_orp_top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        GtkWidget *orp_refresh_btn = gtk_button_new_with_label("↻");
+        gtk_widget_set_tooltip_text(orp_refresh_btn, T(STR_BTN_REFRESH_INSTALLED));
+        g_signal_connect(orp_refresh_btn, "clicked", G_CALLBACK(on_orphan_refresh), NULL);
+        gtk_box_pack_start(GTK_BOX(hbox_orp_top), orp_refresh_btn, FALSE, FALSE, 0);
+
+        g_orphan_remove_btn = gtk_button_new_with_label(T(STR_BTN_REMOVE_ORPHANS));
+        gtk_widget_set_tooltip_text(g_orphan_remove_btn, T(STR_TOOLTIP_REMOVE_ORPHANS));
+        gtk_widget_set_sensitive(g_orphan_remove_btn, FALSE);
+        g_signal_connect(g_orphan_remove_btn, "clicked", G_CALLBACK(on_orphan_remove), NULL);
+        gtk_box_pack_start(GTK_BOX(hbox_orp_top), g_orphan_remove_btn, FALSE, FALSE, 0);
+
+        g_orphan_status_lbl = gtk_label_new("");
+        gtk_widget_set_halign(g_orphan_status_lbl, GTK_ALIGN_START);
+        gtk_box_pack_start(GTK_BOX(hbox_orp_top), g_orphan_status_lbl, TRUE, TRUE, 8);
+
+        g_orphan_spinner = gtk_spinner_new();
+        gtk_box_pack_end(GTK_BOX(hbox_orp_top), g_orphan_spinner, FALSE, FALSE, 4);
+        gtk_box_pack_start(GTK_BOX(orp_tab), hbox_orp_top, FALSE, FALSE, 0);
+
+        g_orphan_store = gtk_list_store_new(N_COLS,
+            G_TYPE_BOOLEAN, G_TYPE_STRING, G_TYPE_STRING,
+            G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+            G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_STRING);
+
+        g_orphan_tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(g_orphan_store));
+        g_object_unref(g_orphan_store);
+        gtk_tree_view_set_activate_on_single_click(GTK_TREE_VIEW(g_orphan_tree), FALSE);
+        g_signal_connect(g_orphan_tree, "row-activated", G_CALLBACK(on_row_activated), g_orphan_store);
+
+        {
+            struct { int id; const char *title; int min_w; gboolean expand; } ocols[] = {
+                { COL_NAME,    T(STR_COL_NAME),    160, FALSE },
+                { COL_VERSION, T(STR_COL_VERSION), 90,  FALSE },
+                { COL_SIZE,    T(STR_COL_SIZE),    90,  FALSE },
+                { COL_DESC,    T(STR_COL_DESC),    200, TRUE  },
+            };
+            for (int i=0; i<4; i++) {
+                GtkCellRenderer *r = gtk_cell_renderer_text_new();
+                GtkTreeViewColumn *c = gtk_tree_view_column_new_with_attributes(
+                    ocols[i].title, r, "text", ocols[i].id, NULL);
+                gtk_tree_view_column_set_resizable(c, TRUE);
+                gtk_tree_view_column_set_sort_column_id(c, ocols[i].id);
+                gtk_tree_view_column_set_min_width(c, ocols[i].min_w);
+                if (ocols[i].expand) {
+                    gtk_tree_view_column_set_expand(c, TRUE);
+                    g_object_set(r, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
+                }
+                gtk_tree_view_append_column(GTK_TREE_VIEW(g_orphan_tree), c);
+            }
+        }
+
+        GtkWidget *orp_scroll = gtk_scrolled_window_new(NULL, NULL);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(orp_scroll),
+            GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+        gtk_container_add(GTK_CONTAINER(orp_scroll), g_orphan_tree);
+        gtk_box_pack_start(GTK_BOX(orp_tab), orp_scroll, TRUE, TRUE, 0);
+
+        gtk_notebook_append_page(GTK_NOTEBOOK(g_notebook), orp_tab,
+                                 gtk_label_new(T(STR_TAB_ORPHANS)));
+    }
+
     gtk_box_pack_start(GTK_BOX(vbox),
         gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
 
@@ -2647,6 +3018,11 @@ static void build_ui(void) {
     gtk_widget_set_opacity(g_ver_label, 0.35);
     gtk_widget_set_tooltip_text(g_ver_label, T(STR_BTN_CHANGELOG));
     gtk_box_pack_start(GTK_BOX(hbox_bot), g_ver_label, FALSE, FALSE, 4);
+
+    g_btn_clean_cache = gtk_button_new_with_label(T(STR_BTN_CLEAN_CACHE));
+    gtk_widget_set_tooltip_text(g_btn_clean_cache, T(STR_TOOLTIP_CLEAN_CACHE));
+    g_signal_connect(g_btn_clean_cache, "clicked", G_CALLBACK(on_clean_cache), NULL);
+    gtk_box_pack_end(GTK_BOX(hbox_bot), g_btn_clean_cache, FALSE, FALSE, 0);
 
     {
         GtkCssProvider *discord_css = gtk_css_provider_new();
@@ -2713,6 +3089,7 @@ int main(int argc, char *argv[]) {
 
     build_ui();
     apply_dark_mode();
+    load_column_widths();
 
     GdkPixbuf *win_icon = gdk_pixbuf_new_from_file(UPD_ICO_DST, NULL);
     if (win_icon) {
