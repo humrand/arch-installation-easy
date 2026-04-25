@@ -1,3 +1,5 @@
+/* this is broken, do not use lol */
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
