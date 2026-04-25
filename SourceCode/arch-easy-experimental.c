@@ -325,7 +325,6 @@ static void dlg_strip(const char *src, char *dst, size_t n) {
 }
 
 static void set_dark_theme_env(void) {
-    setenv("GTK_THEME", "Adwaita:dark", 1);
 }
 
 
@@ -2821,8 +2820,6 @@ static pid_t spawn_gtk_progress(const char *title, const char *header_text) {
     if (dn >= 0) dup2(dn, STDERR_FILENO);
 
     gtk_init(NULL, NULL);
-    set_dark_theme_env();
-    apply_dark_theme();
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), title);
