@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <signal.h>
 #include <sys/statvfs.h>
+#include <gtk/gtk.h>
 
 #define VERSION   "V3.0.0"
 #define LOG_FILE  "/tmp/arch_install.log"
@@ -325,266 +326,410 @@ static void dlg_strip(const char *src, char *dst, size_t n) {
 
 static void set_dark_theme_env(void) {
     setenv("GTK_THEME", "Adwaita:dark", 1);
-    setenv("YAD_DISABLE_APPLICATION_INDICATOR", "1", 1);
 }
 
-static int yad_exec(char **argv, char *out, size_t outsz) {
-    char **exec_argv = argv;
-    char **fs_argv   = NULL;
+/* ─── GTK helpers ──────────────────────────────────────────────────── */
 
-    if (g_fullscreen) {
-        int n = 0;
-        while (argv[n]) n++;
-        fs_argv = calloc((size_t)(n + 3), sizeof(char*));
-        int j = 0;
-        for (int i = 0; i < n; i++) {
-            if (strncmp(argv[i], "--width=", 8) == 0) continue;
-            if (strncmp(argv[i], "--height=", 9) == 0) continue;
-            fs_argv[j++] = argv[i];
-        }
-        fs_argv[j++] = "--maximize";
-        fs_argv[j]   = NULL;
-        exec_argv    = fs_argv;
-    }
-
-    int pfd[2];
-    if (pipe(pfd) != 0) {
-        if (out && outsz) out[0] = '\0';
-        if (fs_argv) free(fs_argv);
-        return -1;
-    }
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        set_dark_theme_env();
-        close(pfd[0]);
-        dup2(pfd[1], STDOUT_FILENO);
-        close(pfd[1]);
-        int dn = open("/dev/null", O_RDWR);
-        if (dn >= 0) dup2(dn, STDERR_FILENO);
-        execvp("yad", exec_argv);
-        _exit(127);
-    }
-    close(pfd[1]);
-
-    if (out && outsz > 0) {
-        size_t total = 0;
-        char buf[512];
-        ssize_t n;
-        while ((n = read(pfd[0], buf, sizeof(buf))) > 0) {
-            if (total + (size_t)n < outsz) {
-                memcpy(out + total, buf, (size_t)n);
-                total += (size_t)n;
-            }
-        }
-        out[total] = '\0';
-        size_t len = strlen(out);
-        while (len > 0 && (out[len-1] == '|' || out[len-1] == '\n' || out[len-1] == '\r'))
-            out[--len] = '\0';
-        trim_nl(out);
-    }
-    close(pfd[0]);
-
-    int status;
-    waitpid(pid, &status, 0);
-    if (fs_argv) free(fs_argv);
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 77) {
-        g_home_requested = 1;
-        return 1;
-    }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+static void apply_dark_theme(void) {
+    GtkSettings *settings = gtk_settings_get_default();
+    g_object_set(settings,
+        "gtk-theme-name", "Adwaita-dark",
+        "gtk-application-prefer-dark-theme", TRUE,
+        NULL);
 }
 
-#define YAD_W   "--width=580", "--center"
-#define YAD_WS  "--width=420", "--center"
-#define YAD_WL  "--width=700", "--center"
+/* Radio-button column toggle: deselect all, select the clicked row */
+static void on_radio_toggled(GtkCellRendererToggle *renderer,
+                              gchar *path_str, gpointer data) {
+    (void)renderer;
+    GtkListStore *store = GTK_LIST_STORE(data);
+    GtkTreeIter   iter;
+    gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &iter);
+    while (valid) {
+        gtk_list_store_set(store, &iter, 0, FALSE, -1);
+        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &iter);
+    }
+    GtkTreePath *path = gtk_tree_path_new_from_string(path_str);
+    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, path))
+        gtk_list_store_set(store, &iter, 0, TRUE, -1);
+    gtk_tree_path_free(path);
+}
+
+/* Checkbox column toggle: flip the clicked row */
+static void on_check_toggled(GtkCellRendererToggle *renderer,
+                              gchar *path_str, gpointer data) {
+    (void)renderer;
+    GtkListStore *store = GTK_LIST_STORE(data);
+    GtkTreeIter   iter;
+    GtkTreePath  *path  = gtk_tree_path_new_from_string(path_str);
+    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, path)) {
+        gboolean active;
+        gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 0, &active, -1);
+        gtk_list_store_set(store, &iter, 0, !active, -1);
+    }
+    gtk_tree_path_free(path);
+}
+
+/* Double-click on a list row → accept the dialog */
+static void on_row_activated_ok(GtkTreeView *view, GtkTreePath *path,
+                                 GtkTreeViewColumn *col, gpointer data) {
+    (void)view; (void)path; (void)col;
+    gtk_dialog_response(GTK_DIALOG(data), GTK_RESPONSE_OK);
+}
+
+/* ─── Dialog functions ─────────────────────────────────────────────── */
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
-    char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
-                 "--button=OK:0", YAD_W, "--wrap", NULL};
-    yad_exec(a, NULL, 0);
+    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+        GTK_MESSAGE_INFO, GTK_BUTTONS_OK, "%s", clean);
+    gtk_window_set_title(GTK_WINDOW(dlg), title);
+    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
 }
 
 static int yesno_dlg(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
-    char *a[] = {"yad","--question","--title",(char*)title,"--text",clean,
-                 "--button=Yes:0","--button=No:1", YAD_W, "--wrap", NULL};
-    return yad_exec(a, NULL, 0) == 0;
+    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+        GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO, "%s", clean);
+    gtk_window_set_title(GTK_WINDOW(dlg), title);
+    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    return resp == GTK_RESPONSE_YES;
 }
 
 static int inputbox_dlg(const char *title, const char *text,
-                         const char *init, char *out, size_t outsz) {
+                        const char *init, char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-    char *a[] = {"yad","--entry","--title",(char*)title,"--text",clean,
-                 "--entry-text",(char*)(init?init:""),
-                 "--button=OK:0","--button=Cancel:1","--button= Home:77",
-                 YAD_W, NULL};
-    return yad_exec(a, out, outsz) == 0;
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
+        "OK",     GTK_RESPONSE_OK,
+        "Cancel", GTK_RESPONSE_CANCEL,
+        L("Home","Inicio"), 77,
+        NULL);
+    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
+
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+    gtk_box_set_spacing(GTK_BOX(box), 8);
+
+    GtkWidget *lbl = gtk_label_new(clean);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
+
+    GtkWidget *entry = gtk_entry_new();
+    if (init && *init) gtk_entry_set_text(GTK_ENTRY(entry), init);
+    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+    gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+
+    gtk_widget_show_all(dlg);
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+
+    if (resp == 77) {
+        g_home_requested = 1;
+        gtk_widget_destroy(dlg);
+        return 1;
+    }
+    if (resp == GTK_RESPONSE_OK && out)
+        strncpy(out, gtk_entry_get_text(GTK_ENTRY(entry)), outsz - 1);
+    gtk_widget_destroy(dlg);
+    return resp == GTK_RESPONSE_OK;
 }
 
 static int passwordbox_dlg(const char *title, const char *text,
-                            char *out, size_t outsz) {
+                           char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-    int show = 0;
+    int  show = 0;
+    char cur[512] = "";
+    if (out && out[0]) strncpy(cur, out, sizeof(cur) - 1);
+
     while (1) {
-        char *hide_arg = show ? NULL : (char*)"--hide-text";
-        char *eye_btn  = show
-            ? (char*)"--button= Ocultar:3"
-            : (char*)"--button= Mostrar:3";
-        char *argv[32]; int ai = 0;
-        argv[ai++] = "yad";
-        argv[ai++] = "--entry";
-        if (hide_arg) argv[ai++] = hide_arg;
-        argv[ai++] = "--title";    argv[ai++] = (char*)title;
-        argv[ai++] = "--text";     argv[ai++] = clean;
-        if (out && out[0]) { argv[ai++] = "--entry-text"; argv[ai++] = out; }
-        argv[ai++] = "--button=OK:0";
-        argv[ai++] = "--button=Cancel:1";
-        argv[ai++] = eye_btn;
-        argv[ai++] = "--button= Home:77";
-        argv[ai++] = (char*)YAD_WS;
-        argv[ai] = NULL;
-        char tmp[outsz > 0 ? outsz : 256];
-        tmp[0] = '\0';
-        int rc = yad_exec(argv, tmp, sizeof(tmp));
-        if (rc == 3) {
-            if (tmp[0] && out) strncpy(out, tmp, outsz-1);
-            show = !show;
-            continue;
-        }
-        if (rc == 0 && out) { strncpy(out, tmp, outsz-1); return 1; }
+        GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
+            "OK",     GTK_RESPONSE_OK,
+            "Cancel", GTK_RESPONSE_CANCEL,
+            show ? L("Hide","Ocultar") : L("Show","Mostrar"), 3,
+            L("Home","Inicio"), 77,
+            NULL);
+        if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
+
+        GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+        gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+        gtk_box_set_spacing(GTK_BOX(box), 8);
+
+        GtkWidget *lbl = gtk_label_new(clean);
+        gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
+
+        GtkWidget *entry = gtk_entry_new();
+        gtk_entry_set_visibility(GTK_ENTRY(entry), show);
+        if (cur[0]) gtk_entry_set_text(GTK_ENTRY(entry), cur);
+        gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+        gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
+        gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+
+        gtk_widget_show_all(dlg);
+        gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+        strncpy(cur, gtk_entry_get_text(GTK_ENTRY(entry)), sizeof(cur) - 1);
+        gtk_widget_destroy(dlg);
+
+        if (resp == 3) { show = !show; continue; }
+        if (resp == 77) { g_home_requested = 1; return 1; }
+        if (resp == GTK_RESPONSE_OK && out) { strncpy(out, cur, outsz - 1); return 1; }
         return 0;
     }
 }
 
+/* Build a 2-column scrollable GtkTreeView inside a dialog.
+   col0 = tag (hidden option key), col1 = description text */
+static GtkWidget *make_list_dialog(const char *title, const char *clean,
+                                   int add_home_btn) {
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
+        "OK",     GTK_RESPONSE_OK,
+        "Cancel", GTK_RESPONSE_CANCEL,
+        NULL);
+    if (add_home_btn)
+        gtk_dialog_add_button(GTK_DIALOG(dlg), L("Home","Inicio"), 77);
+    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 740, 520);
+
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+    gtk_box_set_spacing(GTK_BOX(box), 8);
+
+    GtkWidget *lbl = gtk_label_new(clean);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
+
+    return dlg;
+}
+
 static int menu_dlg(const char *title, const char *text,
-                     MenuItem *items, int n, char *out, size_t outsz) {
+                    MenuItem *items, int n, char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
 
-    int argc = 0;
-    char **a = calloc((size_t)(n * 2 + 16), sizeof(char*));
-    a[argc++] = "yad";
-    a[argc++] = "--list";
-    a[argc++] = "--title";    a[argc++] = (char*)title;
-    a[argc++] = "--text";     a[argc++] = clean;
-    a[argc++] = "--column=Option";
-    a[argc++] = "--column=Description";
-    a[argc++] = "--print-column=1";
-    a[argc++] = YAD_WL;
-    a[argc++] = "--button=OK:0";
-    a[argc++] = "--button=Cancel:1";
-    a[argc++] = "--button= Home:77";
-    for (int i = 0; i < n; i++) {
-        a[argc++] = items[i].tag;
-        a[argc++] = items[i].desc;
-    }
-    a[argc] = NULL;
+    GtkWidget *dlg = make_list_dialog(title, clean, 1);
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
 
-    int rc = yad_exec(a, out, outsz);
-    free(a);
-    return rc == 0;
+    /* cols: 0=tag, 1=description */
+    GtkListStore *store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
+    for (int i = 0; i < n; i++) {
+        GtkTreeIter it;
+        gtk_list_store_append(store, &it);
+        gtk_list_store_set(store, &it, 0, items[i].tag, 1, items[i].desc, -1);
+    }
+    GtkWidget *view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(view), FALSE);
+
+    GtkCellRenderer *r0 = gtk_cell_renderer_text_new();
+    GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
+    gtk_tree_view_append_column(view,
+        gtk_tree_view_column_new_with_attributes("Option",      r0, "text", 0, NULL));
+    gtk_tree_view_append_column(view,
+        gtk_tree_view_column_new_with_attributes("Description", r1, "text", 1, NULL));
+
+    g_signal_connect(view, "row-activated", G_CALLBACK(on_row_activated_ok), dlg);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scroll), view);
+    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+
+    gtk_widget_show_all(dlg);
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+
+    if (resp == GTK_RESPONSE_OK && out) {
+        GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
+        GtkTreeIter it; GtkTreeModel *m;
+        if (gtk_tree_selection_get_selected(sel, &m, &it)) {
+            gchar *tag; gtk_tree_model_get(m, &it, 0, &tag, -1);
+            strncpy(out, tag, outsz - 1); g_free(tag);
+        }
+    }
+    if (resp == 77) g_home_requested = 1;
+    gtk_widget_destroy(dlg);
+    return resp == GTK_RESPONSE_OK;
 }
 
 static int radiolist_dlg(const char *title, const char *text,
-                           MenuItem *items, int n, const char *def,
-                           char *out, size_t outsz) {
+                         MenuItem *items, int n, const char *def,
+                         char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
 
-    int argc = 0;
-    char **a = calloc((size_t)(n * 3 + 20), sizeof(char*));
-    a[argc++] = "yad";
-    a[argc++] = "--list";
-    a[argc++] = "--radiolist";
-    a[argc++] = "--title";    a[argc++] = (char*)title;
-    a[argc++] = "--text";     a[argc++] = clean;
-    a[argc++] = "--column= ";
-    a[argc++] = "--column=Option";
-    a[argc++] = "--column=Description";
-    a[argc++] = "--print-column=2";
-    a[argc++] = YAD_WL;
-    a[argc++] = "--button=OK:0";
-    a[argc++] = "--button=Cancel:1";
-    a[argc++] = "--button= Home:77";
-    for (int i = 0; i < n; i++) {
-        a[argc++] = (def && strcmp(items[i].tag, def) == 0) ? "TRUE" : "FALSE";
-        a[argc++] = items[i].tag;
-        a[argc++] = items[i].desc;
-    }
-    a[argc] = NULL;
+    GtkWidget *dlg = make_list_dialog(title, clean, 1);
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
 
-    int rc = yad_exec(a, out, outsz);
-    free(a);
-    return rc == 0;
+    /* cols: 0=active(bool), 1=tag, 2=description */
+    GtkListStore *store = gtk_list_store_new(3,
+        G_TYPE_BOOLEAN, G_TYPE_STRING, G_TYPE_STRING);
+    for (int i = 0; i < n; i++) {
+        GtkTreeIter it;
+        gtk_list_store_append(store, &it);
+        gtk_list_store_set(store, &it,
+            0, (def && strcmp(items[i].tag, def) == 0),
+            1, items[i].tag,
+            2, items[i].desc,
+            -1);
+    }
+    GtkWidget *view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
+
+    GtkCellRendererToggle *tog = GTK_CELL_RENDERER_TOGGLE(
+        gtk_cell_renderer_toggle_new());
+    gtk_cell_renderer_toggle_set_radio(tog, TRUE);
+    g_signal_connect(tog, "toggled", G_CALLBACK(on_radio_toggled), store);
+    gtk_tree_view_append_column(view,
+        gtk_tree_view_column_new_with_attributes("", GTK_CELL_RENDERER(tog),
+            "active", 0, NULL));
+
+    GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
+    GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
+    gtk_tree_view_append_column(view,
+        gtk_tree_view_column_new_with_attributes("Option",      r1, "text", 1, NULL));
+    gtk_tree_view_append_column(view,
+        gtk_tree_view_column_new_with_attributes("Description", r2, "text", 2, NULL));
+
+    g_signal_connect(view, "row-activated", G_CALLBACK(on_row_activated_ok), dlg);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scroll), view);
+    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+
+    gtk_widget_show_all(dlg);
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+
+    if (resp == GTK_RESPONSE_OK && out) {
+        GtkTreeIter it;
+        gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &it);
+        while (valid) {
+            gboolean active; gchar *tag;
+            gtk_tree_model_get(GTK_TREE_MODEL(store), &it,
+                0, &active, 1, &tag, -1);
+            if (active) { strncpy(out, tag, outsz - 1); g_free(tag); break; }
+            g_free(tag);
+            valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &it);
+        }
+    }
+    if (resp == 77) g_home_requested = 1;
+    gtk_widget_destroy(dlg);
+    return resp == GTK_RESPONSE_OK;
 }
 
 static int checklist_dlg(const char *title, const char *text,
-                          MenuItem *items, int n,
-                          const char **defaults, int ndef,
-                          char out[][256], int maxout) {
+                         MenuItem *items, int n,
+                         const char **defaults, int ndef,
+                         char out[][256], int maxout) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
 
-    int argc = 0;
-    char **a = calloc((size_t)(n * 3 + 20), sizeof(char*));
-    a[argc++] = "yad";
-    a[argc++] = "--list";
-    a[argc++] = "--checklist";
-    a[argc++] = "--title";    a[argc++] = (char*)title;
-    a[argc++] = "--text";     a[argc++] = clean;
-    a[argc++] = "--column= ";
-    a[argc++] = "--column=Option";
-    a[argc++] = "--column=Description";
-    a[argc++] = "--print-column=2";
-    a[argc++] = YAD_WL;
-    a[argc++] = "--button=OK:0";
-    a[argc++] = "--button=Cancel:1";
-    a[argc++] = "--button= Home:77";
+    GtkWidget *dlg = make_list_dialog(title, clean, 0);
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+
+    /* cols: 0=checked(bool), 1=tag, 2=description */
+    GtkListStore *store = gtk_list_store_new(3,
+        G_TYPE_BOOLEAN, G_TYPE_STRING, G_TYPE_STRING);
     for (int i = 0; i < n; i++) {
         int on = 0;
         for (int j = 0; j < ndef; j++)
-            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0) { on = 1; break; }
-        a[argc++] = on ? "TRUE" : "FALSE";
-        a[argc++] = items[i].tag;
-        a[argc++] = items[i].desc;
+            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0)
+                { on = 1; break; }
+        GtkTreeIter it;
+        gtk_list_store_append(store, &it);
+        gtk_list_store_set(store, &it,
+            0, (gboolean)on, 1, items[i].tag, 2, items[i].desc, -1);
     }
-    a[argc] = NULL;
+    GtkWidget *view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
 
-    char raw[4096] = {0};
-    int rc = yad_exec(a, raw, sizeof(raw));
-    free(a);
-    if (rc != 0) return -1;
+    GtkCellRendererToggle *tog = GTK_CELL_RENDERER_TOGGLE(
+        gtk_cell_renderer_toggle_new());
+    g_signal_connect(tog, "toggled", G_CALLBACK(on_check_toggled), store);
+    gtk_tree_view_append_column(view,
+        gtk_tree_view_column_new_with_attributes("", GTK_CELL_RENDERER(tog),
+            "active", 0, NULL));
+
+    GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
+    GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
+    gtk_tree_view_append_column(view,
+        gtk_tree_view_column_new_with_attributes("Package",     r1, "text", 1, NULL));
+    gtk_tree_view_append_column(view,
+        gtk_tree_view_column_new_with_attributes("Description", r2, "text", 2, NULL));
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scroll), view);
+    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+    gtk_widget_show_all(dlg);
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+
+    if (resp != GTK_RESPONSE_OK) return -1;
 
     int count = 0;
-    char copy[4096]; strncpy(copy, raw, sizeof(copy)-1);
-    char *p = copy;
-    while (*p && count < maxout) {
-        char *sep = p;
-        while (*sep && *sep != '|' && *sep != '\n') sep++;
-        int slen = (int)(sep - p);
-        if (slen > 0 && slen < 255) {
-            strncpy(out[count], p, slen);
-            out[count][slen] = '\0';
-            trim_nl(out[count]);
-            if (out[count][0]) count++;
+    GtkTreeIter it;
+    gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &it);
+    while (valid && count < maxout) {
+        gboolean active; gchar *tag;
+        gtk_tree_model_get(GTK_TREE_MODEL(store), &it,
+            0, &active, 1, &tag, -1);
+        if (active) {
+            strncpy(out[count], tag, 255);
+            out[count][255] = '\0';
+            count++;
         }
-        if (*sep) p = sep + 1;
-        else break;
+        g_free(tag);
+        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &it);
     }
     return count;
 }
 
+/* ─── infobox_dlg: non-blocking transient notification ──────────────
+   We show a borderless info window, process a few GTK events so it
+   actually paints, then return.  It remains visible until the next
+   blocking dialog replaces it or the user dismisses it.             */
+static GtkWidget *g_infobox_window = NULL;
+
 static void infobox_dlg(const char *title, const char *text) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-    char *a[] = {"yad","--info","--title",(char*)title,"--text",clean,
-                 "--timeout=60","--no-buttons", YAD_WS, NULL};
-    pid_t pid = fork();
-    if (pid == 0) {
-        set_dark_theme_env();
-        int dn = open("/dev/null", O_RDWR);
-        if (dn >= 0) { dup2(dn, STDOUT_FILENO); dup2(dn, STDERR_FILENO); }
-        execvp("yad", a);
-        _exit(0);
+
+    /* Destroy the previous non-blocking window, if any */
+    if (g_infobox_window) {
+        gtk_widget_destroy(g_infobox_window);
+        g_infobox_window = NULL;
     }
+
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(win), title);
+    gtk_window_set_decorated(GTK_WINDOW(win), TRUE);
+    gtk_window_set_default_size(GTK_WINDOW(win), 420, 140);
+    gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
+
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 20);
+    gtk_container_add(GTK_CONTAINER(win), box);
+
+    GtkWidget *lbl = gtk_label_new(clean);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_box_pack_start(GTK_BOX(box), lbl, TRUE, TRUE, 0);
+
+    gtk_widget_show_all(win);
+    g_infobox_window = win;
+
+    /* Flush pending events so the window actually appears */
+    while (gtk_events_pending())
+        gtk_main_iteration_do(FALSE);
 }
 
 typedef void (*LineCallback)(const char *line, void *ud);
@@ -2618,6 +2763,141 @@ static void *ib_run_thread(void *arg) {
 static int   g_prog_fd  = -1;
 static pid_t g_prog_pid = -1;
 
+/* ─── GTK progress window (runs in a forked child process) ──────── */
+
+typedef struct {
+    GtkWidget *progress_bar;
+    GtkWidget *stage_label;
+    GtkWidget *log_view;
+} ProgChildCtx;
+
+static gboolean prog_child_io_cb(GIOChannel *src, GIOCondition cond,
+                                  gpointer data) {
+    ProgChildCtx *ctx = (ProgChildCtx *)data;
+    if (cond & (G_IO_HUP | G_IO_ERR)) {
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ctx->progress_bar), 1.0);
+        gtk_progress_bar_set_text(GTK_PROGRESS_BAR(ctx->progress_bar), "100%");
+        while (gtk_events_pending()) gtk_main_iteration_do(FALSE);
+        g_timeout_add(800, (GSourceFunc)gtk_main_quit, NULL);
+        return FALSE;
+    }
+    gchar *line = NULL;
+    gsize  len  = 0;
+    GIOStatus st = g_io_channel_read_line(src, &line, &len, NULL, NULL);
+    if (st == G_IO_STATUS_EOF) {
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ctx->progress_bar), 1.0);
+        g_timeout_add(800, (GSourceFunc)gtk_main_quit, NULL);
+        return FALSE;
+    }
+    if (st == G_IO_STATUS_NORMAL && line) {
+        g_strchomp(line);
+        if (line[0] == '#') {
+            const char *msg = line[1] == ' ' ? line + 2 : line + 1;
+            gtk_label_set_text(GTK_LABEL(ctx->stage_label), msg);
+            if (ctx->log_view) {
+                GtkTextBuffer *buf =
+                    gtk_text_view_get_buffer(GTK_TEXT_VIEW(ctx->log_view));
+                GtkTextIter end;
+                gtk_text_buffer_get_end_iter(buf, &end);
+                gtk_text_buffer_insert(buf, &end, msg, -1);
+                gtk_text_buffer_insert(buf, &end, "\n", -1);
+                gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(ctx->log_view),
+                    &end, 0.0, FALSE, 0.0, 1.0);
+            }
+        } else {
+            int pct = atoi(line);
+            if (pct >= 0 && pct <= 100) {
+                gtk_progress_bar_set_fraction(
+                    GTK_PROGRESS_BAR(ctx->progress_bar), pct / 100.0);
+                char pbuf[16];
+                snprintf(pbuf, sizeof(pbuf), "%d%%", pct);
+                gtk_progress_bar_set_text(
+                    GTK_PROGRESS_BAR(ctx->progress_bar), pbuf);
+            }
+        }
+        g_free(line);
+    }
+    return TRUE;
+}
+
+/* Spawn a child process that shows a GTK progress window reading
+   yad-protocol (percentage lines + "# stage" lines) from stdin.
+   Returns the child pid; the write-end fd goes to g_prog_fd.        */
+static pid_t spawn_gtk_progress(const char *title, const char *header_text) {
+    int pfd[2];
+    if (pipe(pfd) != 0) return -1;
+
+    pid_t pid = fork();
+    if (pid != 0) {
+        /* parent: keep the write end */
+        close(pfd[0]);
+        g_prog_fd = pfd[1];
+        return pid;
+    }
+
+    /* child: read end becomes stdin */
+    dup2(pfd[0], STDIN_FILENO);
+    close(pfd[1]);
+
+    int dn = open("/dev/null", O_RDWR);
+    if (dn >= 0) dup2(dn, STDERR_FILENO);
+
+    gtk_init(NULL, NULL);
+    set_dark_theme_env();
+    apply_dark_theme();
+
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(win), title);
+    gtk_window_maximize(GTK_WINDOW(win));
+    gtk_window_set_deletable(GTK_WINDOW(win), FALSE);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 24);
+    gtk_container_add(GTK_CONTAINER(win), vbox);
+
+    GtkWidget *hdr = gtk_label_new(header_text);
+    gtk_label_set_line_wrap(GTK_LABEL(hdr), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), hdr, FALSE, FALSE, 0);
+
+    GtkWidget *prog = gtk_progress_bar_new();
+    gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(prog), TRUE);
+    gtk_progress_bar_set_text(GTK_PROGRESS_BAR(prog), "0%");
+    gtk_box_pack_start(GTK_BOX(vbox), prog, FALSE, FALSE, 0);
+
+    GtkWidget *stage = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(stage), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(stage), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), stage, FALSE, FALSE, 0);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    GtkWidget *log_view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(log_view), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(log_view), TRUE);
+    gtk_container_add(GTK_CONTAINER(scroll), log_view);
+    gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
+
+    gtk_widget_show_all(win);
+
+    ProgChildCtx *ctx = g_new0(ProgChildCtx, 1);
+    ctx->progress_bar = prog;
+    ctx->stage_label  = stage;
+    ctx->log_view     = log_view;
+
+    GIOChannel *channel = g_io_channel_unix_new(STDIN_FILENO);
+    g_io_add_watch(channel,
+        G_IO_IN | G_IO_HUP | G_IO_ERR,
+        prog_child_io_cb, ctx);
+    g_io_channel_unref(channel);
+
+    gtk_main();
+    g_free(ctx);
+    _exit(0);
+}
+
+/* ──────────────────────────────────────────────────────────────── */
+
 static void on_progress_cb(double pct, void *ud) {
     (void)ud;
     if (g_prog_fd < 0) return;
@@ -2658,57 +2938,17 @@ static void on_done_cb(int ok, const char *reason, void *ud) {
 static int screen_install(void) {
     { FILE *f = fopen(LOG_FILE, "a"); if (f) fclose(f); }
 
-    int pfd[2];
-    if (pipe(pfd) != 0) {
+    pid_t prog_pid = spawn_gtk_progress(
+        TITLE "  " VERSION,
+        L("Installing Arch Linux - please wait...",
+          "Instalando Arch Linux - por favor espere..."));
+    if (prog_pid < 0) {
         msgbox(L("Error","Error"),
-               L("Could not create pipe for progress display.",
-                 "No se pudo crear el pipe para progreso."));
+               L("Could not create progress window.",
+                 "No se pudo crear la ventana de progreso."));
         return 0;
     }
-
-    pid_t yad_pid = fork();
-    if (yad_pid == 0) {
-        dup2(pfd[0], STDIN_FILENO);
-        close(pfd[1]);
-        int dn = open("/dev/null", O_RDWR);
-        if (dn >= 0) dup2(dn, STDERR_FILENO);
-        set_dark_theme_env();
-        char *a[] = {
-            "yad", "--progress",
-            "--title",  TITLE "  " VERSION,
-            "--text",   L("Installing Arch Linux - please wait...",
-                          "Instalando Arch Linux - por favor espere..."),
-            "--percentage", "0",
-            "--maximize",
-            "--auto-kill",
-            "--auto-close",
-            "--no-buttons",
-            "--enable-log",
-            "--log-expanded",
-            "--log-height=200",
-            "--log-on-top",
-            "--center",
-            NULL
-        };
-        execvp("yad", a);
-        char *b[] = {
-            "yad", "--progress",
-            "--title",  TITLE "  " VERSION,
-            "--text",   L("Installing Arch Linux...", "Instalando Arch Linux..."),
-            "--percentage", "0",
-            "--maximize",
-            "--auto-kill",
-            "--auto-close",
-            "--no-buttons",
-            "--center",
-            NULL
-        };
-        execvp("yad", b);
-        _exit(1);
-    }
-    close(pfd[0]);
-    g_prog_fd  = pfd[1];
-    g_prog_pid = yad_pid;
+    g_prog_pid = prog_pid;
 
     InstallState iss;
     memset(&iss, 0, sizeof(iss));
@@ -3953,16 +4193,89 @@ static int desktop_preview_confirm(const char *desktop_name) {
     snprintf(local_path, sizeof(local_path), "/tmp/arch_preview_%s%s", safe, ext);
 
     if (access(local_path, F_OK) != 0) {
+        infobox_dlg(
+            L("Downloading preview...", "Descargando vista previa..."),
+            L("Fetching desktop screenshot, please wait...",
+              "Descargando captura del escritorio, por favor espera..."));
         char cmd[512];
         snprintf(cmd, sizeof(cmd),
-                 "curl -s -L --max-time 15 -o '%s' '%s' 2>/dev/null",
+                 "curl -s -L --max-time 20 -o '%s' '%s' 2>/dev/null",
                  local_path, url);
-        while (access(local_path, F_OK) != 0) {
-            (void)system(cmd);
-            if (access(local_path, F_OK) != 0)
-                sleep(3);  
+        (void)system(cmd);
+        if (g_infobox_window) {
+            gtk_widget_destroy(g_infobox_window);
+            g_infobox_window = NULL;
         }
     }
+
+    char title[128];
+    snprintf(title, sizeof(title),
+             L("Preview: %s", "Vista previa: %s"), desktop_name);
+
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        title, NULL, GTK_DIALOG_MODAL,
+        L("Install this DE",  "Instalar este escritorio"), GTK_RESPONSE_OK,
+        L("Back",             "Volver"),                   GTK_RESPONSE_CANCEL,
+        NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 1100, 680);
+    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
+
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 8);
+
+    if (access(local_path, F_OK) == 0) {
+        GError *err = NULL;
+        GdkPixbuf *pb = gdk_pixbuf_new_from_file(local_path, &err);
+        if (pb) {
+            int orig_w = gdk_pixbuf_get_width(pb);
+            int orig_h = gdk_pixbuf_get_height(pb);
+            int max_w = 1060, max_h = 580;
+            double scale = 1.0;
+            if (orig_w > max_w) scale = (double)max_w / orig_w;
+            if (orig_h * scale > max_h) scale = (double)max_h / orig_h;
+            GdkPixbuf *scaled = gdk_pixbuf_scale_simple(
+                pb, (int)(orig_w * scale), (int)(orig_h * scale),
+                GDK_INTERP_BILINEAR);
+            g_object_unref(pb);
+            GtkWidget *img = gtk_image_new_from_pixbuf(scaled ? scaled : NULL);
+            if (scaled) g_object_unref(scaled);
+            GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+            gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+            gtk_container_add(GTK_CONTAINER(scroll), img);
+            gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+        } else {
+            char errmsg[256];
+            snprintf(errmsg, sizeof(errmsg),
+                     L("(Could not load preview image)\n%s",
+                       "(No se pudo cargar la imagen)\n%s"),
+                     err ? err->message : "");
+            if (err) g_error_free(err);
+            gtk_box_pack_start(GTK_BOX(box), gtk_label_new(errmsg), TRUE, TRUE, 0);
+        }
+    } else {
+        gtk_box_pack_start(GTK_BOX(box),
+            gtk_label_new(
+                L("(Preview not available -- network error?)",
+                  "(Vista previa no disponible -- error de red?)")),
+            TRUE, TRUE, 0);
+    }
+
+    char caption[128];
+    snprintf(caption, sizeof(caption),
+             L("Desktop: %s\n\nInstall this desktop environment?",
+               "Escritorio: %s\n\n?Instalar este entorno de escritorio?"),
+             desktop_name);
+    GtkWidget *cap_lbl = gtk_label_new(caption);
+    gtk_label_set_line_wrap(GTK_LABEL(cap_lbl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(cap_lbl), 0.5f);
+    gtk_box_pack_start(GTK_BOX(box), cap_lbl, FALSE, FALSE, 4);
+
+    gtk_widget_show_all(dlg);
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    return resp == GTK_RESPONSE_OK;
+}
 
     if (access(local_path, F_OK) != 0) return 1;
 
@@ -4444,23 +4757,34 @@ static int screen_extra_packages(void) {
 }
 
 static int review_confirm_dlg(const char *title, const char *text) {
-    const char *tmpfile = "/tmp/arch_review.txt";
-    FILE *f = fopen(tmpfile, "w");
-    if (!f) return yesno_dlg(title, text);
-    fprintf(f, "%s", text);
-    fclose(f);
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
+        L("Install","Instalar"), GTK_RESPONSE_OK,
+        L("Back","Atrás"),       GTK_RESPONSE_CANCEL,
+        NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 720, 540);
+    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
 
-    char *a[] = {
-        "yad", "--text-info",
-        "--title",    (char*)title,
-        "--filename", (char*)tmpfile,
-        "--button",   L("Install:0","Instalar:0"),
-        "--button",   L("Back:1","Atras:1"),
-        "--width=700", "--height=500",
-        "--center",
-        NULL
-    };
-    return yad_exec(a, NULL, 0) == 0;
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 0);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+
+    GtkWidget *tv = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(tv), TRUE);
+    gtk_container_set_border_width(GTK_CONTAINER(tv), 8);
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv));
+    gtk_text_buffer_set_text(buf, text, -1);
+    gtk_container_add(GTK_CONTAINER(scroll), tv);
+
+    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+    gtk_widget_show_all(dlg);
+
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    return resp == GTK_RESPONSE_OK;
 }
 
 static int screen_review(void) {
@@ -4553,56 +4877,38 @@ static int screen_review(void) {
 }
 
 static void screen_finish(void) {
-    int cfd[2];
-    if (pipe(cfd) != 0) {
+    pid_t prog_pid = spawn_gtk_progress(
+        L("Installation Complete!", "¡Instalación Completa!"),
+        L("Arch Linux installed successfully!\n\n"
+          "Remove the USB / installation media now.\n\n"
+          "The system will reboot automatically...",
+          "¡Arch Linux instalado correctamente!\n\n"
+          "Extrae ahora el USB / medio de instalación.\n\n"
+          "El sistema se reiniciará automáticamente..."));
+
+    if (prog_pid < 0) {
         sleep(5);
         (void)system("umount -R /mnt 2>/dev/null");
         (void)system("reboot");
         exit(0);
     }
 
-    pid_t yad_pid = fork();
-    if (yad_pid == 0) {
-        dup2(cfd[0], STDIN_FILENO);
-        close(cfd[1]);
-        int dn = open("/dev/null", O_RDWR);
-        if (dn >= 0) dup2(dn, STDERR_FILENO);
-        set_dark_theme_env();
-        char *a[] = {
-            "yad", "--progress",
-            "--title",      L("Installation Complete!", "Instalacion Completa!"),
-            "--text",       L("Arch Linux installed successfully!\n\n"
-                              "<b>Remove the USB / installation media now.</b>\n\n"
-                              "The system will reboot automatically...",
-                              "Arch Linux instalado correctamente!\n\n"
-                              "<b>Extrae ahora el USB / medio de instalacion.</b>\n\n"
-                              "El sistema se reiniciara automaticamente..."),
-            "--percentage", "0",
-            "--maximize",
-            "--no-buttons",
-            "--auto-close",
-            "--center",
-            NULL
-        };
-        execvp("yad", a);
-        _exit(0);
-    }
-    close(cfd[0]);
-
+    int fd = g_prog_fd;   /* write-end set by spawn_gtk_progress */
     for (int i = 1; i <= 10; i++) {
         usleep(500000);
         char buf[128];
-        int pct = i * 10;
+        int pct       = i * 10;
         int secs_left = 5 - (i / 2);
         snprintf(buf, sizeof(buf),
                  "# %s %d...\n%d\n",
                  L("Rebooting in", "Reiniciando en"),
                  secs_left > 0 ? secs_left : 0,
                  pct);
-        (void)write(cfd[1], buf, strlen(buf));
+        (void)write(fd, buf, strlen(buf));
     }
-    close(cfd[1]);
-    if (yad_pid > 0) waitpid(yad_pid, NULL, 0);
+    close(fd);
+    g_prog_fd = -1;
+    if (prog_pid > 0) waitpid(prog_pid, NULL, 0);
 
     (void)system("umount -R /mnt 2>/dev/null");
     (void)system("reboot");
@@ -4628,10 +4934,10 @@ static int screen_install_wrap(void)   { return screen_install(); }
 static int screen_preflight_wrap(void) { return run_preflight(); }
 
 static void ensure_x11_deps(void) {
-    static const char *deps[] = {
+static const char *deps[] = {
         "xorg-server", "xorg-xinit", "xorg-xinput",
         "xf86-input-libinput", "xf86-video-fbdev", "xf86-video-vesa",
-        "xdotool", "xorg-xsetroot", "openbox", "yad",
+        "xdotool", "xorg-xsetroot", "openbox",
         "xterm", "pcmanfm", "feh", "imagemagick", "tint2",
         NULL
     };
@@ -4652,7 +4958,7 @@ static void ensure_x11_deps(void) {
         if (system("pacman -Sy --noconfirm "
                    "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
                    "xf86-video-fbdev xf86-video-vesa xdotool xorg-xsetroot "
-                   "openbox yad xterm pcmanfm feh imagemagick tint2") != 0) {
+                   "openbox xterm pcmanfm feh imagemagick tint2") != 0) {
             fprintf(stderr,
                 "[!] WARNING: Some deps failed to install.\n"
                 "    The installer will try to continue anyway.\n");
@@ -4962,13 +5268,6 @@ int main(void) {
 
     ensure_display();
 
-    if (system("which yad >/dev/null 2>&1") != 0) {
-        printf("[*] yad not found - installing...\n");
-        if (system("pacman -Sy --noconfirm yad") != 0) {
-            fprintf(stderr, "[!] Failed to install yad. Check network.\n");
-            return 1;
-        }
-    }
 
     screen_welcome_wrap();
     screen_language_wrap();
