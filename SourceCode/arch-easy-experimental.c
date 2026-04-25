@@ -5161,6 +5161,10 @@ static void ensure_display(void) {
     }
     fprintf(f, "#!/bin/sh\n");
     fprintf(f, "export XDG_SESSION_TYPE=x11\n");
+    fprintf(f, "export GSETTINGS_BACKEND=memory\n");
+    fprintf(f, "export GTK_THEME=Adwaita\n");
+    fprintf(f, "export GDK_BACKEND=x11\n");
+    fprintf(f, "export DCONF_PROFILE=/dev/null\n");
     fprintf(f, "export LIBINPUT_ENABLE_DEVICE_GROUP=1\n");
     fprintf(f, "xrandr --auto 2>/dev/null || true\n");
     fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
@@ -5209,6 +5213,9 @@ int main(void) {
         return 1;
     }
 
+    setenv("GSETTINGS_BACKEND", "memory", 1);
+    setenv("GTK_THEME", "Adwaita", 1);
+    setenv("GDK_BACKEND", "x11", 1);
     ensure_display();
 
 
