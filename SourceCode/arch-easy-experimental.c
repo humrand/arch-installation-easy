@@ -328,7 +328,6 @@ static void set_dark_theme_env(void) {
     setenv("GTK_THEME", "Adwaita:dark", 1);
 }
 
-/* ─── GTK helpers ──────────────────────────────────────────────────── */
 
 static void apply_dark_theme(void) {
     GtkSettings *settings = gtk_settings_get_default();
@@ -338,7 +337,6 @@ static void apply_dark_theme(void) {
         NULL);
 }
 
-/* Radio-button column toggle: deselect all, select the clicked row */
 static void on_radio_toggled(GtkCellRendererToggle *renderer,
                               gchar *path_str, gpointer data) {
     (void)renderer;
@@ -355,7 +353,6 @@ static void on_radio_toggled(GtkCellRendererToggle *renderer,
     gtk_tree_path_free(path);
 }
 
-/* Checkbox column toggle: flip the clicked row */
 static void on_check_toggled(GtkCellRendererToggle *renderer,
                               gchar *path_str, gpointer data) {
     (void)renderer;
@@ -370,14 +367,12 @@ static void on_check_toggled(GtkCellRendererToggle *renderer,
     gtk_tree_path_free(path);
 }
 
-/* Double-click on a list row → accept the dialog */
 static void on_row_activated_ok(GtkTreeView *view, GtkTreePath *path,
                                  GtkTreeViewColumn *col, gpointer data) {
     (void)view; (void)path; (void)col;
     gtk_dialog_response(GTK_DIALOG(data), GTK_RESPONSE_OK);
 }
 
-/* ─── Dialog functions ─────────────────────────────────────────────── */
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
@@ -483,8 +478,6 @@ static int passwordbox_dlg(const char *title, const char *text,
     }
 }
 
-/* Build a 2-column scrollable GtkTreeView inside a dialog.
-   col0 = tag (hidden option key), col1 = description text */
 static GtkWidget *make_list_dialog(const char *title, const char *clean,
                                    int add_home_btn) {
     GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
@@ -515,7 +508,6 @@ static int menu_dlg(const char *title, const char *text,
     GtkWidget *dlg = make_list_dialog(title, clean, 1);
     GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
 
-    /* cols: 0=tag, 1=description */
     GtkListStore *store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
     for (int i = 0; i < n; i++) {
         GtkTreeIter it;
@@ -528,9 +520,9 @@ static int menu_dlg(const char *title, const char *text,
 
     GtkCellRenderer *r0 = gtk_cell_renderer_text_new();
     GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(view,
+    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
         gtk_tree_view_column_new_with_attributes("Option",      r0, "text", 0, NULL));
-    gtk_tree_view_append_column(view,
+    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
         gtk_tree_view_column_new_with_attributes("Description", r1, "text", 1, NULL));
 
     g_signal_connect(view, "row-activated", G_CALLBACK(on_row_activated_ok), dlg);
@@ -566,7 +558,6 @@ static int radiolist_dlg(const char *title, const char *text,
     GtkWidget *dlg = make_list_dialog(title, clean, 1);
     GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
 
-    /* cols: 0=active(bool), 1=tag, 2=description */
     GtkListStore *store = gtk_list_store_new(3,
         G_TYPE_BOOLEAN, G_TYPE_STRING, G_TYPE_STRING);
     for (int i = 0; i < n; i++) {
@@ -585,15 +576,15 @@ static int radiolist_dlg(const char *title, const char *text,
         gtk_cell_renderer_toggle_new());
     gtk_cell_renderer_toggle_set_radio(tog, TRUE);
     g_signal_connect(tog, "toggled", G_CALLBACK(on_radio_toggled), store);
-    gtk_tree_view_append_column(view,
+    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
         gtk_tree_view_column_new_with_attributes("", GTK_CELL_RENDERER(tog),
             "active", 0, NULL));
 
     GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
     GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(view,
+    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
         gtk_tree_view_column_new_with_attributes("Option",      r1, "text", 1, NULL));
-    gtk_tree_view_append_column(view,
+    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
         gtk_tree_view_column_new_with_attributes("Description", r2, "text", 2, NULL));
 
     g_signal_connect(view, "row-activated", G_CALLBACK(on_row_activated_ok), dlg);
@@ -634,7 +625,6 @@ static int checklist_dlg(const char *title, const char *text,
     GtkWidget *dlg = make_list_dialog(title, clean, 0);
     GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
 
-    /* cols: 0=checked(bool), 1=tag, 2=description */
     GtkListStore *store = gtk_list_store_new(3,
         G_TYPE_BOOLEAN, G_TYPE_STRING, G_TYPE_STRING);
     for (int i = 0; i < n; i++) {
@@ -653,15 +643,15 @@ static int checklist_dlg(const char *title, const char *text,
     GtkCellRendererToggle *tog = GTK_CELL_RENDERER_TOGGLE(
         gtk_cell_renderer_toggle_new());
     g_signal_connect(tog, "toggled", G_CALLBACK(on_check_toggled), store);
-    gtk_tree_view_append_column(view,
+    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
         gtk_tree_view_column_new_with_attributes("", GTK_CELL_RENDERER(tog),
             "active", 0, NULL));
 
     GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
     GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(view,
+    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
         gtk_tree_view_column_new_with_attributes("Package",     r1, "text", 1, NULL));
-    gtk_tree_view_append_column(view,
+    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
         gtk_tree_view_column_new_with_attributes("Description", r2, "text", 2, NULL));
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
@@ -695,16 +685,11 @@ static int checklist_dlg(const char *title, const char *text,
     return count;
 }
 
-/* ─── infobox_dlg: non-blocking transient notification ──────────────
-   We show a borderless info window, process a few GTK events so it
-   actually paints, then return.  It remains visible until the next
-   blocking dialog replaces it or the user dismisses it.             */
 static GtkWidget *g_infobox_window = NULL;
 
 static void infobox_dlg(const char *title, const char *text) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
 
-    /* Destroy the previous non-blocking window, if any */
     if (g_infobox_window) {
         gtk_widget_destroy(g_infobox_window);
         g_infobox_window = NULL;
@@ -727,7 +712,6 @@ static void infobox_dlg(const char *title, const char *text) {
     gtk_widget_show_all(win);
     g_infobox_window = win;
 
-    /* Flush pending events so the window actually appears */
     while (gtk_events_pending())
         gtk_main_iteration_do(FALSE);
 }
@@ -2763,7 +2747,6 @@ static void *ib_run_thread(void *arg) {
 static int   g_prog_fd  = -1;
 static pid_t g_prog_pid = -1;
 
-/* ─── GTK progress window (runs in a forked child process) ──────── */
 
 typedef struct {
     GtkWidget *progress_bar;
@@ -2820,22 +2803,17 @@ static gboolean prog_child_io_cb(GIOChannel *src, GIOCondition cond,
     return TRUE;
 }
 
-/* Spawn a child process that shows a GTK progress window reading
-   yad-protocol (percentage lines + "# stage" lines) from stdin.
-   Returns the child pid; the write-end fd goes to g_prog_fd.        */
 static pid_t spawn_gtk_progress(const char *title, const char *header_text) {
     int pfd[2];
     if (pipe(pfd) != 0) return -1;
 
     pid_t pid = fork();
     if (pid != 0) {
-        /* parent: keep the write end */
         close(pfd[0]);
         g_prog_fd = pfd[1];
         return pid;
     }
 
-    /* child: read end becomes stdin */
     dup2(pfd[0], STDIN_FILENO);
     close(pfd[1]);
 
@@ -2896,7 +2874,6 @@ static pid_t spawn_gtk_progress(const char *title, const char *header_text) {
     _exit(0);
 }
 
-/* ──────────────────────────────────────────────────────────────── */
 
 static void on_progress_cb(double pct, void *ud) {
     (void)ud;
@@ -4277,37 +4254,6 @@ static int desktop_preview_confirm(const char *desktop_name) {
     return resp == GTK_RESPONSE_OK;
 }
 
-    if (access(local_path, F_OK) != 0) return 1;
-
-    char title[128];
-    snprintf(title, sizeof(title),
-             L("Preview: %s", "Vista previa: %s"), desktop_name);
-    char text[512];
-    snprintf(text, sizeof(text),
-             L("This is how <b>%s</b> looks.\nAre you sure you want to install it?",
-               "Así se verá <b>%s</b>.\n¿Estás seguro de que quieres instalarlo?"),
-             desktop_name);
-    char btn_ok[64], btn_back[64];
-    snprintf(btn_ok,   sizeof(btn_ok),   "--button=%s:0",
-             L("✓  Install this DE","✓  Instalar este escritorio"));
-    snprintf(btn_back, sizeof(btn_back), "--button=%s:1",
-             L("← Back","← Volver"));
-
-    char *argv[32]; int ai = 0;
-    argv[ai++] = "yad";
-    argv[ai++] = "--picture";
-    argv[ai++] = "--size=fit";
-    argv[ai++] = "--title";    argv[ai++] = title;
-    argv[ai++] = "--filename"; argv[ai++] = local_path;
-    argv[ai++] = "--width=1100";
-    argv[ai++] = "--height=650";
-    argv[ai++] = "--center";
-    argv[ai++] = btn_ok;
-    argv[ai++] = btn_back;
-    argv[ai] = NULL;
-
-    return yad_exec(argv, NULL, 0) == 0;
-}
 
 static int screen_desktop(void) {
     const char *desktops[][2] = {
@@ -4893,7 +4839,7 @@ static void screen_finish(void) {
         exit(0);
     }
 
-    int fd = g_prog_fd;   /* write-end set by spawn_gtk_progress */
+    int fd = g_prog_fd;   
     for (int i = 1; i <= 10; i++) {
         usleep(500000);
         char buf[128];
