@@ -14,7 +14,7 @@
 #define MAX_CMD     512
 #define MAX_LINE   1024
 
-#define APP_VERSION "1.1.0-stable"
+#define APP_VERSION "1.2.0-stable"
 
 typedef enum { LANG_ES = 0, LANG_EN = 1 } LangID;
 static LangID g_lang = LANG_EN;
@@ -757,8 +757,7 @@ static void parse_flatpak_output(FILE *fp, GArray *results) {
 
 static void store_append_pkg(Pkg *p) {
     GtkTreeIter it;
-    gtk_list_store_append(g_store, &it);
-    gtk_list_store_set(g_store, &it,
+    gtk_list_store_insert_with_values(g_store, &it, -1,
         COL_CHECK,      FALSE,
         COL_STATUS,     p->installed ? T(STR_INSTALLED) : "",
         COL_SOURCE,     p->source,
@@ -838,8 +837,7 @@ static void on_select_page(GtkWidget *w, gpointer d) {
 
 static void inst_store_append_pkg(GtkListStore *store, Pkg *p) {
     GtkTreeIter it;
-    gtk_list_store_append(store, &it);
-    gtk_list_store_set(store, &it,
+    gtk_list_store_insert_with_values(store, &it, -1,
         COL_CHECK,      FALSE,
         COL_STATUS,     "",
         COL_SOURCE,     p->source,
@@ -859,12 +857,15 @@ static void rebuild_installed_filtered(void) {
         g_installed_filtered = NULL;
     }
     if (!g_installed_all) return;
-    g_installed_filtered = g_array_new(FALSE, TRUE, sizeof(Pkg));
+
     const char *f = g_inst_filter;
+    if (!f[0]) return;
+
+    g_installed_filtered = g_array_sized_new(FALSE, TRUE, sizeof(Pkg),
+                                              g_installed_all->len);
     for (guint i = 0; i < g_installed_all->len; i++) {
         Pkg *p = &g_array_index(g_installed_all, Pkg, i);
-        if (!f[0]
-            || strcasestr(p->name,    f)
+        if (strcasestr(p->name,    f)
             || strcasestr(p->source,  f)
             || strcasestr(p->desc,    f)
             || strcasestr(p->version, f)) {
@@ -908,6 +909,8 @@ static void render_installed_page(gint page) {
     if (page >= total_pages) page = total_pages - 1;
     g_inst_page = page;
 
+    gtk_widget_freeze_child_notify(g_inst_tree);
+    g_object_freeze_notify(G_OBJECT(g_inst_store));
     gtk_list_store_clear(g_inst_store);
 
     gint start = page * PAGE_SIZE;
@@ -915,6 +918,9 @@ static void render_installed_page(gint page) {
 
     for (gint i = start; i < end; i++)
         inst_store_append_pkg(g_inst_store, &g_array_index(src, Pkg, i));
+
+    g_object_thaw_notify(G_OBJECT(g_inst_store));
+    gtk_widget_thaw_child_notify(g_inst_tree);
 
     update_inst_pagination(total);
 }
@@ -935,10 +941,8 @@ static gboolean inst_batch_add_cb(gpointer data) {
 
     gint old_total = (gint)g_installed_all->len;
 
-    for (guint i = 0; i < ctx->pkgs->len; i++) {
-        Pkg p = g_array_index(ctx->pkgs, Pkg, i);
-        g_array_append_val(g_installed_all, p);
-    }
+    if (ctx->pkgs->len > 0)
+        g_array_append_vals(g_installed_all, ctx->pkgs->data, ctx->pkgs->len);
 
     gint new_total = (gint)g_installed_all->len;
 
@@ -987,75 +991,54 @@ static gpointer load_installed_thread(gpointer data) {
     const int BATCH_SIZE = 50;
     int count = 0;
 
- 
     {
-        GHashTable *ht = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-        GArray *order = g_array_new(FALSE, TRUE, sizeof(Pkg));
-
-        fp = popen("pacman -Q 2>/dev/null", "r");
-        if (fp) {
-            while (fgets(line, sizeof(line), fp)) {
-                trim(line);
-                if (!line[0]) continue;
-                char *space = strchr(line, ' ');
-                if (!space) continue;
-                *space = '\0';
-                Pkg p = {0};
-                strncpy(p.source, "pacman", sizeof(p.source)-1);
-                strncpy(p.name,   line,    sizeof(p.name)-1);
-                strncpy(p.version, space+1, sizeof(p.version)-1);
-                snprintf(p.cmd,        sizeof(p.cmd),        "sudo pacman -S %s",   p.name);
-                snprintf(p.remove_cmd, sizeof(p.remove_cmd), "sudo pacman -Rns %s", p.name);
-                p.installed = TRUE;
-                g_array_append_val(order, p);
-                Pkg *slot = &g_array_index(order, Pkg, order->len - 1);
-                g_hash_table_insert(ht, g_strdup(p.name), slot);
-            }
-            pclose(fp);
-        }
-
         fp = popen("pacman -Qq 2>/dev/null | xargs pacman -Qi 2>/dev/null", "r");
         if (fp) {
-            char cur_name[MAX_NAME] = "";
+            Pkg p = {0};
+            gboolean have_pkg = FALSE;
             while (fgets(line, sizeof(line), fp)) {
                 char tmp[MAX_LINE];
-                strncpy(tmp, line, sizeof(tmp)-1);
+                strncpy(tmp, line, sizeof(tmp)-1); tmp[sizeof(tmp)-1] = '\0';
                 trim(tmp);
-                if (!tmp[0]) { cur_name[0] = '\0'; continue; }
-
+                if (!tmp[0]) {
+                    if (have_pkg && p.name[0]) {
+                        g_array_append_val(pkgs, p);
+                        count++;
+                        if (count % BATCH_SIZE == 0) {
+                            inst_dispatch_batch(pkgs, FALSE);
+                            pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
+                        }
+                    }
+                    memset(&p, 0, sizeof(p));
+                    have_pkg = FALSE;
+                    continue;
+                }
                 char *colon = strchr(tmp, ':');
                 if (!colon) continue;
                 *colon = '\0';
-                char *key = tmp;
-                char *val = colon + 1;
+                char *key = tmp, *val = colon + 1;
                 trim(key); trim(val);
-
                 if (strcasecmp(key, "Name") == 0) {
-                    strncpy(cur_name, val, sizeof(cur_name)-1);
-                } else if (cur_name[0]) {
-                    Pkg *slot = g_hash_table_lookup(ht, cur_name);
-                    if (slot) {
-                        if (strcasecmp(key, "Description") == 0)
-                            strncpy(slot->desc, val, sizeof(slot->desc)-1);
-                        else if (strcasecmp(key, "Installed Size") == 0)
-                            strncpy(slot->size, val, sizeof(slot->size)-1);
-                    }
+                    strncpy(p.name, val, sizeof(p.name)-1);
+                    strncpy(p.source, "pacman", sizeof(p.source)-1);
+                    snprintf(p.cmd,        sizeof(p.cmd),        "sudo pacman -S %s",   p.name);
+                    snprintf(p.remove_cmd, sizeof(p.remove_cmd), "sudo pacman -Rns %s", p.name);
+                    p.installed = TRUE;
+                    have_pkg = TRUE;
+                } else if (strcasecmp(key, "Version") == 0) {
+                    strncpy(p.version, val, sizeof(p.version)-1);
+                } else if (strcasecmp(key, "Description") == 0) {
+                    strncpy(p.desc, val, sizeof(p.desc)-1);
+                } else if (strcasecmp(key, "Installed Size") == 0) {
+                    strncpy(p.size, val, sizeof(p.size)-1);
                 }
+            }
+            if (have_pkg && p.name[0]) {
+                g_array_append_val(pkgs, p);
+                count++;
             }
             pclose(fp);
         }
-
-        g_hash_table_destroy(ht);
-
-        for (guint i = 0; i < order->len; i++) {
-            g_array_append_val(pkgs, g_array_index(order, Pkg, i));
-            count++;
-            if (count % BATCH_SIZE == 0) {
-                inst_dispatch_batch(pkgs, FALSE);
-                pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
-            }
-        }
-        g_array_free(order, TRUE);
     }
 
     fp = popen("flatpak list --columns=name,application,version,description 2>/dev/null", "r");
@@ -1146,15 +1129,24 @@ static void on_filter_icon_press(GtkEntry *entry, GtkEntryIconPosition pos,
         gtk_entry_set_text(entry, "");
 }
 
+static guint g_filter_debounce_id = 0;
+
+static gboolean filter_debounce_cb(gpointer data) {
+    (void)data;
+    g_filter_debounce_id = 0;
+    rebuild_installed_filtered();
+    g_inst_page = 0;
+    render_installed_page(0);
+    return G_SOURCE_REMOVE;
+}
+
 static void on_inst_filter_changed(GtkEditable *editable, gpointer d) {
     const char *text = gtk_entry_get_text(GTK_ENTRY(editable));
     strncpy(g_inst_filter, text ? text : "", sizeof(g_inst_filter) - 1);
     g_inst_filter[sizeof(g_inst_filter) - 1] = '\0';
-    rebuild_installed_filtered();
-    g_inst_page = 0;
-    GArray *src = g_installed_filtered ? g_installed_filtered : g_installed_all;
-    render_installed_page(0);
-    (void)src;
+    if (g_filter_debounce_id)
+        g_source_remove(g_filter_debounce_id);
+    g_filter_debounce_id = g_timeout_add(120, filter_debounce_cb, NULL);
 }
 
 static gboolean batch_add_cb(gpointer data) {
@@ -1162,10 +1154,8 @@ static gboolean batch_add_cb(gpointer data) {
 
     gint old_total = (gint)g_all_pkgs->len;
 
-    for (guint i = 0; i < ctx->pkgs->len; i++) {
-        Pkg p = g_array_index(ctx->pkgs, Pkg, i);
-        g_array_append_val(g_all_pkgs, p);
-    }
+    if (ctx->pkgs->len > 0)
+        g_array_append_vals(g_all_pkgs, ctx->pkgs->data, ctx->pkgs->len);
 
     gint new_total  = (gint)g_all_pkgs->len;
     gint page_start = g_current_page * PAGE_SIZE;
@@ -1216,10 +1206,26 @@ static void dispatch_batch(GArray *pkgs, const char *query,
     g_idle_add(batch_add_cb, ctx);
 }
 
+
+typedef struct {
+    char        query[256];
+    gint        generation;
+    GHashTable *pacman_ht;
+    GHashTable *flatpak_ht;
+    GMutex      mutex;
+    gint        remaining;  
+    guint       grand_total; 
+} SharedSearchCtx;
+
+typedef struct {
+    SharedSearchCtx *shared;
+    int              source_id;
+} SourceSearchData;
+
+static gpointer source_search_worker(gpointer data);
+
 static gpointer search_thread(gpointer data) {
     SearchCtx *ctx = data;
-    char cmd[512]; FILE *fp;
-    guint grand_total = 0;
 
     if (ctx->generation != g_atomic_int_get(&g_search_generation)) {
         g_free(ctx);
@@ -1233,71 +1239,113 @@ static gpointer search_thread(gpointer data) {
     { gchar *p = g_find_program_in_path("yay");     do_aur     = ctx->use_aur     && p != NULL; g_free(p); }
     { gchar *p = g_find_program_in_path("flatpak"); do_flatpak = ctx->use_flatpak && p != NULL; g_free(p); }
 
-    int remaining = (ctx->use_pacman ? 1 : 0) + (do_aur ? 1 : 0) + (do_flatpak ? 1 : 0);
+    int total = (ctx->use_pacman ? 1 : 0) + (do_aur ? 1 : 0) + (do_flatpak ? 1 : 0);
 
-    if (remaining == 0) {
+    if (total == 0) {
+        g_hash_table_destroy(pacman_ht);
+        g_hash_table_destroy(flatpak_ht);
         dispatch_batch(g_array_new(FALSE, TRUE, sizeof(Pkg)),
                        ctx->query, TRUE, 0);
-        goto cleanup;
+        g_free(ctx);
+        return NULL;
     }
+
+    SharedSearchCtx *shared = g_new0(SharedSearchCtx, 1);
+    strncpy(shared->query, ctx->query, sizeof(shared->query) - 1);
+    shared->generation  = ctx->generation;
+    shared->pacman_ht   = pacman_ht;
+    shared->flatpak_ht  = flatpak_ht;
+    g_mutex_init(&shared->mutex);
+    shared->remaining   = total;
+    shared->grand_total = 0;
 
     if (ctx->use_pacman) {
-        GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
-        gchar *quoted = g_shell_quote(ctx->query);
-        snprintf(cmd, sizeof(cmd), "pacman -Ss %s 2>/dev/null", quoted);
-        g_free(quoted);
-        fp = popen(cmd, "r");
-        if (fp) { parse_pacman_output(fp, pkgs, "pacman", "sudo pacman -S"); pclose(fp); }
-        filter_exact(pkgs, ctx->query);
-        for (guint i = 0; i < pkgs->len; i++) {
-            Pkg *p = &g_array_index(pkgs, Pkg, i);
-            p->installed = g_hash_table_contains(pacman_ht, p->name);
-        }
-        grand_total += pkgs->len;
-        remaining--;
-        dispatch_batch(pkgs, ctx->query, remaining == 0, grand_total);
+        SourceSearchData *sd = g_new0(SourceSearchData, 1);
+        sd->shared = shared; sd->source_id = 0;
+        GThread *t = g_thread_new("pkg-search-pacman", source_search_worker, sd);
+        g_thread_unref(t);
     }
-
     if (do_aur) {
-        GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
-        gchar *quoted = g_shell_quote(ctx->query);
-        snprintf(cmd, sizeof(cmd), "yay --color=never -Ss --aur %s 2>/dev/null", quoted);
-        g_free(quoted);
-        fp = popen(cmd, "r");
-        if (fp) { parse_pacman_output(fp, pkgs, "aur", "yay -S"); pclose(fp); }
-        filter_exact(pkgs, ctx->query);
-        for (guint i = 0; i < pkgs->len; i++) {
-            Pkg *p = &g_array_index(pkgs, Pkg, i);
-            p->installed = g_hash_table_contains(pacman_ht, p->name);
-        }
-        grand_total += pkgs->len;
-        remaining--;
-        dispatch_batch(pkgs, ctx->query, remaining == 0, grand_total);
+        SourceSearchData *sd = g_new0(SourceSearchData, 1);
+        sd->shared = shared; sd->source_id = 1;
+        GThread *t = g_thread_new("pkg-search-aur", source_search_worker, sd);
+        g_thread_unref(t);
     }
-
     if (do_flatpak) {
-        GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
-        gchar *quoted = g_shell_quote(ctx->query);
-        snprintf(cmd, sizeof(cmd), "flatpak search %s 2>/dev/null", quoted);
-        g_free(quoted);
-        fp = popen(cmd, "r");
-        if (fp) { parse_flatpak_output(fp, pkgs); pclose(fp); }
-        filter_exact(pkgs, ctx->query);
-        for (guint i = 0; i < pkgs->len; i++) {
-            Pkg *p = &g_array_index(pkgs, Pkg, i);
-            char *appid = strrchr(p->cmd, ' ');
-            if (appid) appid++;
-            p->installed = appid && g_hash_table_contains(flatpak_ht, appid);
-        }
-        grand_total += pkgs->len;
-        remaining--;
-        dispatch_batch(pkgs, ctx->query, remaining == 0, grand_total);
+        SourceSearchData *sd = g_new0(SourceSearchData, 1);
+        sd->shared = shared; sd->source_id = 2;
+        GThread *t = g_thread_new("pkg-search-flatpak", source_search_worker, sd);
+        g_thread_unref(t);
     }
 
-cleanup:
-    g_hash_table_destroy(pacman_ht);
-    g_hash_table_destroy(flatpak_ht);
     g_free(ctx);
+    return NULL;
+}
+
+static gpointer source_search_worker(gpointer data) {
+    SourceSearchData *sd  = data;
+    SharedSearchCtx *shared = sd->shared;
+    int source_id         = sd->source_id;
+    g_free(sd);
+
+    GArray *pkgs = g_array_new(FALSE, TRUE, sizeof(Pkg));
+
+    if (shared->generation == g_atomic_int_get(&g_search_generation)) {
+        char cmd[512]; FILE *fp;
+        gchar *quoted = g_shell_quote(shared->query);
+
+        if (source_id == 0) {                       
+            snprintf(cmd, sizeof(cmd), "pacman -Ss %s 2>/dev/null", quoted);
+            fp = popen(cmd, "r");
+            if (fp) { parse_pacman_output(fp, pkgs, "pacman", "sudo pacman -S"); pclose(fp); }
+            filter_exact(pkgs, shared->query);
+            for (guint i = 0; i < pkgs->len; i++) {
+                Pkg *p = &g_array_index(pkgs, Pkg, i);
+                p->installed = g_hash_table_contains(shared->pacman_ht, p->name);
+            }
+        } else if (source_id == 1) {                
+            snprintf(cmd, sizeof(cmd),
+                     "yay --color=never -Ss --aur %s 2>/dev/null", quoted);
+            fp = popen(cmd, "r");
+            if (fp) { parse_pacman_output(fp, pkgs, "aur", "yay -S"); pclose(fp); }
+            filter_exact(pkgs, shared->query);
+            for (guint i = 0; i < pkgs->len; i++) {
+                Pkg *p = &g_array_index(pkgs, Pkg, i);
+                p->installed = g_hash_table_contains(shared->pacman_ht, p->name);
+            }
+        } else {                                    
+            snprintf(cmd, sizeof(cmd), "flatpak search %s 2>/dev/null", quoted);
+            fp = popen(cmd, "r");
+            if (fp) { parse_flatpak_output(fp, pkgs); pclose(fp); }
+            filter_exact(pkgs, shared->query);
+            for (guint i = 0; i < pkgs->len; i++) {
+                Pkg *p = &g_array_index(pkgs, Pkg, i);
+                char *appid = strrchr(p->cmd, ' ');
+                if (appid) appid++;
+                p->installed = appid &&
+                               g_hash_table_contains(shared->flatpak_ht, appid);
+            }
+        }
+        g_free(quoted);
+    }
+
+    g_mutex_lock(&shared->mutex);
+    shared->grand_total += pkgs->len;
+    shared->remaining--;
+    gboolean is_last = (shared->remaining == 0);
+    guint    gt      = shared->grand_total;
+    char     query[256];
+    strncpy(query, shared->query, sizeof(query) - 1);
+    g_mutex_unlock(&shared->mutex);
+
+    if (is_last) {
+        g_hash_table_destroy(shared->pacman_ht);
+        g_hash_table_destroy(shared->flatpak_ht);
+        g_mutex_clear(&shared->mutex);
+        g_free(shared);
+    }
+
+    dispatch_batch(pkgs, query, is_last, gt);
     return NULL;
 }
 
@@ -2192,6 +2240,24 @@ static void show_changelog_dialog(GtkWidget *parent, gboolean only_latest) {
     typedef struct { const char *ver; const char *date; const char *body_es; const char *body_en; } Entry;
     static const Entry entries[] = {
 
+        {
+            "v1.2.0-stable", "7 may 2026",
+            "• Búsquedas paralelas: pacman, AUR y Flatpak se lanzan a la vez (hasta 3× más rápido con las tres fuentes activas).\n"
+            "• Carga de instalados 2×: una sola llamada pacman -Qi reemplaza el patrón anterior de dos subprocesos + tabla hash.\n"
+            "• Inserción en TreeView optimizada: gtk_list_store_insert_with_values reduce las señales GTK a la mitad por fila.\n"
+            "• Paginación con freeze/thaw: los cambios de página en 'Instalados' ya no parpadean.\n"
+            "• Copia de arrays en bloque (g_array_append_vals) en vez de elemento a elemento.\n"
+            "• Filtro con debounce (120 ms): no se recalcula en cada tecla, sólo al dejar de escribir.\n"
+            "• Fast-path de filtro vacío: sin filtro activo no se crea una copia redundante del array.\n",
+
+            "• Parallel search: pacman, AUR and Flatpak launch simultaneously (up to 3× faster with all three sources enabled).\n"
+            "• 2× faster installed-packages load: a single pacman -Qi call replaces the previous two-subprocess + hash-table pattern.\n"
+            "• Optimised TreeView insertion: gtk_list_store_insert_with_values halves GTK signals per row.\n"
+            "• Freeze/thaw pagination: page changes in the 'Installed' tab no longer flicker.\n"
+            "• Bulk array copy (g_array_append_vals) instead of element-by-element loops.\n"
+            "• Filter debounce (120 ms): filter is only rebuilt after the user stops typing.\n"
+            "• Empty-filter fast-path: no redundant array copy is made when no filter is active.\n"
+        },
         {
             "v1.1.0-stable", "5 may 2026",
             "• Carga de paquetes instalados hasta 50× más rápida (un único pacman -Qi en lugar de uno por paquete).\n"
