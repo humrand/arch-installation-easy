@@ -2958,6 +2958,8 @@ static const char *PRE_MODE_PAGES[] = {
 };
 
 static const char *g_custom_pages_buf[32];
+static const char **g_pages = PRE_MODE_PAGES;
+static int          g_cur   = 0;
 
 static void rebuild_custom_pages(void) {
     int n = 0;
@@ -2992,9 +2994,6 @@ static void rebuild_custom_pages(void) {
     g_custom_pages_buf[n]   = NULL;
     g_pages = g_custom_pages_buf;
 }
-
-static const char **g_pages = PRE_MODE_PAGES;
-static int          g_cur   = 0;
 
 typedef struct { const char *id; const char *en; const char *es; } PageMeta;
 static const PageMeta PAGE_META[] = {
