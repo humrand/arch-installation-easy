@@ -379,8 +379,8 @@ static const char *APP_CSS =
     "progressbar progress { background-color: #1f6feb; border-radius: 4px; min-height: 10px; }"
     "progressbar trough   { background-color: #21262d; border-radius: 4px; min-height: 10px; }"
 
-    "textview      { background-color: #0d1117; color: #c9d1d9; font-family: monospace; font-size: 12px; }"
-    "textview text { background-color: #0d1117; }"
+    "textview      { background-color: #0d1117; color: #e6edf3; font-family: monospace; font-size: 12px; }"
+    "textview text { background-color: #0d1117; color: #e6edf3; }"
 
     "listbox                  { background-color: #0d1117; }"
     "listbox row              { background-color: #0d1117; padding: 10px 14px; "
@@ -5639,9 +5639,15 @@ static void ensure_display(int argc, char **argv) {
     ensure_x11_deps();
     write_openbox_env();
 
-    char xinitrc[512];
+    char xinitrc[1024];
     snprintf(xinitrc,sizeof(xinitrc),
         "#!/bin/sh\n"
+        "sleep 0.5\n"
+        "HDMI_OUT=$(xrandr 2>/dev/null | grep -E '^HDMI[^ ]* connected' | head -1 | awk '{print $1}')\n"
+        "DP_OUT=$(xrandr 2>/dev/null | grep -E '^(DP|DisplayPort)[^ ]* connected' | head -1 | awk '{print $1}')\n"
+        "ANY_OUT=$(xrandr 2>/dev/null | grep ' connected' | head -1 | awk '{print $1}')\n"
+        "PRIMARY=${HDMI_OUT:-${DP_OUT:-$ANY_OUT}}\n"
+        "[ -n \"$PRIMARY\" ] && xrandr --output \"$PRIMARY\" --auto --primary 2>/dev/null || true\n"
         "openbox &\n"
         "exec %s\n", argv[0]);
     FILE *xi=fopen("/tmp/_arch_easy_xinitrc","w");
