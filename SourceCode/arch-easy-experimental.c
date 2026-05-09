@@ -336,55 +336,55 @@ static const char *APP_CSS =
     ".page-sub   { font-size: 13px; color: #8b949e; margin-top: 4px; }"
     ".divider    { background-color: #30363d; min-height: 1px; margin: 20px 0; }"
     ".card { background-color: #161b22; border-radius: 8px; "
-    "        border: 1px solid #30363d; padding: 20px; margin-top: 12px; }"
+    "border: 1px solid #30363d; padding: 20px; margin-top: 12px; }"
     ".card-title { font-size: 15px; font-weight: bold; margin-bottom: 6px; }"
     ".hint { font-size: 12px; color: #6e7681; margin-top: 4px; }"
     ".warn { color: #f85149; font-weight: bold; }"
 
     "entry { background-color: #0d1117; color: #e6edf3; "
-    "        border: 1px solid #30363d; border-radius: 6px; "
-    "        padding: 8px 12px; caret-color: #58a6ff; }"
+    "border: 1px solid #30363d; border-radius: 6px; "
+    "padding: 8px 12px; caret-color: #58a6ff; }"
     "entry:focus { border-color: #58a6ff; outline: none; }"
     "entry.error { border-color: #f85149; }"
 
     "button { background-color: #21262d; color: #c9d1d9; "
-    "         border: 1px solid #30363d; border-radius: 6px; "
-    "         padding: 7px 18px; }"
+    "border: 1px solid #30363d; border-radius: 6px; "
+    "padding: 7px 18px; }"
     "button:hover { background-color: #30363d; border-color: #58a6ff; }"
     "button:active { background-color: #161b22; }"
     "button.suggested-action { background-color: #1f6feb; color: #fff; border:none; }"
     "button.suggested-action:hover { background-color: #388bfd; }"
     "button.destructive-action { background-color: #da3633; color:#fff; border:none; }"
     "button.large-option { padding: 14px 20px; margin: 6px 0; "
-    "                      border-radius: 8px; text-align: left; }"
+    "border-radius: 8px; text-align: left; }"
     "button.large-option:hover { background-color: #1c2128; border-color: #58a6ff; }"
     "button.large-option.selected { border-color: #58a6ff; background-color: #1c2128; }"
 
     "radiobutton,checkbutton { color: #c9d1d9; padding: 4px 0; }"
     "radiobutton label,checkbutton label { color: #c9d1d9; }"
     "radiobutton:checked label,checkbutton:checked label "
-    "  { color: #58a6ff; font-weight: bold; }"
+    "{ color: #58a6ff; font-weight: bold; }"
 
     ".nav-bar { background-color: #161b22; border-top: 1px solid #30363d; "
-    "           padding: 12px 24px; }"
+    "padding: 12px 24px; }"
 
     "progressbar progress { background-color: #1f6feb; border-radius: 4px; min-height: 10px; }"
     "progressbar trough   { background-color: #21262d; border-radius: 4px; min-height: 10px; }"
 
     "textview { background-color: #0d1117; color: #c9d1d9; "
-    "           font-family: monospace; font-size: 12px; }"
+    "font-family: monospace; font-size: 12px; }"
     "textview text { background-color: #0d1117; }"
 
     "listbox { background-color: #0d1117; }"
     "listbox row { background-color: #0d1117; padding: 10px 14px; "
-    "              border-bottom: 1px solid #21262d; }"
+    "border-bottom: 1px solid #21262d; }"
     "listbox row:selected { background-color: #1c2128; border-left: 3px solid #58a6ff; }"
     "listbox row:hover { background-color: #0d1117; }"
     ".list-tag  { font-weight: bold; color: #e6edf3; }"
     ".list-desc { font-size: 12px; color: #8b949e; }"
 
     "combobox button { background-color: #21262d; color: #c9d1d9; "
-    "                  border: 1px solid #30363d; border-radius: 6px; }"
+    "border: 1px solid #30363d; border-radius: 6px; }"
     "combobox button:hover { border-color: #58a6ff; }"
 
     "separator { background-color: #30363d; }"
@@ -399,9 +399,9 @@ static const char *APP_CSS =
     ".welcome-title { font-size: 32px; font-weight: bold; color: #58a6ff; }"
     ".welcome-ver   { font-size: 13px; color: #6e7681; }"
     ".badge-uefi { background-color: #1f6feb; color:#fff; "
-    "              border-radius:4px; padding: 2px 8px; font-size:12px; }"
+    "border-radius:4px; padding: 2px 8px; font-size:12px; }"
     ".badge-bios { background-color: #d29922; color:#000; "
-    "              border-radius:4px; padding: 2px 8px; font-size:12px; }"
+    "border-radius:4px; padding: 2px 8px; font-size:12px; }"
     ;
 
 static void setup_css(void) {
@@ -922,48 +922,48 @@ static int run_preflight(void) {
     int ok = 1;
 
     if (geteuid() != 0) {
-        strncat(report, L("   Not running as root\n",
-                          "   No se esta ejecutando como root\n"),
+        strncat(report, L("Not running as root\n",
+                          "No se esta ejecutando como root\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("   Running as root\n","   Ejecutando como root\n"),
+        strncat(report, L("Running as root\n","Ejecutando como root\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (!check_connectivity()) {
-        strncat(report, L("   No internet connection\n",
-                          "   Sin conexion a internet\n"),
+        strncat(report, L("No internet connection\n",
+                          "Sin conexion a internet\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("   Internet connection OK\n","   Conexion a internet OK\n"),
+        strncat(report, L("Internet connection OK\n","Conexion a internet OK\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (system("which pacstrap >/dev/null 2>&1") != 0) {
-        strncat(report, L("   pacstrap not found (are you in the Arch ISO?)\n",
-                          "   pacstrap no encontrado (estas en la ISO de Arch?)\n"),
+        strncat(report, L("pacstrap not found (are you in the Arch ISO?)\n",
+                          "pacstrap no encontrado (estas en la ISO de Arch?)\n"),
                 sizeof(report)-strlen(report)-1);
         ok = 0;
     } else {
-        strncat(report, L("   pacstrap found\n","   pacstrap encontrado\n"),
+        strncat(report, L("pacstrap found\n","pacstrap encontrado\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     if (system("mountpoint -q /mnt 2>/dev/null") == 0) {
-        strncat(report, L("   /mnt is already mounted (may conflict)\n",
-                          "   /mnt ya esta montado (puede haber conflicto)\n"),
+        strncat(report, L("/mnt is already mounted (may conflict)\n",
+                          "/mnt ya esta montado (puede haber conflicto)\n"),
                 sizeof(report)-strlen(report)-1);
     } else {
-        strncat(report, L("   /mnt is free\n","   /mnt libre\n"),
+        strncat(report, L("/mnt is free\n","/mnt libre\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
     st.laptop = is_laptop();
     if (st.laptop) {
-        strncat(report, L("   Laptop detected (will install TLP power management)\n",
-                          "   Laptop detectada (se instalara gestion de energia TLP)\n"),
+        strncat(report, L("Laptop detected (will install TLP power management)\n",
+                          "Laptop detectada (se instalara gestion de energia TLP)\n"),
                 sizeof(report)-strlen(report)-1);
     }
 
@@ -973,8 +973,8 @@ static int run_preflight(void) {
             long long free_mb = ((long long)vfs.f_bavail * vfs.f_frsize) / (1024*1024);
             char line[128];
             snprintf(line,sizeof(line),
-                     L("   Installer free space: %lld MB\n",
-                       "   Espacio libre en instalador: %lld MB\n"), free_mb);
+                     L("Installer free space: %lld MB\n",
+                       "Espacio libre en instalador: %lld MB\n"), free_mb);
             strncat(report,line,sizeof(report)-strlen(report)-1);
         }
     }
@@ -1384,10 +1384,10 @@ rescan_wifi:;
         char fail_msg[512];
         snprintf(fail_msg,sizeof(fail_msg),
                  L(" Could not connect to '%s'.\n\nPossible causes:\n"
-                   "  - Wrong password\n  - Network out of range\n  - DHCP not responding\n\n"
+                   "- Wrong password\n  - Network out of range\n  - DHCP not responding\n\n"
                    "Press OK to try again or Cancel to go back.",
                    " No se pudo conectar a '%s'.\n\nPosibles causas:\n"
-                   "  - Contraseña incorrecta\n  - Red fuera de alcance\n  - DHCP sin respuesta\n\n"
+                   "- Contraseña incorrecta\n  - Red fuera de alcance\n  - DHCP sin respuesta\n\n"
                    "Pulsa OK para intentar de nuevo o Cancelar para volver."),
                  ssid_sel);
         if (yesno_dlg(L(" WiFi Failed"," WiFi fallido"),fail_msg))
@@ -1438,15 +1438,15 @@ static void screen_network(void) {
                         L(" No connection"," Sin conexión"),
                         L("Could not reach the internet over the wired connection.\n\n"
                           "Check:\n"
-                          "  - Is the network cable plugged in?\n"
-                          "  - Is the router/switch turned on?\n"
-                          "  - Did your router assign an IP? (try: dhclient eth0)\n\n"
+                          "- Is the network cable plugged in?\n"
+                          "- Is the router/switch turned on?\n"
+                          "- Did your router assign an IP? (try: dhclient eth0)\n\n"
                           "Try again now?",
                           "No se pudo alcanzar internet por cable.\n\n"
                           "Comprueba:\n"
-                          "  - ¿Está el cable de red conectado?\n"
-                          "  - ¿Está encendido el router/switch?\n"
-                          "  - ¿Tu router asignó una IP? (prueba: dhclient eth0)\n\n"
+                          "- ¿Está el cable de red conectado?\n"
+                          "- ¿Está encendido el router/switch?\n"
+                          "- ¿Tu router asignó una IP? (prueba: dhclient eth0)\n\n"
                           "¿Reintentar ahora?")))
                     break;
             }
@@ -1710,10 +1710,10 @@ static void ib_setup_zfs(IB *ib, const char *part) {
             ib->on_done(0,
                 "ZFS setup failed: zfs-linux does not match the running kernel.\n\n"
                 "Solutions:\n"
-                "  1. Use a ZFS-enabled Arch ISO:\n"
-                "     https://archzfs.leibelt.de\n"
-                "  2. Wait for archzfs to release an updated zfs-linux.\n"
-                "  3. Choose a different filesystem (ext4, btrfs, xfs).",
+                "1. Use a ZFS-enabled Arch ISO:\n"
+                "https://archzfs.leibelt.de\n"
+                "2. Wait for archzfs to release an updated zfs-linux.\n"
+                "3. Choose a different filesystem (ext4, btrfs, xfs).",
                 ib->ud);
             pthread_exit(NULL);
         }
@@ -1860,19 +1860,19 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
                 snprintf(ipath,sizeof(ipath),"boot():/initramfs-%s.img",tok);
                 if (microcode[0])
                     snprintf(ucode_line,sizeof(ucode_line),
-                             "    module_path: boot():/%s.img\n",microcode);
+                             "module_path: boot():/%s.img\n",microcode);
             } else {
                 snprintf(kpath,sizeof(kpath),"boot():%s/boot/vmlinuz-%s",btrfs_prefix,tok);
                 snprintf(ipath,sizeof(ipath),"boot():%s/boot/initramfs-%s.img",btrfs_prefix,tok);
                 if (microcode[0])
                     snprintf(ucode_line,sizeof(ucode_line),
-                             "    module_path: boot():%s/boot/%s.img\n",btrfs_prefix,microcode);
+                             "module_path: boot():%s/boot/%s.img\n",btrfs_prefix,microcode);
             }
             fprintf(f,"/Arch Linux (%s)\n    protocol: linux\n",tok);
-            fprintf(f,"    path: %s\n", kpath);
-            fprintf(f,"    cmdline: %s rw quiet %s\n", root_opt, extra);
+            fprintf(f,"path: %s\n", kpath);
+            fprintf(f,"cmdline: %s rw quiet %s\n", root_opt, extra);
             if (ucode_line[0]) fputs(ucode_line, f);
-            fprintf(f,"    module_path: %s\n\n", ipath);
+            fprintf(f,"module_path: %s\n\n", ipath);
             tok = strtok(NULL, " ");
         }
         fclose(f);
@@ -2002,9 +2002,9 @@ static void ib_configure_keyboard(IB *ib, const char *km) {
     char xorg[1024];
     snprintf(xorg,sizeof(xorg),
              "Section \"InputClass\"\n"
-             "    Identifier \"system-keyboard\"\n"
-             "    MatchIsKeyboard \"on\"\n"
-             "    Option \"XkbLayout\" \"%s\"\n"
+             "Identifier \"system-keyboard\"\n"
+             "MatchIsKeyboard \"on\"\n"
+             "Option \"XkbLayout\" \"%s\"\n"
              "EndSection\n", x11);
     char q[MAX_CMD];
     shell_quote(xorg,q,sizeof(q));
@@ -3030,7 +3030,7 @@ static void update_nav_buttons(void) {
     gtk_widget_set_sensitive(g_back_btn, !is_first && !is_install && !is_finish);
 
     if (is_finish)
-        gtk_button_set_label(GTK_BUTTON(g_next_btn), L("Reboot 🔄","Reiniciar 🔄"));
+        gtk_button_set_label(GTK_BUTTON(g_next_btn), L("Reboot","Reiniciar"));
     else if (is_install)
         gtk_button_set_label(GTK_BUTTON(g_next_btn), "…");
     else if (is_last)
@@ -3260,8 +3260,8 @@ static GtkWidget *build_welcome(void) {
     gtk_box_pack_start(GTK_BOX(page), vbox, TRUE, TRUE, 0);
 
     GtkWidget *logo = gtk_label_new(
-        "   /\\   \n"
-        "  /  \\  \n"
+        "/\\   \n"
+        "/  \\  \n"
         " / /\\ \\ \n"
         "/_/  \\_\\");
     add_class(logo, "welcome-title");
@@ -3278,7 +3278,7 @@ static GtkWidget *build_welcome(void) {
     gtk_label_set_justify(GTK_LABEL(ver), GTK_JUSTIFY_CENTER);
     gtk_box_pack_start(GTK_BOX(vbox), ver, FALSE, FALSE, 0);
 
-    W_boot_badge = gtk_label_new(is_uefi() ? "  UEFI  " : "  BIOS  ");
+    W_boot_badge = gtk_label_new(is_uefi() ? "UEFI  " : "BIOS  ");
     add_class(W_boot_badge, is_uefi() ? "badge-uefi" : "badge-bios");
     gtk_label_set_justify(GTK_LABEL(W_boot_badge), GTK_JUSTIFY_CENTER);
     gtk_box_pack_start(GTK_BOX(vbox), W_boot_badge, FALSE, FALSE, 0);
@@ -3288,9 +3288,9 @@ static GtkWidget *build_welcome(void) {
 
     GtkWidget *warn = gtk_label_new(
         L("⚠  This installer will ERASE the selected disk and install Arch Linux.\n"
-          "   Make sure you have backups.  Press Next to continue.",
+          "Make sure you have backups.  Press Next to continue.",
           "⚠  Este instalador BORRARÁ el disco seleccionado e instalará Arch Linux.\n"
-          "   Asegúrate de tener copias de seguridad.  Pulsa Siguiente para continuar."));
+          "Asegúrate de tener copias de seguridad.  Pulsa Siguiente para continuar."));
     gtk_label_set_justify(GTK_LABEL(warn), GTK_JUSTIFY_CENTER);
     gtk_label_set_line_wrap(GTK_LABEL(warn), TRUE);
     add_class(warn, "warn");
@@ -3317,8 +3317,8 @@ static GtkWidget *build_language(void) {
     GtkWidget *card = make_card();
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
 
-    W_lang_en = gtk_button_new_with_label("🇬🇧  English");
-    W_lang_es = gtk_button_new_with_label("🇪🇸  Español");
+    W_lang_en = gtk_button_new_with_label("English");
+    W_lang_es = gtk_button_new_with_label("Español");
     gtk_widget_set_size_request(W_lang_en, 180, 60);
     gtk_widget_set_size_request(W_lang_es, 180, 60);
     add_class(W_lang_en, "large-option");
@@ -3360,9 +3360,9 @@ static GtkWidget *build_network(void) {
 
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12);
     GtkWidget *btn_check = gtk_button_new_with_label(
-        L("🔌  Check Wired","🔌  Verificar cable"));
+        L("Check Wired","Verificar cable"));
     GtkWidget *btn_wifi  = gtk_button_new_with_label(
-        L("📶  Connect WiFi","📶  Conectar WiFi"));
+        L("Connect WiFi","Conectar WiFi"));
     add_class(btn_check,"large-option");
     add_class(btn_wifi, "large-option");
     gtk_widget_set_size_request(btn_check, 200,56);
@@ -3410,10 +3410,10 @@ static GtkWidget *build_mode(void) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_mode_quick_radio), st.quick==1);
     gtk_box_pack_start(GTK_BOX(c1),W_mode_quick_radio,FALSE,FALSE,0);
     GtkWidget *q_desc = gtk_label_new(
-        L("  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
-          "  Sensible defaults, minimum questions.",
-          "  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
-          "  Valores sensatos, mínimas preguntas."));
+        L("BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
+          "Sensible defaults, minimum questions.",
+          "BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
+          "Valores sensatos, mínimas preguntas."));
     gtk_label_set_xalign(GTK_LABEL(q_desc),0.0f);
     add_class(q_desc,"hint");
     gtk_widget_set_margin_start(q_desc,26);
@@ -3423,15 +3423,15 @@ static GtkWidget *build_mode(void) {
     GtkWidget *c2 = make_card();
     W_mode_custom_radio = gtk_radio_button_new_with_label(
         gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_mode_quick_radio)),
-        L("🔧  Custom Install",
-          "🔧  Instalación Personalizada"));
+        L("Custom Install",
+          "Instalación Personalizada"));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_mode_custom_radio), st.quick==0);
     gtk_box_pack_start(GTK_BOX(c2),W_mode_custom_radio,FALSE,FALSE,0);
     GtkWidget *cu_desc = gtk_label_new(
-        L("  Choose filesystem, kernel, bootloader, desktop, GPU, and more.\n"
-          "  Full control over every setting.",
-          "  Elige sistema de archivos, kernel, bootloader, escritorio, GPU y más.\n"
-          "  Control total sobre cada ajuste."));
+        L("Choose filesystem, kernel, bootloader, desktop, GPU, and more.\n"
+          "Full control over every setting.",
+          "Elige sistema de archivos, kernel, bootloader, escritorio, GPU y más.\n"
+          "Control total sobre cada ajuste."));
     gtk_label_set_xalign(GTK_LABEL(cu_desc),0.0f);
     add_class(cu_desc,"hint");
     gtk_widget_set_margin_start(cu_desc,26);
@@ -3586,7 +3586,7 @@ static GtkWidget *build_disk(void) {
     gtk_box_pack_start(GTK_BOX(disk_card),list_sw,FALSE,FALSE,0);
 
     GtkWidget *btn_refresh = gtk_button_new_with_label(
-        L("🔄  Refresh disk list","🔄  Actualizar lista de discos"));
+        L("Refresh disk list","Actualizar lista de discos"));
     g_signal_connect(btn_refresh,"clicked",G_CALLBACK(cb_refresh_disks),NULL);
     gtk_box_pack_start(GTK_BOX(disk_card),btn_refresh,FALSE,FALSE,4);
 
@@ -3848,12 +3848,12 @@ static GtkWidget *build_mirrors(void) {
     gtk_box_pack_start(GTK_BOX(card),W_mirrors_chk,FALSE,FALSE,0);
 
     GtkWidget *info = gtk_label_new(
-        L("  Reflector will test mirror speeds and update /etc/pacman.d/mirrorlist.\n"
-          "  This adds ~30 seconds to the start of the installation but speeds up package downloads.\n"
-          "  Disable if you have a very slow internet connection.",
-          "  Reflector mide la velocidad de los mirrors y actualiza /etc/pacman.d/mirrorlist.\n"
-          "  Añade ~30 segundos al inicio de la instalación pero acelera la descarga de paquetes.\n"
-          "  Desactívalo si tienes una conexión muy lenta."));
+        L("Reflector will test mirror speeds and update /etc/pacman.d/mirrorlist.\n"
+          "This adds ~30 seconds to the start of the installation but speeds up package downloads.\n"
+          "Disable if you have a very slow internet connection.",
+          "Reflector mide la velocidad de los mirrors y actualiza /etc/pacman.d/mirrorlist.\n"
+          "Añade ~30 segundos al inicio de la instalación pero acelera la descarga de paquetes.\n"
+          "Desactívalo si tienes una conexión muy lenta."));
     gtk_label_set_xalign(GTK_LABEL(info),0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(info),TRUE);
     add_class(info,"hint");
@@ -4465,9 +4465,9 @@ static GtkWidget *build_snapper(void) {
     if (strcmp(st.filesystem,"btrfs")) {
         GtkWidget *info = gtk_label_new(
             L("⚠  Snapper is not available — requires btrfs filesystem.\n"
-              "   Change filesystem to btrfs to enable snapshots.",
+              "Change filesystem to btrfs to enable snapshots.",
               "⚠  Snapper no está disponible — requiere sistema de archivos btrfs.\n"
-              "   Cambia el sistema de archivos a btrfs para habilitar snapshots."));
+              "Cambia el sistema de archivos a btrfs para habilitar snapshots."));
         gtk_label_set_xalign(GTK_LABEL(info),0.0f);
         gtk_label_set_line_wrap(GTK_LABEL(info),TRUE);
         add_class(info,"warn");
@@ -4615,9 +4615,9 @@ static GtkWidget *build_review(void) {
 
     GtkWidget *warn = gtk_label_new(
         L("⚠  The installation will ERASE the selected disk.\n"
-          "   All data on that disk will be permanently lost.",
+          "All data on that disk will be permanently lost.",
           "⚠  La instalación BORRARÁ el disco seleccionado.\n"
-          "   Todos los datos de ese disco se perderán de forma permanente."));
+          "Todos los datos de ese disco se perderán de forma permanente."));
     add_class(warn,"warn");
     gtk_label_set_justify(GTK_LABEL(warn),GTK_JUSTIFY_CENTER);
     gtk_label_set_line_wrap(GTK_LABEL(warn),TRUE);
@@ -4635,39 +4635,39 @@ static void refresh_review(void) {
     int n=0;
 #define RV(fmt,...) n += snprintf(text+n,sizeof(text)-n,fmt"\n",##__VA_ARGS__)
     RV("══════════════════════════════════════════");
-    RV("  Arch Linux Installation Summary");
+    RV("Arch Linux Installation Summary");
     RV("══════════════════════════════════════════");
     RV("");
-    RV("  Mode         : %s", st.quick?"Quick":"Custom");
-    RV("  Language     : %s", st.lang);
-    RV("  Locale       : %s", st.locale);
-    RV("  Keyboard     : %s", st.keymap);
-    RV("  Timezone     : %s", st.timezone);
+    RV("Mode         : %s", st.quick?"Quick":"Custom");
+    RV("Language     : %s", st.lang);
+    RV("Locale       : %s", st.locale);
+    RV("Keyboard     : %s", st.keymap);
+    RV("Timezone     : %s", st.timezone);
     RV("");
-    RV("  Disk         : /dev/%s", st.disk);
-    RV("  Swap         : %s GB", st.swap);
-    RV("  Dual boot    : %s", st.dualboot?"Yes":"No");
-    RV("  Filesystem   : %s", st.filesystem);
-    RV("  Kernel(s)    : %s", st.kernel_list);
-    RV("  Bootloader   : %s", st.bootloader);
-    RV("  Mirrors      : %s", st.mirrors?"reflector (auto)":"no");
+    RV("Disk         : /dev/%s", st.disk);
+    RV("Swap         : %s GB", st.swap);
+    RV("Dual boot    : %s", st.dualboot?"Yes":"No");
+    RV("Filesystem   : %s", st.filesystem);
+    RV("Kernel(s)    : %s", st.kernel_list);
+    RV("Bootloader   : %s", st.bootloader);
+    RV("Mirrors      : %s", st.mirrors?"reflector (auto)":"no");
     RV("");
-    RV("  Hostname     : %s", st.hostname);
-    RV("  Username     : %s", st.username);
+    RV("Hostname     : %s", st.hostname);
+    RV("Username     : %s", st.username);
     RV("");
-    RV("  Desktop(s)   : %s", st.desktop_list);
-    RV("  GPU driver   : %s", st.gpu);
+    RV("Desktop(s)   : %s", st.desktop_list);
+    RV("GPU driver   : %s", st.gpu);
     if (!strcmp(st.gpu,"Intel+NVIDIA"))
-    RV("  Optimus mode : %s", st.optimus_mode);
-    RV("  Profile      : %s", st.profile);
-    RV("  Dotfiles     : %s", st.dotfiles);
+    RV("Optimus mode : %s", st.optimus_mode);
+    RV("Profile      : %s", st.profile);
+    RV("Dotfiles     : %s", st.dotfiles);
     if (!strcmp(st.dotfiles,"custom"))
-    RV("  Dotfiles URL : %s", st.dotfiles_url);
-    RV("  yay          : %s", st.yay?"yes":"no");
-    RV("  Flatpak      : %s", st.flatpak?"yes":"no");
-    RV("  Snapper      : %s", st.snapper?"yes":"no");
+    RV("Dotfiles URL : %s", st.dotfiles_url);
+    RV("yay          : %s", st.yay?"yes":"no");
+    RV("Flatpak      : %s", st.flatpak?"yes":"no");
+    RV("Snapper      : %s", st.snapper?"yes":"no");
     if (st.extra_pkgs[0])
-    RV("  Extra pkgs   : %s", st.extra_pkgs);
+    RV("Extra pkgs   : %s", st.extra_pkgs);
     RV("");
     RV("══════════════════════════════════════════");
 #undef RV
@@ -4723,9 +4723,9 @@ static void gtk_run_preflight(void) {
     GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(W_pre_tv));
     char text[4096]={0};
     int n=0, ok=1;
-#define PF(sym,fmt,...) n+=snprintf(text+n,sizeof(text)-n,"  %s  "fmt"\n",sym,##__VA_ARGS__)
+#define PF(sym,fmt,...) n+=snprintf(text+n,sizeof(text)-n,"%s  "fmt"\n",sym,##__VA_ARGS__)
 
-    PF("🔍","Running pre-install checks…");
+    PF("","Running pre-install checks…");
     n+=snprintf(text+n,sizeof(text)-n,"\n");
 
     int net_ok = check_connectivity();
@@ -4773,10 +4773,10 @@ static void gtk_run_preflight(void) {
 
     n+=snprintf(text+n,sizeof(text)-n,"\n");
     if (ok)
-        n+=snprintf(text+n,sizeof(text)-n,"  ✓  All checks passed — ready to install!\n");
+        n+=snprintf(text+n,sizeof(text)-n,"✓  All checks passed — ready to install!\n");
     else
         n+=snprintf(text+n,sizeof(text)-n,
-            "  ✗  Some checks FAILED.  Fix the issues before proceeding.\n");
+            "✗  Some checks FAILED.  Fix the issues before proceeding.\n");
 
 #undef PF
     gtk_text_buffer_set_text(buf,text,-1);
@@ -4865,20 +4865,20 @@ static GtkWidget *build_finish(void) {
 
     GtkWidget *steps_lbl = gtk_label_new(
         L("Next steps after reboot:\n"
-          "  • Log in with your username and password\n"
-          "  • Run  pacman -Syu  to update packages\n"
-          "  • Check the Arch Wiki for tips",
+          "• Log in with your username and password\n"
+          "• Run  pacman -Syu  to update packages\n"
+          "• Check the Arch Wiki for tips",
           "Pasos tras el reinicio:\n"
-          "  • Inicia sesión con tu usuario y contraseña\n"
-          "  • Ejecuta  pacman -Syu  para actualizar paquetes\n"
-          "  • Consulta la Arch Wiki para consejos"));
+          "• Inicia sesión con tu usuario y contraseña\n"
+          "• Ejecuta  pacman -Syu  para actualizar paquetes\n"
+          "• Consulta la Arch Wiki para consejos"));
     gtk_label_set_xalign(GTK_LABEL(steps_lbl),0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(steps_lbl),TRUE);
     add_class(steps_lbl,"hint");
     gtk_box_pack_start(GTK_BOX(vbox),steps_lbl,FALSE,FALSE,0);
 
     GtkWidget *reboot_btn = gtk_button_new_with_label(
-        L("🔄  Reboot Now","🔄  Reiniciar ahora"));
+        L("Reboot Now","Reiniciar ahora"));
     add_class(reboot_btn,"suggested-action");
     gtk_widget_set_size_request(reboot_btn,200,48);
     gtk_widget_set_halign(reboot_btn,GTK_ALIGN_CENTER);
@@ -5282,8 +5282,11 @@ static int val_install_start(void) {
     ib->on_done     = inst_on_done;
     ib->ud          = NULL;
 
+    IBRunArg *ibarg = malloc(sizeof(IBRunArg));
+    if (!ibarg) { free(ib); return 0; }
+    ibarg->ib = ib;
     pthread_t tid;
-    pthread_create(&tid,NULL,ib_run_thread,(void*)ib);
+    pthread_create(&tid,NULL,ib_run_thread,(void*)ibarg);
     pthread_detach(tid);
     return 0; 
 }
@@ -5530,13 +5533,13 @@ static void write_openbox_env(void) {
     fprintf(f,
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 "<openbox_config xmlns=\"http://openbox.org/3.4/rc\">\n"
-"  <theme><font place=\"ActiveWindow\"><size>1</size></font>"
+"<theme><font place=\"ActiveWindow\"><size>1</size></font>"
 "<name>Bear2</name></theme>\n"
-"  <desktops><number>1</number></desktops>\n"
-"  <applications>\n"
-"    <application class=\"*\"><decor>no</decor>"
+"<desktops><number>1</number></desktops>\n"
+"<applications>\n"
+"<application class=\"*\"><decor>no</decor>"
 "<maximized>yes</maximized></application>\n"
-"  </applications>\n"
+"</applications>\n"
 "</openbox_config>\n");
     fclose(f);
 }
