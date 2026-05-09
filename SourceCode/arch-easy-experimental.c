@@ -1,5 +1,3 @@
-/* this is broken, do not use lol */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +19,7 @@
 #include <dirent.h>
 #include <signal.h>
 #include <sys/statvfs.h>
+
 #include <gtk/gtk.h>
 
 #define VERSION   "V3.0.0"
@@ -195,9 +194,6 @@ static const char *get_desktop_dm(const char *name) {
 }
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int g_fullscreen = 1;
-
-static int g_home_requested = 0;
 
 static int password_strength(const char *p) {
     if (!p || !p[0]) return 0;
@@ -214,16 +210,6 @@ static int password_strength(const char *p) {
     if (len < 8 || score < 2) return 1;
     if (len < 12 || score < 3) return 2;
     return 3;
-}
-
-static void password_strength_label(const char *p, char *out, size_t sz,
-                                    const char *lang) {
-    int s = password_strength(p);
-    const char *bar[]   = {"", "██░░░", "████░", "█████"};
-    const char *elen[]  = {"(empty)", "WEAK", "MEDIUM", "STRONG"};
-    const char *eses[]  = {"(vacía)", "DÉBIL", "MEDIA",  "FUERTE"};
-    const char **lbl = strcmp(lang,"en")==0 ? elen : eses;
-    snprintf(out, sz, "%s %s", s>0?bar[s]:"", lbl[s]);
 }
 
 static void write_log(const char *msg) {
@@ -326,89 +312,151 @@ static void dlg_strip(const char *src, char *dst, size_t n) {
     dst[i] = '\0';
 }
 
-static void set_dark_theme_env(void) {
+
+static int g_fullscreen     = 1;
+static int g_home_requested = 0;
+
+static GtkWidget *g_main_window = NULL;
+
+static const char *APP_CSS =
+    "window { background-color: #0d1117; color: #c9d1d9; }"
+    "* { color: #c9d1d9; }"
+
+    ".sidebar { background-color: #161b22; border-right: 1px solid #30363d; }"
+    ".step-row { padding: 10px 18px; border-left: 3px solid transparent; }"
+    ".step-row.active { background-color: #1c2128; border-left: 3px solid #58a6ff; }"
+    ".step-row.done   { opacity: 0.7; }"
+    ".step-num { font-size: 10px; color: #6e7681; margin-right: 4px; }"
+    ".step-name { font-size: 13px; color: #8b949e; }"
+    ".step-name.active { color: #e6edf3; font-weight: bold; }"
+    ".step-name.done   { color: #3fb950; }"
+
+    ".page-wrap { padding: 36px 48px; background-color: #0d1117; }"
+    ".page-title { font-size: 24px; font-weight: bold; color: #e6edf3; }"
+    ".page-sub   { font-size: 13px; color: #8b949e; margin-top: 4px; }"
+    ".divider    { background-color: #30363d; min-height: 1px; margin: 20px 0; }"
+    ".card { background-color: #161b22; border-radius: 8px; "
+    "        border: 1px solid #30363d; padding: 20px; margin-top: 12px; }"
+    ".card-title { font-size: 15px; font-weight: bold; margin-bottom: 6px; }"
+    ".hint { font-size: 12px; color: #6e7681; margin-top: 4px; }"
+    ".warn { color: #f85149; font-weight: bold; }"
+
+    "entry { background-color: #0d1117; color: #e6edf3; "
+    "        border: 1px solid #30363d; border-radius: 6px; "
+    "        padding: 8px 12px; caret-color: #58a6ff; }"
+    "entry:focus { border-color: #58a6ff; outline: none; }"
+    "entry.error { border-color: #f85149; }"
+
+    "button { background-color: #21262d; color: #c9d1d9; "
+    "         border: 1px solid #30363d; border-radius: 6px; "
+    "         padding: 7px 18px; }"
+    "button:hover { background-color: #30363d; border-color: #58a6ff; }"
+    "button:active { background-color: #161b22; }"
+    "button.suggested-action { background-color: #1f6feb; color: #fff; border:none; }"
+    "button.suggested-action:hover { background-color: #388bfd; }"
+    "button.destructive-action { background-color: #da3633; color:#fff; border:none; }"
+    "button.large-option { padding: 14px 20px; margin: 6px 0; "
+    "                      border-radius: 8px; text-align: left; }"
+    "button.large-option:hover { background-color: #1c2128; border-color: #58a6ff; }"
+    "button.large-option.selected { border-color: #58a6ff; background-color: #1c2128; }"
+
+    "radiobutton,checkbutton { color: #c9d1d9; padding: 4px 0; }"
+    "radiobutton label,checkbutton label { color: #c9d1d9; }"
+    "radiobutton:checked label,checkbutton:checked label "
+    "  { color: #58a6ff; font-weight: bold; }"
+
+    ".nav-bar { background-color: #161b22; border-top: 1px solid #30363d; "
+    "           padding: 12px 24px; }"
+
+    "progressbar progress { background-color: #1f6feb; border-radius: 4px; min-height: 10px; }"
+    "progressbar trough   { background-color: #21262d; border-radius: 4px; min-height: 10px; }"
+
+    "textview { background-color: #0d1117; color: #c9d1d9; "
+    "           font-family: monospace; font-size: 12px; }"
+    "textview text { background-color: #0d1117; }"
+
+    "listbox { background-color: #0d1117; }"
+    "listbox row { background-color: #0d1117; padding: 10px 14px; "
+    "              border-bottom: 1px solid #21262d; }"
+    "listbox row:selected { background-color: #1c2128; border-left: 3px solid #58a6ff; }"
+    "listbox row:hover { background-color: #0d1117; }"
+    ".list-tag  { font-weight: bold; color: #e6edf3; }"
+    ".list-desc { font-size: 12px; color: #8b949e; }"
+
+    "combobox button { background-color: #21262d; color: #c9d1d9; "
+    "                  border: 1px solid #30363d; border-radius: 6px; }"
+    "combobox button:hover { border-color: #58a6ff; }"
+
+    "separator { background-color: #30363d; }"
+
+    "dialog .dialog-action-area button { min-width: 80px; }"
+    "messagedialog .message-dialog-text { font-size: 14px; }"
+
+    ".strength-weak   { color: #f85149; font-weight: bold; }"
+    ".strength-medium { color: #d29922; font-weight: bold; }"
+    ".strength-strong { color: #3fb950; font-weight: bold; }"
+
+    ".welcome-title { font-size: 32px; font-weight: bold; color: #58a6ff; }"
+    ".welcome-ver   { font-size: 13px; color: #6e7681; }"
+    ".badge-uefi { background-color: #1f6feb; color:#fff; "
+    "              border-radius:4px; padding: 2px 8px; font-size:12px; }"
+    ".badge-bios { background-color: #d29922; color:#000; "
+    "              border-radius:4px; padding: 2px 8px; font-size:12px; }"
+    ;
+
+static void setup_css(void) {
+    GtkCssProvider *p = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(p, APP_CSS, -1, NULL);
+    gtk_style_context_add_provider_for_screen(
+        gdk_screen_get_default(),
+        GTK_STYLE_PROVIDER(p),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(p);
 }
 
-
-static void apply_dark_theme(void) {
-    GtkSettings *settings = gtk_settings_get_default();
-    g_object_set(settings,
-        "gtk-theme-name", "Adwaita-dark",
-        "gtk-application-prefer-dark-theme", TRUE,
-        NULL);
+static void add_class(GtkWidget *w, const char *cls) {
+    gtk_style_context_add_class(gtk_widget_get_style_context(w), cls);
 }
-
-static void on_radio_toggled(GtkCellRendererToggle *renderer,
-                              gchar *path_str, gpointer data) {
-    (void)renderer;
-    GtkListStore *store = GTK_LIST_STORE(data);
-    GtkTreeIter   iter;
-    gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &iter);
-    while (valid) {
-        gtk_list_store_set(store, &iter, 0, FALSE, -1);
-        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &iter);
-    }
-    GtkTreePath *path = gtk_tree_path_new_from_string(path_str);
-    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, path))
-        gtk_list_store_set(store, &iter, 0, TRUE, -1);
-    gtk_tree_path_free(path);
-}
-
-static void on_check_toggled(GtkCellRendererToggle *renderer,
-                              gchar *path_str, gpointer data) {
-    (void)renderer;
-    GtkListStore *store = GTK_LIST_STORE(data);
-    GtkTreeIter   iter;
-    GtkTreePath  *path  = gtk_tree_path_new_from_string(path_str);
-    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, path)) {
-        gboolean active;
-        gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 0, &active, -1);
-        gtk_list_store_set(store, &iter, 0, !active, -1);
-    }
-    gtk_tree_path_free(path);
-}
-
-static void on_row_activated_ok(GtkTreeView *view, GtkTreePath *path,
-                                 GtkTreeViewColumn *col, gpointer data) {
-    (void)view; (void)path; (void)col;
-    gtk_dialog_response(GTK_DIALOG(data), GTK_RESPONSE_OK);
-}
-
 
 static void msgbox(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
-    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+    GtkWidget *dlg = gtk_message_dialog_new(
+        g_main_window ? GTK_WINDOW(g_main_window) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
         GTK_MESSAGE_INFO, GTK_BUTTONS_OK, "%s", clean);
     gtk_window_set_title(GTK_WINDOW(dlg), title);
-    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
     gtk_dialog_run(GTK_DIALOG(dlg));
     gtk_widget_destroy(dlg);
 }
 
 static int yesno_dlg(const char *title, const char *text) {
     char clean[4096]; dlg_strip(text, clean, sizeof(clean));
-    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+    GtkWidget *dlg = gtk_message_dialog_new(
+        g_main_window ? GTK_WINDOW(g_main_window) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
         GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO, "%s", clean);
     gtk_window_set_title(GTK_WINDOW(dlg), title);
-    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    int r = gtk_dialog_run(GTK_DIALOG(dlg));
     gtk_widget_destroy(dlg);
-    return resp == GTK_RESPONSE_YES;
+    return r == GTK_RESPONSE_YES;
 }
 
 static int inputbox_dlg(const char *title, const char *text,
-                        const char *init, char *out, size_t outsz) {
+                         const char *init, char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
-        "OK",     GTK_RESPONSE_OK,
-        "Cancel", GTK_RESPONSE_CANCEL,
-        L("Home","Inicio"), 77,
+
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        title,
+        g_main_window ? GTK_WINDOW(g_main_window) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        L("_Back","_Atrás"), GTK_RESPONSE_CANCEL,
+        "_OK",               GTK_RESPONSE_OK,
         NULL);
-    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
 
     GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
-    gtk_box_set_spacing(GTK_BOX(box), 8);
+    gtk_box_set_spacing(GTK_BOX(box), 10);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 20);
 
     GtkWidget *lbl = gtk_label_new(clean);
     gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
@@ -419,41 +467,36 @@ static int inputbox_dlg(const char *title, const char *text,
     if (init && *init) gtk_entry_set_text(GTK_ENTRY(entry), init);
     gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
     gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
-    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
 
     gtk_widget_show_all(dlg);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-
-    if (resp == 77) {
-        g_home_requested = 1;
-        gtk_widget_destroy(dlg);
-        return 1;
-    }
-    if (resp == GTK_RESPONSE_OK && out)
-        strncpy(out, gtk_entry_get_text(GTK_ENTRY(entry)), outsz - 1);
+    int rc = gtk_dialog_run(GTK_DIALOG(dlg));
+    if (rc == GTK_RESPONSE_OK && out)
+        strncpy(out, gtk_entry_get_text(GTK_ENTRY(entry)), outsz-1);
     gtk_widget_destroy(dlg);
-    return resp == GTK_RESPONSE_OK;
+    return rc == GTK_RESPONSE_OK;
 }
 
 static int passwordbox_dlg(const char *title, const char *text,
-                           char *out, size_t outsz) {
+                            char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-    int  show = 0;
-    char cur[512] = "";
-    if (out && out[0]) strncpy(cur, out, sizeof(cur) - 1);
+    int show_pass = 0;
+    int result = 0;
 
     while (1) {
-        GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
-            "OK",     GTK_RESPONSE_OK,
-            "Cancel", GTK_RESPONSE_CANCEL,
-            show ? L("Hide","Ocultar") : L("Show","Mostrar"), 3,
-            L("Home","Inicio"), 77,
+        GtkWidget *dlg = gtk_dialog_new_with_buttons(
+            title,
+            g_main_window ? GTK_WINDOW(g_main_window) : NULL,
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            L("_Back","_Atrás"),         GTK_RESPONSE_CANCEL,
+            show_pass ? L("🙈 Hide","🙈 Ocultar")
+                      : L("👁 Show","👁 Mostrar"), 77,
+            "_OK",                        GTK_RESPONSE_OK,
             NULL);
-        if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
+        gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
 
         GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-        gtk_container_set_border_width(GTK_CONTAINER(box), 12);
-        gtk_box_set_spacing(GTK_BOX(box), 8);
+        gtk_box_set_spacing(GTK_BOX(box), 10);
+        gtk_container_set_border_width(GTK_CONTAINER(box), 20);
 
         GtkWidget *lbl = gtk_label_new(clean);
         gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
@@ -461,260 +504,293 @@ static int passwordbox_dlg(const char *title, const char *text,
         gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
 
         GtkWidget *entry = gtk_entry_new();
-        gtk_entry_set_visibility(GTK_ENTRY(entry), show);
-        if (cur[0]) gtk_entry_set_text(GTK_ENTRY(entry), cur);
+        gtk_entry_set_visibility(GTK_ENTRY(entry), show_pass);
+        if (out && out[0]) gtk_entry_set_text(GTK_ENTRY(entry), out);
         gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
         gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
-        gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
 
         gtk_widget_show_all(dlg);
-        gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-        strncpy(cur, gtk_entry_get_text(GTK_ENTRY(entry)), sizeof(cur) - 1);
+        int rc = gtk_dialog_run(GTK_DIALOG(dlg));
+        const char *val = gtk_entry_get_text(GTK_ENTRY(entry));
+        if (out && val) strncpy(out, val, outsz-1);
+
         gtk_widget_destroy(dlg);
 
-        if (resp == 3) { show = !show; continue; }
-        if (resp == 77) { g_home_requested = 1; return 1; }
-        if (resp == GTK_RESPONSE_OK && out) { strncpy(out, cur, outsz - 1); return 1; }
-        return 0;
+        if (rc == 77) { show_pass = !show_pass; continue; }
+        result = (rc == GTK_RESPONSE_OK);
+        break;
     }
-}
-
-static GtkWidget *make_list_dialog(const char *title, const char *clean,
-                                   int add_home_btn) {
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
-        "OK",     GTK_RESPONSE_OK,
-        "Cancel", GTK_RESPONSE_CANCEL,
-        NULL);
-    if (add_home_btn)
-        gtk_dialog_add_button(GTK_DIALOG(dlg), L("Home","Inicio"), 77);
-    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 740, 520);
-
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
-    gtk_box_set_spacing(GTK_BOX(box), 8);
-
-    GtkWidget *lbl = gtk_label_new(clean);
-    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
-    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
-    gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
-
-    return dlg;
-}
-
-static int menu_dlg(const char *title, const char *text,
-                    MenuItem *items, int n, char *out, size_t outsz) {
-    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
-
-    GtkWidget *dlg = make_list_dialog(title, clean, 1);
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-
-    GtkListStore *store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
-    for (int i = 0; i < n; i++) {
-        GtkTreeIter it;
-        gtk_list_store_append(store, &it);
-        gtk_list_store_set(store, &it, 0, items[i].tag, 1, items[i].desc, -1);
-    }
-    GtkWidget *view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
-    g_object_unref(store);
-    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(view), FALSE);
-
-    GtkCellRenderer *r0 = gtk_cell_renderer_text_new();
-    GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
-        gtk_tree_view_column_new_with_attributes("Option",      r0, "text", 0, NULL));
-    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
-        gtk_tree_view_column_new_with_attributes("Description", r1, "text", 1, NULL));
-
-    g_signal_connect(view, "row-activated", G_CALLBACK(on_row_activated_ok), dlg);
-    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
-
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(scroll), view);
-    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
-
-    gtk_widget_show_all(dlg);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-
-    if (resp == GTK_RESPONSE_OK && out) {
-        GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
-        GtkTreeIter it; GtkTreeModel *m;
-        if (gtk_tree_selection_get_selected(sel, &m, &it)) {
-            gchar *tag; gtk_tree_model_get(m, &it, 0, &tag, -1);
-            strncpy(out, tag, outsz - 1); g_free(tag);
-        }
-    }
-    if (resp == 77) g_home_requested = 1;
-    gtk_widget_destroy(dlg);
-    return resp == GTK_RESPONSE_OK;
+    return result;
 }
 
 static int radiolist_dlg(const char *title, const char *text,
-                         MenuItem *items, int n, const char *def,
-                         char *out, size_t outsz) {
+                           MenuItem *items, int n, const char *def,
+                           char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
 
-    GtkWidget *dlg = make_list_dialog(title, clean, 1);
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-
-    GtkListStore *store = gtk_list_store_new(3,
-        G_TYPE_BOOLEAN, G_TYPE_STRING, G_TYPE_STRING);
-    for (int i = 0; i < n; i++) {
-        GtkTreeIter it;
-        gtk_list_store_append(store, &it);
-        gtk_list_store_set(store, &it,
-            0, (def && strcmp(items[i].tag, def) == 0),
-            1, items[i].tag,
-            2, items[i].desc,
-            -1);
-    }
-    GtkWidget *view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
-    g_object_unref(store);
-
-    GtkCellRendererToggle *tog = GTK_CELL_RENDERER_TOGGLE(
-        gtk_cell_renderer_toggle_new());
-    gtk_cell_renderer_toggle_set_radio(tog, TRUE);
-    g_signal_connect(tog, "toggled", G_CALLBACK(on_radio_toggled), store);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
-        gtk_tree_view_column_new_with_attributes("", GTK_CELL_RENDERER(tog),
-            "active", 0, NULL));
-
-    GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
-    GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
-        gtk_tree_view_column_new_with_attributes("Option",      r1, "text", 1, NULL));
-    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
-        gtk_tree_view_column_new_with_attributes("Description", r2, "text", 2, NULL));
-
-    g_signal_connect(view, "row-activated", G_CALLBACK(on_row_activated_ok), dlg);
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        title,
+        g_main_window ? GTK_WINDOW(g_main_window) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        L("_Back","_Atrás"), GTK_RESPONSE_CANCEL,
+        "_OK",               GTK_RESPONSE_OK,
+        NULL);
     gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 660, 520);
+
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_box_set_spacing(GTK_BOX(content), 0);
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(scroll), view);
-    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(scroll, -1, 380);
+    gtk_container_set_border_width(GTK_CONTAINER(content), 18);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
+
+    GtkWidget *desc_lbl = gtk_label_new(clean);
+    gtk_label_set_line_wrap(GTK_LABEL(desc_lbl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(desc_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(vbox), desc_lbl, FALSE, FALSE, 0);
+
+    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_box_pack_start(GTK_BOX(vbox), sep, FALSE, FALSE, 4);
+
+    GSList *group = NULL;
+    GtkWidget **radios = g_new0(GtkWidget*, n);
+    for (int i = 0; i < n; i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+
+        radios[i] = gtk_radio_button_new_with_label(group, items[i].tag);
+        group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(radios[i]));
+        gtk_box_pack_start(GTK_BOX(row), radios[i], FALSE, FALSE, 0);
+
+        if (items[i].desc[0] && strcmp(items[i].desc, items[i].tag) != 0) {
+            GtkWidget *sub = gtk_label_new(items[i].desc);
+            gtk_label_set_xalign(GTK_LABEL(sub), 0.0f);
+            gtk_label_set_line_wrap(GTK_LABEL(sub), TRUE);
+            add_class(sub, "hint");
+            gtk_widget_set_margin_start(sub, 26);
+            gtk_box_pack_start(GTK_BOX(row), sub, FALSE, FALSE, 0);
+        }
+
+        if (def && strcmp(items[i].tag, def) == 0)
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(radios[i]), TRUE);
+
+        gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 4);
+    }
+
+    gtk_container_add(GTK_CONTAINER(scroll), vbox);
+    gtk_box_pack_start(GTK_BOX(content), scroll, TRUE, TRUE, 0);
 
     gtk_widget_show_all(dlg);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    int rc = gtk_dialog_run(GTK_DIALOG(dlg));
 
-    if (resp == GTK_RESPONSE_OK && out) {
-        GtkTreeIter it;
-        gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &it);
-        while (valid) {
-            gboolean active; gchar *tag;
-            gtk_tree_model_get(GTK_TREE_MODEL(store), &it,
-                0, &active, 1, &tag, -1);
-            if (active) { strncpy(out, tag, outsz - 1); g_free(tag); break; }
-            g_free(tag);
-            valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &it);
+    if (rc == GTK_RESPONSE_OK && out) {
+        for (int i = 0; i < n; i++) {
+            if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(radios[i]))) {
+                strncpy(out, items[i].tag, outsz-1);
+                break;
+            }
         }
     }
-    if (resp == 77) g_home_requested = 1;
+    g_free(radios);
     gtk_widget_destroy(dlg);
-    return resp == GTK_RESPONSE_OK;
+    return rc == GTK_RESPONSE_OK;
+}
+
+static int menu_dlg(const char *title, const char *text,
+                     MenuItem *items, int n, char *out, size_t outsz) {
+    char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        title,
+        g_main_window ? GTK_WINDOW(g_main_window) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        L("_Back","_Atrás"), GTK_RESPONSE_CANCEL,
+        "_OK",               GTK_RESPONSE_OK,
+        NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 660, 500);
+
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(content), 18);
+    gtk_box_set_spacing(GTK_BOX(content), 8);
+
+    if (clean[0]) {
+        GtkWidget *lbl = gtk_label_new(clean);
+        gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(content), lbl, FALSE, FALSE, 0);
+    }
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(scroll, -1, 320);
+
+    GtkWidget *lb = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(lb), GTK_SELECTION_SINGLE);
+    add_class(lb, "menu-list");
+
+    for (int i = 0; i < n; i++) {
+        GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_container_set_border_width(GTK_CONTAINER(row_box), 4);
+
+        GtkWidget *tag_lbl = gtk_label_new(items[i].tag);
+        gtk_label_set_xalign(GTK_LABEL(tag_lbl), 0.0f);
+        add_class(tag_lbl, "list-tag");
+        gtk_box_pack_start(GTK_BOX(row_box), tag_lbl, FALSE, FALSE, 0);
+
+        if (items[i].desc[0] && strcmp(items[i].desc, items[i].tag) != 0) {
+            GtkWidget *d = gtk_label_new(items[i].desc);
+            gtk_label_set_xalign(GTK_LABEL(d), 0.0f);
+            gtk_label_set_line_wrap(GTK_LABEL(d), TRUE);
+            add_class(d, "list-desc");
+            gtk_box_pack_start(GTK_BOX(row_box), d, FALSE, FALSE, 0);
+        }
+
+        gtk_container_add(GTK_CONTAINER(lb), row_box);
+    }
+
+    GtkListBoxRow *row0 = gtk_list_box_get_row_at_index(GTK_LIST_BOX(lb), 0);
+    if (row0) gtk_list_box_select_row(GTK_LIST_BOX(lb), row0);
+
+    g_signal_connect_swapped(lb, "row-activated",
+        G_CALLBACK(gtk_dialog_response), GINT_TO_POINTER(GTK_RESPONSE_OK));
+
+    gtk_container_add(GTK_CONTAINER(scroll), lb);
+    gtk_box_pack_start(GTK_BOX(content), scroll, TRUE, TRUE, 0);
+
+    gtk_widget_show_all(dlg);
+    int rc = gtk_dialog_run(GTK_DIALOG(dlg));
+
+    if (rc == GTK_RESPONSE_OK && out) {
+        GtkListBoxRow *sel = gtk_list_box_get_selected_row(GTK_LIST_BOX(lb));
+        if (sel) {
+            int idx = gtk_list_box_row_get_index(sel);
+            if (idx >= 0 && idx < n)
+                strncpy(out, items[idx].tag, outsz-1);
+        }
+    }
+    gtk_widget_destroy(dlg);
+    return rc == GTK_RESPONSE_OK;
 }
 
 static int checklist_dlg(const char *title, const char *text,
-                         MenuItem *items, int n,
-                         const char **defaults, int ndef,
-                         char out[][256], int maxout) {
+                          MenuItem *items, int n,
+                          const char **defaults, int ndef,
+                          char out[][256], int maxout) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
 
-    GtkWidget *dlg = make_list_dialog(title, clean, 0);
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        title,
+        g_main_window ? GTK_WINDOW(g_main_window) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        L("_Back","_Atrás"), GTK_RESPONSE_CANCEL,
+        "_OK",               GTK_RESPONSE_OK,
+        NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 680, 560);
 
-    GtkListStore *store = gtk_list_store_new(3,
-        G_TYPE_BOOLEAN, G_TYPE_STRING, G_TYPE_STRING);
-    for (int i = 0; i < n; i++) {
-        int on = 0;
-        for (int j = 0; j < ndef; j++)
-            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0)
-                { on = 1; break; }
-        GtkTreeIter it;
-        gtk_list_store_append(store, &it);
-        gtk_list_store_set(store, &it,
-            0, (gboolean)on, 1, items[i].tag, 2, items[i].desc, -1);
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(content), 18);
+    gtk_box_set_spacing(GTK_BOX(content), 8);
+
+    if (clean[0]) {
+        GtkWidget *lbl = gtk_label_new(clean);
+        gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(content), lbl, FALSE, FALSE, 0);
     }
-    GtkWidget *view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
-    g_object_unref(store);
-
-    GtkCellRendererToggle *tog = GTK_CELL_RENDERER_TOGGLE(
-        gtk_cell_renderer_toggle_new());
-    g_signal_connect(tog, "toggled", G_CALLBACK(on_check_toggled), store);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
-        gtk_tree_view_column_new_with_attributes("", GTK_CELL_RENDERER(tog),
-            "active", 0, NULL));
-
-    GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
-    GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
-        gtk_tree_view_column_new_with_attributes("Package",     r1, "text", 1, NULL));
-    gtk_tree_view_append_column(GTK_TREE_VIEW(view),
-        gtk_tree_view_column_new_with_attributes("Description", r2, "text", 2, NULL));
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(scroll), view);
-    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(scroll, -1, 380);
 
-    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
+
+    GtkWidget **checks = g_new0(GtkWidget*, n);
+    for (int i = 0; i < n; i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+
+        checks[i] = gtk_check_button_new_with_label(items[i].tag);
+
+        int on = 0;
+        for (int j = 0; j < ndef; j++)
+            if (defaults[j] && strcmp(items[i].tag, defaults[j]) == 0) { on=1; break; }
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(checks[i]), on);
+
+        gtk_box_pack_start(GTK_BOX(row), checks[i], FALSE, FALSE, 0);
+
+        if (items[i].desc[0] && strcmp(items[i].desc, items[i].tag) != 0) {
+            GtkWidget *sub = gtk_label_new(items[i].desc);
+            gtk_label_set_xalign(GTK_LABEL(sub), 0.0f);
+            gtk_label_set_line_wrap(GTK_LABEL(sub), TRUE);
+            add_class(sub, "hint");
+            gtk_widget_set_margin_start(sub, 26);
+            gtk_box_pack_start(GTK_BOX(row), sub, FALSE, FALSE, 0);
+        }
+
+        gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
+    }
+
+    gtk_container_add(GTK_CONTAINER(scroll), vbox);
+    gtk_box_pack_start(GTK_BOX(content), scroll, TRUE, TRUE, 0);
+
     gtk_widget_show_all(dlg);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-
-    if (resp != GTK_RESPONSE_OK) return -1;
+    int rc = gtk_dialog_run(GTK_DIALOG(dlg));
 
     int count = 0;
-    GtkTreeIter it;
-    gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &it);
-    while (valid && count < maxout) {
-        gboolean active; gchar *tag;
-        gtk_tree_model_get(GTK_TREE_MODEL(store), &it,
-            0, &active, 1, &tag, -1);
-        if (active) {
-            strncpy(out[count], tag, 255);
-            out[count][255] = '\0';
-            count++;
+    if (rc == GTK_RESPONSE_OK) {
+        for (int i = 0; i < n && count < maxout; i++) {
+            if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(checks[i])))
+                strncpy(out[count++], items[i].tag, 255);
         }
-        g_free(tag);
-        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &it);
     }
-    return count;
+    g_free(checks);
+    gtk_widget_destroy(dlg);
+    return rc == GTK_RESPONSE_OK ? count : -1;
 }
 
-static GtkWidget *g_infobox_window = NULL;
+static GtkWidget *g_infobox_win = NULL;
 
 static void infobox_dlg(const char *title, const char *text) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
+    if (g_infobox_win) { gtk_widget_destroy(g_infobox_win); g_infobox_win = NULL; }
 
-    if (g_infobox_window) {
-        gtk_widget_destroy(g_infobox_window);
-        g_infobox_window = NULL;
-    }
-
-    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(win), title);
-    gtk_window_set_decorated(GTK_WINDOW(win), TRUE);
-    gtk_window_set_default_size(GTK_WINDOW(win), 420, 140);
-    gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
+    GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(w), title);
+    gtk_window_set_default_size(GTK_WINDOW(w), 360, 120);
+    gtk_window_set_position(GTK_WINDOW(w), GTK_WIN_POS_CENTER);
+    gtk_window_set_resizable(GTK_WINDOW(w), FALSE);
+    if (g_main_window)
+        gtk_window_set_transient_for(GTK_WINDOW(w), GTK_WINDOW(g_main_window));
 
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 20);
-    gtk_container_add(GTK_CONTAINER(win), box);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 24);
+
+    GtkWidget *spinner = gtk_spinner_new();
+    gtk_spinner_start(GTK_SPINNER(spinner));
+    gtk_box_pack_start(GTK_BOX(box), spinner, FALSE, FALSE, 0);
 
     GtkWidget *lbl = gtk_label_new(clean);
     gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
-    gtk_box_pack_start(GTK_BOX(box), lbl, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
 
-    gtk_widget_show_all(win);
-    g_infobox_window = win;
+    gtk_container_add(GTK_CONTAINER(w), box);
+    gtk_widget_show_all(w);
+    g_infobox_win = w;
 
-    while (gtk_events_pending())
-        gtk_main_iteration_do(FALSE);
+    while (gtk_events_pending()) gtk_main_iteration_do(FALSE);
+}
+
+static void infobox_close(void) {
+    if (g_infobox_win) { gtk_widget_destroy(g_infobox_win); g_infobox_win = NULL; }
 }
 
 typedef void (*LineCallback)(const char *line, void *ud);
@@ -1409,6 +1485,7 @@ static int ensure_network(void) {
     }
     return 0;
 }
+
 
 typedef struct {
     void (*on_progress)(double pct, void *ud);
@@ -2744,2548 +2821,2784 @@ static void *ib_run_thread(void *arg) {
     ib->on_done(1,"",ib->ud);
     return NULL;
 }
+static void refresh_disk_list(void);
 
-static int   g_prog_fd  = -1;
-static pid_t g_prog_pid = -1;
-
-
-typedef struct {
-    GtkWidget *progress_bar;
-    GtkWidget *stage_label;
-    GtkWidget *log_view;
-} ProgChildCtx;
-
-static gboolean prog_child_io_cb(GIOChannel *src, GIOCondition cond,
-                                  gpointer data) {
-    ProgChildCtx *ctx = (ProgChildCtx *)data;
-    if (cond & (G_IO_HUP | G_IO_ERR)) {
-        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ctx->progress_bar), 1.0);
-        gtk_progress_bar_set_text(GTK_PROGRESS_BAR(ctx->progress_bar), "100%");
-        while (gtk_events_pending()) gtk_main_iteration_do(FALSE);
-        g_timeout_add(800, (GSourceFunc)gtk_main_quit, NULL);
-        return FALSE;
-    }
-    gchar *line = NULL;
-    gsize  len  = 0;
-    GIOStatus st = g_io_channel_read_line(src, &line, &len, NULL, NULL);
-    if (st == G_IO_STATUS_EOF) {
-        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ctx->progress_bar), 1.0);
-        g_timeout_add(800, (GSourceFunc)gtk_main_quit, NULL);
-        return FALSE;
-    }
-    if (st == G_IO_STATUS_NORMAL && line) {
-        g_strchomp(line);
-        if (line[0] == '#') {
-            const char *msg = line[1] == ' ' ? line + 2 : line + 1;
-            gtk_label_set_text(GTK_LABEL(ctx->stage_label), msg);
-            if (ctx->log_view) {
-                GtkTextBuffer *buf =
-                    gtk_text_view_get_buffer(GTK_TEXT_VIEW(ctx->log_view));
-                GtkTextIter end;
-                gtk_text_buffer_get_end_iter(buf, &end);
-                gtk_text_buffer_insert(buf, &end, msg, -1);
-                gtk_text_buffer_insert(buf, &end, "\n", -1);
-                gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(ctx->log_view),
-                    &end, 0.0, FALSE, 0.0, 1.0);
-            }
-        } else {
-            int pct = atoi(line);
-            if (pct >= 0 && pct <= 100) {
-                gtk_progress_bar_set_fraction(
-                    GTK_PROGRESS_BAR(ctx->progress_bar), pct / 100.0);
-                char pbuf[16];
-                snprintf(pbuf, sizeof(pbuf), "%d%%", pct);
-                gtk_progress_bar_set_text(
-                    GTK_PROGRESS_BAR(ctx->progress_bar), pbuf);
-            }
-        }
-        g_free(line);
-    }
-    return TRUE;
+static void cb_check_wired(GtkButton *b, gpointer d) {
+    (void)b;
+    GtkWidget *lbl = GTK_WIDGET(d);
+    if (check_connectivity())
+        gtk_label_set_text(GTK_LABEL(lbl),
+            strcmp(st.lang,"en")==0
+            ? "✓  Connected — ready to continue."
+            : "✓  Conectado — listo para continuar.");
+    else
+        gtk_label_set_text(GTK_LABEL(lbl),
+            strcmp(st.lang,"en")==0
+            ? "✗  No connection.  Check cable / router."
+            : "✗  Sin conexión.  Revisa el cable / router.");
 }
 
-static pid_t spawn_gtk_progress(const char *title, const char *header_text) {
-    int pfd[2];
-    if (pipe(pfd) != 0) return -1;
+static void cb_connect_wifi(GtkButton *b, gpointer d) {
+    (void)b;
+    GtkWidget *lbl = GTK_WIDGET(d);
+    int r = screen_wifi_connect();
+    if (r == 1)
+        gtk_label_set_text(GTK_LABEL(lbl),
+            strcmp(st.lang,"en")==0
+            ? "✓  WiFi connected — ready to continue."
+            : "✓  WiFi conectado — listo para continuar.");
+    else
+        gtk_label_set_text(GTK_LABEL(lbl),
+            strcmp(st.lang,"en")==0
+            ? "✗  WiFi not connected."
+            : "✗  WiFi no conectado.");
+}
 
-    pid_t pid = fork();
-    if (pid != 0) {
-        close(pfd[0]);
-        g_prog_fd = pfd[1];
-        return pid;
+static void cb_refresh_disks(GtkButton *b, gpointer d) {
+    (void)b; (void)d;
+    refresh_disk_list();
+}
+
+static void cb_dualboot_toggled(GtkToggleButton *tb, gpointer d) {
+    if (gtk_toggle_button_get_active(tb))
+        gtk_widget_show_all(GTK_WIDGET(d));
+    else
+        gtk_widget_hide(GTK_WIDGET(d));
+}
+
+static void cb_gpu_combo_changed(GtkComboBoxText *cb, gpointer d) {
+    const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(cb));
+    if (id && !strcmp(id,"Intel+NVIDIA"))
+        gtk_widget_show_all(GTK_WIDGET(d));
+    else
+        gtk_widget_hide(GTK_WIDGET(d));
+}
+
+static void cb_dot_radio_toggled(GtkToggleButton *tb, gpointer d) {
+    GtkWidget *ubx = GTK_WIDGET(d);
+    const char *dot_id = (const char*)g_object_get_data(G_OBJECT(tb),"dot_id");
+    if (gtk_toggle_button_get_active(tb) && dot_id && !strcmp(dot_id,"custom"))
+        gtk_widget_show_all(ubx);
+    else if (gtk_toggle_button_get_active(tb))
+        gtk_widget_hide(ubx);
+}
+
+typedef struct { GtkWidget **checks; int n; } FilterData;
+static void cb_pkg_filter(GtkSearchEntry *e, gpointer d) {
+    FilterData *f = (FilterData*)d;
+    const char *q = gtk_entry_get_text(GTK_ENTRY(e));
+    for (int i=0;i<f->n;i++) {
+        if (!q||!q[0]) { gtk_widget_show(f->checks[i]); continue; }
+        const char *lbl = gtk_button_get_label(GTK_BUTTON(f->checks[i]));
+        char lo[256]={0}, ql[64]={0};
+        for (int j=0;lbl[j]&&j<255;j++) lo[j]=tolower((unsigned char)lbl[j]);
+        for (int j=0;q[j]&&j<63;j++)    ql[j]=tolower((unsigned char)q[j]);
+        if (strstr(lo,ql)) gtk_widget_show(f->checks[i]);
+        else               gtk_widget_hide(f->checks[i]);
     }
+}
 
-    dup2(pfd[0], STDIN_FILENO);
-    close(pfd[1]);
+typedef struct { GtkWidget *a,*b,*c,*d; } FourEntries;
+static void cb_show_passwords(GtkToggleButton *tb, gpointer d) {
+    gboolean vis = gtk_toggle_button_get_active(tb);
+    FourEntries *f = (FourEntries*)d;
+    gtk_entry_set_visibility(GTK_ENTRY(f->a),vis);
+    gtk_entry_set_visibility(GTK_ENTRY(f->b),vis);
+    gtk_entry_set_visibility(GTK_ENTRY(f->c),vis);
+    gtk_entry_set_visibility(GTK_ENTRY(f->d),vis);
+}
 
-    int dn = open("/dev/null", O_RDWR);
-    if (dn >= 0) dup2(dn, STDERR_FILENO);
+static void cb_reboot(GtkButton *b, gpointer d) {
+    (void)b; (void)d;
+    system("reboot");
+}
 
-    gtk_init(NULL, NULL);
+static GtkWidget *g_wizard_window = NULL;
+static GtkWidget *g_stack         = NULL;
+static GtkWidget *g_sidebar_box   = NULL;
+static GtkWidget *g_back_btn      = NULL;
+static GtkWidget *g_next_btn      = NULL;
+static GtkWidget *g_cancel_btn    = NULL;
+static GtkWidget *g_step_counter  = NULL;  
 
-    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(win), title);
-    gtk_window_maximize(GTK_WINDOW(win));
-    gtk_window_set_deletable(GTK_WINDOW(win), FALSE);
+static const char *QUICK_PAGES[] = {
+    "welcome","language","network","mode",
+    "locale","keymap","disk",
+    "identity","passwords","profile","dotfiles","extra_pkgs",
+    "review","preflight","install","finish", NULL
+};
+static const char *CUSTOM_PAGES[] = {
+    "welcome","language","network","mode",
+    "locale","disk","filesystem","kernel","bootloader","mirrors",
+    "identity","passwords","keymap","timezone","desktop","gpu",
+    "profile","dotfiles","yay","flatpak","snapper","extra_pkgs",
+    "review","preflight","install","finish", NULL
+};
+static const char *PRE_MODE_PAGES[] = {
+    "welcome","language","network","mode", NULL
+};
 
+static const char **g_pages = PRE_MODE_PAGES;
+static int          g_cur   = 0;
+
+typedef struct { const char *id; const char *en; const char *es; } PageMeta;
+static const PageMeta PAGE_META[] = {
+    {"welcome",    "Welcome",          "Bienvenida"},
+    {"language",   "Language",         "Idioma"},
+    {"network",    "Network",          "Red"},
+    {"mode",       "Install Mode",     "Modo"},
+    {"locale",     "System Locale",    "Locale"},
+    {"keymap",     "Keyboard",         "Teclado"},
+    {"disk",       "Disk",             "Disco"},
+    {"filesystem", "Filesystem",       "Sistema arch."},
+    {"kernel",     "Kernel",           "Kernel"},
+    {"bootloader", "Bootloader",       "Bootloader"},
+    {"mirrors",    "Mirrors",          "Mirrors"},
+    {"identity",   "Identity",         "Identidad"},
+    {"passwords",  "Passwords",        "Contraseñas"},
+    {"timezone",   "Timezone",         "Zona horaria"},
+    {"desktop",    "Desktop",          "Escritorio"},
+    {"gpu",        "GPU Drivers",      "Drivers GPU"},
+    {"profile",    "Profile",          "Perfil"},
+    {"dotfiles",   "Dotfiles",         "Dotfiles"},
+    {"yay",        "AUR Helper",       "AUR Helper"},
+    {"flatpak",    "Flatpak",          "Flatpak"},
+    {"snapper",    "Snapshots",        "Snapshots"},
+    {"extra_pkgs", "Extra Packages",   "Paquetes extra"},
+    {"review",     "Review",           "Revisión"},
+    {"preflight",  "Pre-check",        "Verificación"},
+    {"install",    "Installing",       "Instalando"},
+    {"finish",     "Done!",            "¡Listo!"},
+    {NULL,NULL,NULL}
+};
+
+static const char *page_title(const char *id) {
+    for (int i = 0; PAGE_META[i].id; i++)
+        if (!strcmp(PAGE_META[i].id, id))
+            return strcmp(st.lang,"en")==0 ? PAGE_META[i].en : PAGE_META[i].es;
+    return id;
+}
+
+static int page_count(void) {
+    int n=0; while (g_pages[n]) n++; return n;
+}
+
+static void update_sidebar(void) {
+    GList *children = gtk_container_get_children(GTK_CONTAINER(g_sidebar_box));
+    for (GList *l = children; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(children);
+
+    int total = page_count();
+    for (int i = 0; i < total; i++) {
+        const char *id = g_pages[i];
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        add_class(row, "step-row");
+        if (i == g_cur)   add_class(row, "active");
+        else if (i < g_cur) add_class(row, "done");
+
+        char num[8]; snprintf(num, sizeof(num), "%d", i+1);
+        GtkWidget *num_lbl = gtk_label_new(num);
+        add_class(num_lbl, "step-num");
+        gtk_box_pack_start(GTK_BOX(row), num_lbl, FALSE, FALSE, 0);
+
+        GtkWidget *name_lbl = gtk_label_new(page_title(id));
+        add_class(name_lbl, "step-name");
+        if (i == g_cur)    add_class(name_lbl, "active");
+        else if (i < g_cur) add_class(name_lbl, "done");
+        gtk_label_set_xalign(GTK_LABEL(name_lbl), 0.0f);
+        gtk_box_pack_start(GTK_BOX(row), name_lbl, TRUE, TRUE, 0);
+
+        gtk_box_pack_start(GTK_BOX(g_sidebar_box), row, FALSE, FALSE, 0);
+    }
+    gtk_widget_show_all(g_sidebar_box);
+
+    if (g_step_counter) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d / %d", g_cur+1, total);
+        gtk_label_set_text(GTK_LABEL(g_step_counter), buf);
+    }
+}
+
+static void update_nav_buttons(void) {
+    const char *id = g_pages[g_cur];
+    gboolean is_last  = (g_pages[g_cur+1] == NULL);
+    gboolean is_first = (g_cur == 0);
+    gboolean is_install= !strcmp(id,"install");
+    gboolean is_finish = !strcmp(id,"finish");
+
+    gtk_widget_set_sensitive(g_back_btn, !is_first && !is_install && !is_finish);
+
+    if (is_finish)
+        gtk_button_set_label(GTK_BUTTON(g_next_btn), L("Reboot 🔄","Reiniciar 🔄"));
+    else if (is_install)
+        gtk_button_set_label(GTK_BUTTON(g_next_btn), "…");
+    else if (is_last)
+        gtk_button_set_label(GTK_BUTTON(g_next_btn), L("Finish ✓","Finalizar ✓"));
+    else
+        gtk_button_set_label(GTK_BUTTON(g_next_btn), L("Next →","Siguiente →"));
+
+    gtk_widget_set_sensitive(g_cancel_btn, !is_install && !is_finish);
+}
+
+static void goto_page(int idx) {
+    g_cur = idx;
+    gtk_stack_set_visible_child_name(GTK_STACK(g_stack), g_pages[idx]);
+    update_sidebar();
+    update_nav_buttons();
+}
+
+
+static GtkWidget *W_boot_badge = NULL;
+
+static GtkWidget *W_lang_en = NULL;
+static GtkWidget *W_lang_es = NULL;
+
+static GtkWidget *W_net_status = NULL;
+
+static GtkWidget *W_locale_combo = NULL;
+
+static GtkWidget *W_keymap_combo = NULL;
+
+static GtkWidget *W_disk_lb       = NULL;  
+static GtkWidget *W_swap_entry    = NULL;
+static GtkWidget *W_dualboot_chk  = NULL;
+static GtkWidget *W_dbsize_entry  = NULL;
+static GtkWidget *W_dbsize_box    = NULL;
+static DiskInfo   W_disks[32];
+static int        W_ndisks = 0;
+
+static GtkWidget *W_fs_radios[4];
+static const char *FS_IDS[] = {"ext4","btrfs","xfs","zfs"};
+
+static GtkWidget *W_kern_checks[5];
+static const char *KERN_IDS[] = {"linux","linux-lts","linux-zen","linux-hardened","linux-cachyos"};
+
+static GtkWidget *W_bl_radios[3];
+static const char *BL_IDS[] = {"grub","systemd-boot","limine"};
+
+static GtkWidget *W_mirrors_chk = NULL;
+
+static GtkWidget *W_hostname_e = NULL;
+static GtkWidget *W_username_e = NULL;
+static GtkWidget *W_id_err     = NULL;
+
+static GtkWidget *W_rpass1 = NULL, *W_rpass2 = NULL;
+static GtkWidget *W_upass1 = NULL, *W_upass2 = NULL;
+static GtkWidget *W_rstr   = NULL, *W_ustr   = NULL;
+static GtkWidget *W_pass_err = NULL;
+
+static GtkWidget *W_tz_region = NULL;
+static GtkWidget *W_tz_city   = NULL;
+
+static GtkWidget *W_de_checks[9];
+static const char *DE_IDS[] = {"KDE Plasma","GNOME","Cinnamon","XFCE","MATE","LXQt","Hyprland","Sway","None"};
+
+static GtkWidget *W_gpu_combo     = NULL;
+static GtkWidget *W_optimus_box   = NULL;
+static GtkWidget *W_optimus_combo = NULL;
+
+static GtkWidget *W_prof_radios[5];
+static const char *PROF_IDS[] = {"none","gaming","developer","minimal","privacy"};
+
+static GtkWidget *W_dot_radios[3];
+static GtkWidget *W_dot_url_box = NULL;
+static GtkWidget *W_dot_url     = NULL;
+static const char *DOT_IDS[]  = {"none","caelestia","custom"};
+
+static GtkWidget *W_yay_yes     = NULL;
+static GtkWidget *W_flatpak_yes = NULL;
+static GtkWidget *W_snapper_yes = NULL;
+
+#define MAX_EXTRA_PKGS 32
+static GtkWidget  *W_pkg_checks[MAX_EXTRA_PKGS];
+static const char *W_pkg_ids[MAX_EXTRA_PKGS];
+static int         W_npkgs = 0;
+
+static GtkWidget *W_review_tv = NULL;
+
+static GtkWidget *W_pre_tv  = NULL;
+static GtkWidget *W_pre_ok  = NULL;
+static int        W_pre_result = 0;
+
+static GtkWidget *W_inst_prog  = NULL;
+static GtkWidget *W_inst_stage = NULL;
+static GtkWidget *W_inst_tv    = NULL;
+static volatile int W_inst_done    = 0;
+static volatile int W_inst_success = 0;
+static char         W_inst_reason[1024] = {0};
+
+typedef struct {
+    int    type; 
+    double pct;
+    char   msg[1024];
+    int    success;
+} IdleUpd;
+
+static gboolean install_idle_cb(gpointer data) {
+    IdleUpd *u = data;
+    switch (u->type) {
+    case 0:
+        if (W_inst_prog) {
+            gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(W_inst_prog), u->pct/100.0);
+            char s[16]; snprintf(s,sizeof(s),"%.0f%%",u->pct);
+            gtk_progress_bar_set_text(GTK_PROGRESS_BAR(W_inst_prog), s);
+        }
+        break;
+    case 1:
+        if (W_inst_stage) gtk_label_set_text(GTK_LABEL(W_inst_stage), u->msg);
+        if (W_inst_tv) {
+            GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(W_inst_tv));
+            GtkTextIter end;
+            gtk_text_buffer_get_end_iter(b,&end);
+            gtk_text_buffer_insert(b,&end,u->msg,-1);
+            gtk_text_buffer_insert(b,&end,"\n",-1);
+            GtkTextMark *m = gtk_text_buffer_get_insert(b);
+            gtk_text_view_scroll_mark_onscreen(GTK_TEXT_VIEW(W_inst_tv),m);
+        }
+        break;
+    case 2:
+        W_inst_done    = 1;
+        W_inst_success = u->success;
+        strncpy(W_inst_reason, u->msg, sizeof(W_inst_reason)-1);
+        if (u->success) {
+            if (W_inst_stage)
+                gtk_label_set_text(GTK_LABEL(W_inst_stage),
+                    L("✓  Installation complete! Click Next to reboot.",
+                      "✓  ¡Instalación completa! Haz clic en Siguiente para reiniciar."));
+            if (W_inst_prog) gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(W_inst_prog),1.0);
+        } else {
+            if (W_inst_stage) {
+                char err[1100];
+                snprintf(err,sizeof(err),
+                    L("✗  Installation failed: %s","✗  Error en instalación: %s"), u->msg);
+                gtk_label_set_text(GTK_LABEL(W_inst_stage), err);
+            }
+        }
+        gtk_button_set_label(GTK_BUTTON(g_next_btn),
+            u->success ? L("Next →","Siguiente →") : L("Retry","Reintentar"));
+        gtk_widget_set_sensitive(g_next_btn, TRUE);
+        gtk_widget_set_sensitive(g_back_btn, !u->success);
+        break;
+    }
+    g_free(u);
+    return G_SOURCE_REMOVE;
+}
+
+static void inst_on_progress(double pct, void *ud) {
+    (void)ud;
+    IdleUpd *u = g_new0(IdleUpd,1);
+    u->type = 0; u->pct = pct;
+    g_idle_add(install_idle_cb, u);
+}
+
+static void inst_on_stage(const char *msg, void *ud) {
+    (void)ud;
+    IdleUpd *u = g_new0(IdleUpd,1);
+    u->type = 1;
+    strncpy(u->msg, msg, sizeof(u->msg)-1);
+    g_idle_add(install_idle_cb, u);
+    write_log_fmt(">>> %s", msg);
+}
+
+static void inst_on_done(int ok, const char *reason, void *ud) {
+    (void)ud;
+    IdleUpd *u = g_new0(IdleUpd,1);
+    u->type = 2; u->success = ok;
+    if (reason) strncpy(u->msg, reason, sizeof(u->msg)-1);
+    g_idle_add(install_idle_cb, u);
+}
+
+static GtkWidget *make_page_wrap(void) {
+    GtkWidget *w = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    add_class(w, "page-wrap");
+    return w;
+}
+
+static GtkWidget *make_title(const char *t) {
+    GtkWidget *l = gtk_label_new(t);
+    add_class(l, "page-title");
+    gtk_label_set_xalign(GTK_LABEL(l),0.0f);
+    return l;
+}
+
+static GtkWidget *make_sub(const char *t) {
+    GtkWidget *l = gtk_label_new(t);
+    add_class(l, "page-sub");
+    gtk_label_set_xalign(GTK_LABEL(l),0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(l), TRUE);
+    return l;
+}
+
+static GtkWidget *make_divider(void) {
+    GtkWidget *s = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    add_class(s, "divider");
+    return s;
+}
+
+static GtkWidget *make_card(void) {
+    GtkWidget *c = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    add_class(c, "card");
+    return c;
+}
+
+static GtkWidget *make_field_row(const char *label_text, GtkWidget *widget) {
+    GtkWidget *row  = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *lbl  = gtk_label_new(label_text);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+    gtk_widget_set_margin_bottom(lbl, 2);
+    gtk_box_pack_start(GTK_BOX(row), lbl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), widget, FALSE, FALSE, 0);
+    return row;
+}
+
+static GtkWidget *build_welcome(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 20);
+    gtk_widget_set_valign(vbox, GTK_ALIGN_CENTER);
+    gtk_widget_set_halign(vbox, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(page), vbox, TRUE, TRUE, 0);
+
+    GtkWidget *logo = gtk_label_new(
+        "   /\\   \n"
+        "  /  \\  \n"
+        " / /\\ \\ \n"
+        "/_/  \\_\\");
+    add_class(logo, "welcome-title");
+    gtk_label_set_justify(GTK_LABEL(logo), GTK_JUSTIFY_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox), logo, FALSE, FALSE, 0);
+
+    GtkWidget *title = gtk_label_new("Arch Linux Installer");
+    add_class(title, "welcome-title");
+    gtk_label_set_justify(GTK_LABEL(title), GTK_JUSTIFY_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 0);
+
+    GtkWidget *ver = gtk_label_new(VERSION);
+    add_class(ver, "welcome-ver");
+    gtk_label_set_justify(GTK_LABEL(ver), GTK_JUSTIFY_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox), ver, FALSE, FALSE, 0);
+
+    W_boot_badge = gtk_label_new(is_uefi() ? "  UEFI  " : "  BIOS  ");
+    add_class(W_boot_badge, is_uefi() ? "badge-uefi" : "badge-bios");
+    gtk_label_set_justify(GTK_LABEL(W_boot_badge), GTK_JUSTIFY_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox), W_boot_badge, FALSE, FALSE, 0);
+
+    GtkWidget *sep = make_divider();
+    gtk_box_pack_start(GTK_BOX(vbox), sep, FALSE, FALSE, 10);
+
+    GtkWidget *warn = gtk_label_new(
+        L("⚠  This installer will ERASE the selected disk and install Arch Linux.\n"
+          "   Make sure you have backups.  Press Next to continue.",
+          "⚠  Este instalador BORRARÁ el disco seleccionado e instalará Arch Linux.\n"
+          "   Asegúrate de tener copias de seguridad.  Pulsa Siguiente para continuar."));
+    gtk_label_set_justify(GTK_LABEL(warn), GTK_JUSTIFY_CENTER);
+    gtk_label_set_line_wrap(GTK_LABEL(warn), TRUE);
+    add_class(warn, "warn");
+    gtk_box_pack_start(GTK_BOX(vbox), warn, FALSE, FALSE, 0);
+
+    return page;
+}
+
+static GtkWidget *build_language(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),
+        GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 24);
-    gtk_container_add(GTK_CONTAINER(win), vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox),0);
 
-    GtkWidget *hdr = gtk_label_new(header_text);
-    gtk_label_set_line_wrap(GTK_LABEL(hdr), TRUE);
-    gtk_box_pack_start(GTK_BOX(vbox), hdr, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), make_title(
+        "Language / Idioma"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), make_sub(
+        "Choose the installer language:\nSeleccione el idioma del instalador:"),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox), make_divider(), FALSE,FALSE,0);
 
-    GtkWidget *prog = gtk_progress_bar_new();
-    gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(prog), TRUE);
-    gtk_progress_bar_set_text(GTK_PROGRESS_BAR(prog), "0%");
-    gtk_box_pack_start(GTK_BOX(vbox), prog, FALSE, FALSE, 0);
+    GtkWidget *card = make_card();
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
 
-    GtkWidget *stage = gtk_label_new("");
-    gtk_label_set_xalign(GTK_LABEL(stage), 0.0f);
-    gtk_label_set_line_wrap(GTK_LABEL(stage), TRUE);
-    gtk_box_pack_start(GTK_BOX(vbox), stage, FALSE, FALSE, 0);
+    W_lang_en = gtk_button_new_with_label("🇬🇧  English");
+    W_lang_es = gtk_button_new_with_label("🇪🇸  Español");
+    gtk_widget_set_size_request(W_lang_en, 180, 60);
+    gtk_widget_set_size_request(W_lang_es, 180, 60);
+    add_class(W_lang_en, "large-option");
+    add_class(W_lang_es, "large-option");
 
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-    GtkWidget *log_view = gtk_text_view_new();
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(log_view), FALSE);
-    gtk_text_view_set_monospace(GTK_TEXT_VIEW(log_view), TRUE);
-    gtk_container_add(GTK_CONTAINER(scroll), log_view);
-    gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
+    if (!strcmp(st.lang,"en")) add_class(W_lang_en,"selected");
+    else                       add_class(W_lang_es,"selected");
 
-    gtk_widget_show_all(win);
+    gtk_box_pack_start(GTK_BOX(hbox), W_lang_en, FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(hbox), W_lang_es, FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(card), hbox, FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox), card, FALSE,FALSE,0);
 
-    ProgChildCtx *ctx = g_new0(ProgChildCtx, 1);
-    ctx->progress_bar = prog;
-    ctx->stage_label  = stage;
-    ctx->log_view     = log_view;
-
-    GIOChannel *channel = g_io_channel_unix_new(STDIN_FILENO);
-    g_io_add_watch(channel,
-        G_IO_IN | G_IO_HUP | G_IO_ERR,
-        prog_child_io_cb, ctx);
-    g_io_channel_unref(channel);
-
-    gtk_main();
-    g_free(ctx);
-    _exit(0);
+    gtk_container_add(GTK_CONTAINER(sv), vbox);
+    gtk_box_pack_start(GTK_BOX(page), sv, TRUE, TRUE, 0);
+    return page;
 }
 
+static GtkWidget *build_network(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),
+        GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
 
-static void on_progress_cb(double pct, void *ud) {
-    (void)ud;
-    if (g_prog_fd < 0) return;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%d\n", (int)pct);
-    (void)write(g_prog_fd, buf, strlen(buf));
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Network Connection","Conexión de red")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("An internet connection is needed to download Arch Linux.",
+                   "Se necesita internet para descargar Arch Linux.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox), make_divider(), FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+
+    W_net_status = gtk_label_new(L("Status: unknown","Estado: desconocido"));
+    gtk_label_set_xalign(GTK_LABEL(W_net_status),0.0f);
+    gtk_box_pack_start(GTK_BOX(card), W_net_status, FALSE,FALSE,4);
+
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12);
+    GtkWidget *btn_check = gtk_button_new_with_label(
+        L("🔌  Check Wired","🔌  Verificar cable"));
+    GtkWidget *btn_wifi  = gtk_button_new_with_label(
+        L("📶  Connect WiFi","📶  Conectar WiFi"));
+    add_class(btn_check,"large-option");
+    add_class(btn_wifi, "large-option");
+    gtk_widget_set_size_request(btn_check, 200,56);
+    gtk_widget_set_size_request(btn_wifi,  200,56);
+    gtk_box_pack_start(GTK_BOX(hbox),btn_check,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(hbox),btn_wifi, FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(card),hbox,FALSE,FALSE,8);
+
+    g_signal_connect(btn_check,"clicked",G_CALLBACK(cb_check_wired),(gpointer)W_net_status);
+    g_signal_connect(btn_wifi, "clicked",G_CALLBACK(cb_connect_wifi),(gpointer)W_net_status);
+
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+
+    GtkWidget *hint = make_sub(
+        L("If already connected (e.g. via Ethernet), just click Next.",
+          "Si ya está conectado (p. ej. por Ethernet), haz clic en Siguiente."));
+    gtk_box_pack_start(GTK_BOX(vbox),hint,FALSE,FALSE,8);
+
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
 }
 
-static void on_stage_cb(const char *msg, void *ud) {
-    (void)ud;
-    if (g_prog_fd < 0) return;
-    char buf[1024];
-    snprintf(buf, sizeof(buf), "# %s\n", msg);
-    (void)write(g_prog_fd, buf, strlen(buf));
+static GtkWidget *W_mode_quick_radio = NULL;
+static GtkWidget *W_mode_custom_radio = NULL;
+
+static GtkWidget *build_mode(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),
+        GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Install Mode","Modo de instalación")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Choose how to configure the installation.",
+                   "Elige cómo configurar la instalación.")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *c1 = make_card();
+    W_mode_quick_radio = gtk_radio_button_new_with_label(NULL,
+        L("⚡  Quick Install",
+          "⚡  Instalación Rápida"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_mode_quick_radio), st.quick==1);
+    gtk_box_pack_start(GTK_BOX(c1),W_mode_quick_radio,FALSE,FALSE,0);
+    GtkWidget *q_desc = gtk_label_new(
+        L("  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
+          "  Sensible defaults, minimum questions.",
+          "  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
+          "  Valores sensatos, mínimas preguntas."));
+    gtk_label_set_xalign(GTK_LABEL(q_desc),0.0f);
+    add_class(q_desc,"hint");
+    gtk_widget_set_margin_start(q_desc,26);
+    gtk_box_pack_start(GTK_BOX(c1),q_desc,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),c1,FALSE,FALSE,0);
+
+    GtkWidget *c2 = make_card();
+    W_mode_custom_radio = gtk_radio_button_new_with_label(
+        gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_mode_quick_radio)),
+        L("🔧  Custom Install",
+          "🔧  Instalación Personalizada"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_mode_custom_radio), st.quick==0);
+    gtk_box_pack_start(GTK_BOX(c2),W_mode_custom_radio,FALSE,FALSE,0);
+    GtkWidget *cu_desc = gtk_label_new(
+        L("  Choose filesystem, kernel, bootloader, desktop, GPU, and more.\n"
+          "  Full control over every setting.",
+          "  Elige sistema de archivos, kernel, bootloader, escritorio, GPU y más.\n"
+          "  Control total sobre cada ajuste."));
+    gtk_label_set_xalign(GTK_LABEL(cu_desc),0.0f);
+    add_class(cu_desc,"hint");
+    gtk_widget_set_margin_start(cu_desc,26);
+    gtk_box_pack_start(GTK_BOX(c2),cu_desc,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),c2,FALSE,FALSE,0);
+
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
 }
 
-typedef struct {
-    volatile int  done;
-    int           success;
-    char          reason[1024];
-    pthread_mutex_t mu;
-    pthread_cond_t  cv;
-} InstallState;
-
-static void on_done_cb(int ok, const char *reason, void *ud) {
-    InstallState *iss = ud;
-    pthread_mutex_lock(&iss->mu);
-    iss->success = ok;
-    if (reason && *reason) {
-        strncpy(iss->reason, reason, sizeof(iss->reason) - 1);
-        iss->reason[sizeof(iss->reason) - 1] = '\0';
-    }
-    iss->done = 1;
-    pthread_cond_signal(&iss->cv);
-    pthread_mutex_unlock(&iss->mu);
-}
-
-static int screen_install(void) {
-    { FILE *f = fopen(LOG_FILE, "a"); if (f) fclose(f); }
-
-    pid_t prog_pid = spawn_gtk_progress(
-        TITLE "  " VERSION,
-        L("Installing Arch Linux - please wait...",
-          "Instalando Arch Linux - por favor espere..."));
-    if (prog_pid < 0) {
-        msgbox(L("Error","Error"),
-               L("Could not create progress window.",
-                 "No se pudo crear la ventana de progreso."));
-        return 0;
-    }
-    g_prog_pid = prog_pid;
-
-    InstallState iss;
-    memset(&iss, 0, sizeof(iss));
-    pthread_mutex_init(&iss.mu, NULL);
-    pthread_cond_init(&iss.cv,  NULL);
-
-    IB *ib = calloc(1, sizeof(IB));
-    ib->on_progress = on_progress_cb;
-    ib->on_stage    = on_stage_cb;
-    ib->on_done     = on_done_cb;
-    ib->ud          = &iss;
-    pthread_mutex_init(&ib->lock, NULL);
-
-    IBRunArg *ra = malloc(sizeof(IBRunArg));
-    ra->ib = ib;
-
-    pthread_t install_tid;
-    pthread_create(&install_tid, NULL, ib_run_thread, ra);
-
-    pthread_mutex_lock(&iss.mu);
-    while (!iss.done) pthread_cond_wait(&iss.cv, &iss.mu);
-    pthread_mutex_unlock(&iss.mu);
-
-    pthread_join(install_tid, NULL);
-
-    if (iss.success && g_prog_fd >= 0) {
-        const char *final_msg = "100\n# Installation complete!\n";
-        (void)write(g_prog_fd, final_msg, strlen(final_msg));
-        sleep(1);
-    }
-
-    if (g_prog_fd >= 0) { close(g_prog_fd); g_prog_fd = -1; }
-    if (g_prog_pid > 0) { waitpid(g_prog_pid, NULL, 0); g_prog_pid = -1; }
-
-    pthread_mutex_destroy(&ib->lock);
-    free(ib);
-    pthread_mutex_destroy(&iss.mu);
-    pthread_cond_destroy(&iss.cv);
-
-    if (!iss.success) {
-        char msg[1536];
-        if (!iss.reason[0]) {
-            snprintf(iss.reason, sizeof(iss.reason),
-                     "Installation failed. Check %s for details.", LOG_FILE);
-        }
-        snprintf(msg, sizeof(msg),
-                 L("Installation failed.\n\n%s\n\nCheck %s for details.",
-                   "La instalacion fallo.\n\n%s\n\nRevisa %s para detalles."),
-                 iss.reason, LOG_FILE);
-        msgbox(L("Installation Failed", "Instalacion fallida"), msg);
-        return 0;
-    }
-    return 1;
-}
-
-static void screen_welcome(void) {
-    char text[1024];
-    snprintf(text,sizeof(text),
-        "\\Zb\\Z4Welcome to the Arch Linux Installer\\Zn\n\n"
-        "Version: %s    Boot mode: \\Zb%s\\Zn\n\n"
-        "\\Zb\\Z1WARNING:\\Zn  This installer will ERASE and install Arch Linux "
-        "to the selected disk.\n\n"
-        "Use \\ZbTab\\Zn and \\ZbArrow keys\\Zn to navigate.\n"
-        "\\ZbSpace\\Zn toggles items in multi-select screens.\n"
-        "Press OK to begin.",
-        VERSION, is_uefi()?"UEFI":"BIOS (Legacy)");
-    msgbox("Welcome", text);
-}
-
-static void screen_language(void) {
-    MenuItem items[2];
-    strncpy(items[0].tag,"en",255); strncpy(items[0].desc,"English",511);
-    strncpy(items[1].tag,"es",255); strncpy(items[1].desc,"Espanol",511);
-    char out[8]={0};
-    if (menu_dlg("Language / Idioma",
-                 "Choose the installer language:\nSeleccione el idioma del instalador:",
-                 items,2,out,sizeof(out)) && out[0])
-        strncpy(st.lang,out,sizeof(st.lang)-1);
-}
-
-static int screen_mode(void) {
-    MenuItem items[2];
-    strncpy(items[0].tag,"quick",255);
-    snprintf(items[0].desc,511,"%s",
-        L("Quick Install   (sane defaults, installs yay + snapper)",
-          "Instalacion rapida   (valores por defecto, instala yay + snapper)"));
-    strncpy(items[1].tag,"custom",255);
-    snprintf(items[1].desc,511,"%s",
-        L("Custom Install  (full control)",
-          "Instalacion personalizada  (control total)"));
-    char out[16]={0};
-    menu_dlg(L("Install Mode","Modo de instalacion"),
-             L("Quick Install  -  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
-               "Custom Install -  configure everything step by step",
-               "Instalacion rapida  -  BTRFS + KDE Plasma + linux + pipewire + yay + snapper\n"
-               "Instalacion personalizada - configura todo paso a paso"),
-             items,2,out,sizeof(out));
-    if (!strcmp(out,"quick")) {
-        st.quick=1;
-        strncpy(st.filesystem,"btrfs",sizeof(st.filesystem)-1);
-        strncpy(st.kernel,"linux",sizeof(st.kernel)-1);
-        strncpy(st.kernel_list,"linux",sizeof(st.kernel_list)-1);
-        strncpy(st.desktop,"KDE Plasma",sizeof(st.desktop)-1);
-        strncpy(st.desktop_list,"KDE Plasma",sizeof(st.desktop_list)-1);
-        st.mirrors=1; detect_gpu(st.gpu,sizeof(st.gpu));
-        st.yay=1; st.snapper=1;
-        strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
-        char sw[8]; snprintf(sw,sizeof(sw),"%d",suggest_swap_gb());
-        strncpy(st.swap,sw,sizeof(st.swap)-1);
-        return 1;
-    }
-    return 0;
-}
-
-static int screen_identity(void) {
-    while(1) {
-
-        char summary[256];
-        snprintf(summary, sizeof(summary),
-            L(" Summary: disk=%s  fs=%s  kernel=%s",
-              " Resumen: disco=%s  fs=%s  kernel=%s"),
-            st.disk[0]?st.disk:"?", st.filesystem, st.kernel);
-
-        char hn_text[512];
-        snprintf(hn_text, sizeof(hn_text),
-            L("%s\n\n"
-              " Computer name (hostname)\n"
-              "   Used to identify this computer on the network.\n"
-              "   Examples:  my-laptop   archpc   juan-desktop\n\n"
-              "   Rules: letters, numbers, hyphens (-). Max 32 chars.\n"
-              "          Must start with a letter.",
-              "%s\n\n"
-              " Nombre del equipo (hostname)\n"
-              "   Se usa para identificar este equipo en la red.\n"
-              "   Ejemplos:  mi-laptop   archpc   pc-de-juan\n\n"
-              "   Reglas: letras, números, guiones (-). Máx 32 chars.\n"
-              "           Debe empezar con una letra."),
-            summary);
-
-        char hn[64]={0};
-        if (!inputbox_dlg(
-                L("Step: Who are you? (1/2)","Paso: ¿Quién eres? (1/2)"),
-                hn_text, st.hostname, hn, sizeof(hn))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-
-        if (!validate_name(hn)) {
-            char err[512];
-            snprintf(err, sizeof(err),
-                L(" '%s' is not valid.\n\n"
-                  " Good:  my-pc   arch   juan2\n"
-                  " Bad:   123abc  my pc  -start\n\n"
-                  "Start with a letter, then letters/numbers/hyphens only.",
-                  " '%s' no es válido.\n\n"
-                  " Bien:  mi-pc   arch   juan2\n"
-                  " Mal:   123abc  mi pc  -inicio\n\n"
-                  "Empieza con letra, luego letras/números/guiones."),
-                hn);
-            msgbox(L("Invalid hostname","Nombre de equipo inválido"), err);
-            continue;
-        }
-
-        char un_text[512];
-        snprintf(un_text, sizeof(un_text),
-            L("%s\n\n"
-              " Your username\n"
-              "   This will be your personal account.\n"
-              "   Examples:  alice   bob   juan   myuser\n\n"
-              "   Rules: letters, numbers, hyphens (-). Max 32 chars.\n"
-              "          Must start with a letter. Use lowercase.",
-              "%s\n\n"
-              " Tu nombre de usuario\n"
-              "   Esta será tu cuenta personal en el sistema.\n"
-              "   Ejemplos:  alice   bob   juan   miusuario\n\n"
-              "   Reglas: letras, números, guiones (-). Máx 32 chars.\n"
-              "           Debe empezar con letra. Usa minúsculas."),
-            summary);
-
-        char un[64]={0};
-        if (!inputbox_dlg(
-                L("Step: Who are you? (2/2)","Paso: ¿Quién eres? (2/2)"),
-                un_text, st.username, un, sizeof(un))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-
-        if (!validate_name(un)) {
-            char err[512];
-            snprintf(err, sizeof(err),
-                L(" '%s' is not a valid username.\n\n"
-                  " Good:  alice   bob2   my-user\n"
-                  " Bad:   2bob   My User   root\n\n"
-                  "Start with a lowercase letter. Letters/numbers/hyphens only.",
-                  " '%s' no es un nombre de usuario válido.\n\n"
-                  " Bien:  alice   bob2   mi-usuario\n"
-                  " Mal:   2bob   Mi Usuario   root\n\n"
-                  "Empieza con letra minúscula. Solo letras/números/guiones."),
-                un);
-            msgbox(L("Invalid username","Nombre de usuario inválido"), err);
-            continue;
-        }
-        strncpy(st.hostname,hn,sizeof(st.hostname)-1);
-        strncpy(st.username,un,sizeof(st.username)-1);
-        return 1;
-    }
-}
-
-static int screen_passwords(void) {
-
-    char summary[256];
-    snprintf(summary,sizeof(summary),
-        L(" Summary: user=%s  hostname=%s",
-          " Resumen: usuario=%s  hostname=%s"),
-        st.username[0]?st.username:"?",
-        st.hostname[0]?st.hostname:"?");
-
-    while(1) {
-
-        char rp_hdr[2048];
-        snprintf(rp_hdr,sizeof(rp_hdr),
-            L("%s\n\n"
-              " ROOT password (administrator / superuser)\n"
-              "   This is the most powerful account on the system.\n"
-              "   Choose something strong and write it down.",
-              "%s\n\n"
-              " Contraseña de ROOT (administrador)\n"
-              "   Es la cuenta más poderosa del sistema.\n"
-              "   Elige algo seguro y guárdalo en un lugar seguro."),
-            summary);
-
-        char rp1[256]={0},rp2[256]={0};
-        if (!passwordbox_dlg(L(" Root password (1/2)"," Contraseña root (1/2)"),
-                             rp_hdr, rp1, sizeof(rp1))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-
-        {
-            char slabel[64]; password_strength_label(rp1,slabel,sizeof(slabel),st.lang);
-            int s = password_strength(rp1);
-            if (s == 1) {
-                char warn[512];
-                snprintf(warn,sizeof(warn),
-                    L("  Password strength: %s\n\n"
-                      "Your root password is WEAK.\n\n"
-                      "Tips:\n"
-                      "  - Use at least 8 characters\n"
-                      "  - Mix UPPERCASE, lowercase, numbers and symbols\n"
-                      "  - Example: Arch!2025secured\n\n"
-                      "Continue anyway? (not recommended)",
-                      "  Fuerza de contraseña: %s\n\n"
-                      "Tu contraseña de root es DÉBIL.\n\n"
-                      "Consejos:\n"
-                      "  - Usa al menos 8 caracteres\n"
-                      "  - Mezcla MAYÚSCULAS, minúsculas, números y símbolos\n"
-                      "  - Ejemplo: Arch!2025seguro\n\n"
-                      "¿Continuar de todas formas? (no recomendado)"),
-                    slabel);
-                if (!yesno_dlg(L("Weak password!","¡Contraseña débil!"),warn))
-                    continue;
-            }
-        }
-
-        char rp2_hdr[256];
-        snprintf(rp2_hdr,sizeof(rp2_hdr),
-            L(" Confirm ROOT password\n   Type the same password again to verify.",
-              " Confirma la contraseña de ROOT\n   Escríbela otra vez para verificar."));
-        if (!passwordbox_dlg(L(" Root password (2/2)"," Contraseña root (2/2)"),
-                             rp2_hdr, rp2, sizeof(rp2))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-        if (!rp1[0]) {
-            msgbox(L("Error","Error"),
-                   L("Root password cannot be empty.",
-                     "La contraseña root no puede estar vacía."));
-            continue;
-        }
-        if (strcmp(rp1,rp2)) {
-            msgbox(L("Passwords don't match","Las contraseñas no coinciden"),
-                   L("The two root passwords you entered are different.\nPlease try again.",
-                     "Las dos contraseñas de root no son iguales.\nInténtalo de nuevo."));
-            continue;
-        }
-
-        char up_hdr[2048];
-        snprintf(up_hdr,sizeof(up_hdr),
-            L(" Password for user: %s\n\n"
-              "   This is your everyday login password.\n"
-              "   Can be the same or different from root.",
-              " Contraseña del usuario: %s\n\n"
-              "   Es la contraseña con la que inicias sesión a diario.\n"
-              "   Puede ser igual o diferente a la de root."),
-            st.username[0]?st.username:"user");
-
-        char up1[256]={0},up2[256]={0};
-        if (!passwordbox_dlg(L(" User password (1/2)"," Contraseña usuario (1/2)"),
-                             up_hdr, up1, sizeof(up1))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-
-        {
-            char slabel[64]; password_strength_label(up1,slabel,sizeof(slabel),st.lang);
-            int s = password_strength(up1);
-            if (s == 1) {
-                char warn[512];
-                snprintf(warn,sizeof(warn),
-                    L("  User password strength: %s\n\n"
-                      "This password is WEAK. It could be guessed easily.\n\n"
-                      "Continue anyway?",
-                      "  Fuerza de contraseña de usuario: %s\n\n"
-                      "Esta contraseña es DÉBIL. Podría adivinarse fácilmente.\n\n"
-                      "¿Continuar de todas formas?"),
-                    slabel);
-                if (!yesno_dlg(L("Weak password!","¡Contraseña débil!"),warn))
-                    continue;
-            }
-        }
-
-        char up2_hdr[256];
-        snprintf(up2_hdr,sizeof(up2_hdr),
-            L(" Confirm user password\n   Type it again to verify.",
-              " Confirma la contraseña de usuario\n   Escríbela otra vez."));
-        if (!passwordbox_dlg(L(" User password (2/2)"," Contraseña usuario (2/2)"),
-                             up2_hdr, up2, sizeof(up2))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-        if (!up1[0]) {
-            msgbox(L("Error","Error"),
-                   L("User password cannot be empty.",
-                     "La contraseña de usuario no puede estar vacía."));
-            continue;
-        }
-        if (strcmp(up1,up2)) {
-            msgbox(L("Passwords don't match","Las contraseñas no coinciden"),
-                   L("The two user passwords you entered are different.\nPlease try again.",
-                     "Las dos contraseñas de usuario no son iguales.\nInténtalo de nuevo."));
-            continue;
-        }
-        strncpy(st.root_pass,rp1,sizeof(st.root_pass)-1);
-        strncpy(st.user_pass,up1,sizeof(st.user_pass)-1);
-        return 1;
-    }
-}
-
-static int screen_disk(void) {
-
-    char summary[256];
-    snprintf(summary,sizeof(summary),
-        L(" Summary: mode=%s  fs=%s  kernel=%s",
-          " Resumen: modo=%s  fs=%s  kernel=%s"),
-        is_uefi()?"UEFI":"BIOS", st.filesystem, st.kernel);
-
-    {
-        MenuItem mode_items[2];
-        strncpy(mode_items[0].tag,"full",255);
-        snprintf(mode_items[0].desc,511,"%s",
-            L("Full Install    Easiest  — whole disk erased, Arch takes over",
-              "Instalación completa  Más fácil — borra todo el disco para Arch"));
-        strncpy(mode_items[1].tag,"dual",255);
-        snprintf(mode_items[1].desc,511,"%s",
-            L("Dual Boot      — keep Windows/Linux, share disk with Arch",
-              "Dual Boot      — conservar Windows/Linux, compartir disco con Arch"));
-
-        char mode_text[4096];
-        snprintf(mode_text,sizeof(mode_text),"%s\n\n%s",summary,
-            L(" How do you want to install Arch Linux?\n\n"
-              "  FULL INSTALL (recommended for new installs)\n"
-              "    -> The whole selected disk is erased and Arch is installed on it.\n"
-              "    -> Simple, clean, no leftovers. Fastest option.\n"
-              "      ALL data on that disk will be permanently deleted!\n\n"
-              "  DUAL BOOT (keep another OS)\n"
-              "    -> You already have Windows or another Linux on the disk.\n"
-              "    -> You want to keep it and ALSO install Arch alongside it.\n"
-              "    -> A new partition is created automatically in the free space.\n"
-              "    -> At boot, a menu will let you choose which OS to start.\n"
-              "      You only need free unpartitioned space on the disk.\n"
-              "      Only the new Arch partition is touched — other OS is safe.",
-              " ¿Cómo quieres instalar Arch Linux?\n\n"
-              "  INSTALACIÓN COMPLETA (recomendado para instalaciones nuevas)\n"
-              "    -> Todo el disco seleccionado se borra y Arch se instala en él.\n"
-              "    -> Simple, limpio, sin restos. La opción más rápida.\n"
-              "      ¡TODOS los datos de ese disco se borrarán para siempre!\n\n"
-              "  DUAL BOOT (conservar otro sistema operativo)\n"
-              "    -> Ya tienes Windows u otro Linux en el disco.\n"
-              "    -> Quieres conservarlo E instalar Arch al lado.\n"
-              "    -> Se crea una nueva particion automaticamente en el espacio libre.\n"
-              "    -> Al arrancar, un menú te dejará elegir qué sistema iniciar.\n"
-              "      Solo necesitas espacio libre sin particionar en el disco.\n"
-              "      Solo se toca la nueva particion de Arch — el otro SO esta seguro."));
-
-        char mode_out[16]={0};
-        if (!radiolist_dlg(
-                L(" Install Type"," Tipo de instalación"),
-                mode_text, mode_items, 2,
-                st.dualboot ? "dual" : "full",
-                mode_out, sizeof(mode_out))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-        st.dualboot = !strcmp(mode_out,"dual");
-    }
-
-    if (!st.dualboot) {
-        DiskInfo disks[32]; int nd = list_disks(disks,32);
-        if (nd==0) {
-            msgbox(L("No disks found","Sin discos"),
-                   L("No disks were detected. Cannot continue.",
-                     "No se detectaron discos. No se puede continuar."));
-            exit(1);
-        }
-
-        char lsblk[4096]={0};
-        FILE *fp = popen("lsblk -f 2>/dev/null | head -40","r");
-        if (fp) { (void)fread(lsblk,1,sizeof(lsblk)-1,fp); pclose(fp); }
-        if (lsblk[0]) {
-            char txt[MAX_OUT];
-            snprintf(txt,sizeof(txt),
-                     L("Current disk layout:\n\n%s\n  WARNING: The selected disk will be COMPLETELY ERASED.",
-                       "Esquema actual de discos:\n\n%s\n  ADVERTENCIA: El disco seleccionado se BORRARÁ COMPLETAMENTE."),
-                     lsblk);
-            msgbox(L(" Disk overview — read before choosing!"," Vista de discos — ¡lee antes de elegir!"),txt);
-        }
-
-        MenuItem items[32];
-        char cur_dev[128]="";
-        if (st.disk[0]) snprintf(cur_dev,sizeof(cur_dev),"/dev/%s",st.disk);
-        for (int i=0;i<nd;i++) {
-            snprintf(items[i].tag,256,"/dev/%s",disks[i].name);
-            int ssd = is_ssd(disks[i].name);
-            const char *dtype = ssd > 0 ? "SSD " : (ssd == 0 ? "HDD " : "");
-            snprintf(items[i].desc,512,"%lld GB  %s  %s",
-                     disks[i].size_gb, dtype, disks[i].model);
-        }
-
-        char sel[128]={0};
-        if (!radiolist_dlg(
-                L(" Select Disk"," Selecciona el disco"),
-                L("  ALL DATA on the selected disk will be PERMANENTLY DELETED!\n\n"
-                  "   SSD  = fast solid-state drive\n"
-                  "   HDD  = traditional spinning hard drive\n\n"
-                  "   Select the disk where Arch Linux will be installed:",
-                  "  ¡TODOS los datos del disco seleccionado se BORRARÁN PERMANENTEMENTE!\n\n"
-                  "   SSD  = unidad de estado sólido rápida\n"
-                  "   HDD  = disco duro tradicional giratorio\n\n"
-                  "   Selecciona el disco donde se instalará Arch Linux:"),
-                items,nd, cur_dev[0]?cur_dev:items[0].tag, sel, sizeof(sel))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-
-        {
-            const char *dname2 = sel; if (!strncmp(dname2,"/dev/",5)) dname2+=5;
-
-            long long dsize_gb = 0; char dmodel[128]="";
-            int ssd2 = -1;
-            for (int i=0;i<nd;i++) {
-                if (!strcmp(disks[i].name, dname2)) {
-                    dsize_gb = disks[i].size_gb;
-                    strncpy(dmodel, disks[i].model, sizeof(dmodel)-1);
-                    ssd2 = is_ssd(dname2);
-                    break;
-                }
-            }
-            char c1[512];
-            snprintf(c1,sizeof(c1),
-                L("You selected:\n\n"
-                  "  Disk:  %s\n"
-                  "  Size:  %lld GB\n"
-                  "  Type:  %s\n"
-                  "  Model: %s\n\n"
-                  "ALL data on this disk will be PERMANENTLY DELETED.\n\n"
-                  "Are you sure this is the correct disk?",
-                  "Has seleccionado:\n\n"
-                  "  Disco:  %s\n"
-                  "  Tamaño: %lld GB\n"
-                  "  Tipo:   %s\n"
-                  "  Modelo: %s\n\n"
-                  "TODOS los datos de este disco se BORRARÁN PERMANENTEMENTE.\n\n"
-                  "¿Estás seguro de que es el disco correcto?"),
-                sel, dsize_gb,
-                ssd2>0?"SSD ":(ssd2==0?"HDD ":"Unknown"),
-                dmodel[0]?dmodel:"Unknown");
-            if (!yesno_dlg(L(" Confirm disk selection"," Confirmar disco seleccionado"), c1))
-                return 0;
-
-            char c2[512];
-            snprintf(c2,sizeof(c2),
-                L(" LAST WARNING!\n\n"
-                  "   %s  (%lld GB) will be completely erased.\n\n"
-                  "   There is NO undo. All files, Windows, everything on it\n"
-                  "   will be gone FOREVER.\n\n"
-                  "   Are you ABSOLUTELY SURE you want to continue?",
-                  " ¡ÚLTIMA ADVERTENCIA!\n\n"
-                  "   %s  (%lld GB) se borrará completamente.\n\n"
-                  "   NO hay vuelta atrás. Todos los archivos, Windows, todo\n"
-                  "   lo que hay en él desaparecerá PARA SIEMPRE.\n\n"
-                  "   ¿Estás COMPLETAMENTE SEGURO de que quieres continuar?"),
-                sel, dsize_gb);
-            if (!yesno_dlg(L(" Final confirmation"," Confirmación final"), c2))
-                return 0;
-        }
-
-        const char *dname = sel;
-        if (!strncmp(dname,"/dev/",5)) dname+=5;
-        strncpy(st.disk,dname,sizeof(st.disk)-1);
-
-        int sug_gb = suggest_swap_gb();
-        {
-
-            long long disk_gb = 0;
-            for (int i=0;i<nd;i++)
-                if (!strcmp(disks[i].name,st.disk)) { disk_gb=disks[i].size_gb; break; }
-            int efi_mb = is_uefi() ? 512 : 0;
-            long long swap_gb = sug_gb;
-            long long root_gb = disk_gb - (efi_mb/1024) - swap_gb;
-            char preview[1024];
-            snprintf(preview,sizeof(preview),
-                L(" Partition layout preview for /dev/%s (%lld GB):\n\n"
-                  "  +-------------------------------------┐\n"
-                  "  |  Partition 1: EFI boot   %4d MB    |\n"
-                  "  |  Partition 2: Swap        %3lld GB    |\n"
-                  "  |  Partition 3: Root (/)   ~%3lld GB    |  ← Arch installs here\n"
-                  "  +-------------------------------------┘\n\n"
-                  "  Filesystem: %s\n\n"
-                  "  This layout will be applied when you confirm installation.\n"
-                  "  Nothing is written to disk yet.",
-                  " Vista previa del particionado de /dev/%s (%lld GB):\n\n"
-                  "  +-------------------------------------┐\n"
-                  "  |  Partición 1: Arranque EFI  %4d MB |\n"
-                  "  |  Partición 2: Swap            %3lld GB |\n"
-                  "  |  Partición 3: Raíz (/)       ~%3lld GB |  ← Arch se instala aquí\n"
-                  "  +-------------------------------------┘\n\n"
-                  "  Sistema de archivos: %s\n\n"
-                  "  Este esquema se aplicará al confirmar la instalación.\n"
-                  "  Aún no se escribe nada en el disco."),
-                st.disk, disk_gb, efi_mb, swap_gb, root_gb, st.filesystem);
-            msgbox(L(" Partition Preview"," Vista previa del particionado"), preview);
-        }
-
-        char sug_str[8]; snprintf(sug_str,sizeof(sug_str),"%d",sug_gb);
-        while(1) {
-            char swap_hdr[512];
-
-            snprintf(swap_hdr,sizeof(swap_hdr),
-                L(" Swap size\n\n"
-                  "   Swap is extra 'emergency memory' on disk.\n"
-                  "   If your RAM fills up, the system uses swap instead of crashing.\n"
-                  "   It's also needed for hibernation (suspend-to-disk).\n\n"
-                  "   Suggested: %s GB  (based on your RAM size)\n\n"
-                  "   Enter swap size in GB (1–128):",
-                  " Tamaño del swap\n\n"
-                  "   El swap es 'memoria de emergencia' en el disco.\n"
-                  "   Si tu RAM se llena, el sistema usa swap en vez de colgarse.\n"
-                  "   También se necesita para hibernación (suspend-to-disk).\n\n"
-                  "   Sugerido: %s GB  (basado en tu cantidad de RAM)\n\n"
-                  "   Introduce el tamaño del swap en GB (1–128):"),
-                sug_str);
-            char sw[16]={0};
-            if (!inputbox_dlg(L(" Swap Size"," Tamaño del swap"), swap_hdr,
-                              st.swap[0]?st.swap:sug_str, sw, sizeof(sw))) {
-                if (g_home_requested) { g_home_requested=0; return 2; }
-                return 0;
-            }
-            trim_nl(sw);
-            if (validate_swap(sw)) { strncpy(st.swap,sw,sizeof(st.swap)-1); return 1; }
-            msgbox(L("Invalid swap","Swap inválido"),
-                   L("Swap must be a number between 1 and 128.\nExample: 8",
-                     "El swap debe ser un número entre 1 y 128.\nEjemplo: 8"));
-        }
-
-    } else {
-
-        DiskInfo disks[32]; int nd = list_disks(disks, 32);
-        if (nd == 0) {
-            msgbox(L("No disks found","Sin discos"),
-                   L("No disks were detected. Cannot continue.",
-                     "No se detectaron discos. No se puede continuar."));
-            st.dualboot = 0;
-            return 0;
-        }
-
-        {
-            char lsblk_out[4096]={0};
-            FILE *fp_lb = popen("lsblk 2>/dev/null | head -50","r");
-            if (fp_lb) { (void)fread(lsblk_out,1,sizeof(lsblk_out)-1,fp_lb); pclose(fp_lb); }
-
-            char overview[MAX_OUT];
-            snprintf(overview, sizeof(overview),
-                L("DUAL BOOT — current disk layout:\n\n%s\n\n"
-                  "Step 1 of 2: Select the disk that contains your existing OS\n"
-                  "(Windows, another Linux, etc.)\n\n"
-                  "A new partition for Arch will be created automatically\n"
-                  "in the free space of the selected disk.",
-                  "DUAL BOOT — esquema actual de discos:\n\n%s\n\n"
-                  "Paso 1 de 2: Selecciona el disco que contiene tu sistema actual\n"
-                  "(Windows, otro Linux, etc.)\n\n"
-                  "Se creara automaticamente una nueva particion para Arch\n"
-                  "en el espacio libre del disco seleccionado."),
-                lsblk_out);
-            msgbox(L("Dual Boot — Disk Overview","Dual Boot — Vista de discos"), overview);
-        }
-
-        MenuItem disk_items[32];
-        char cur_dev[128]="";
-        if (st.disk[0]) snprintf(cur_dev, sizeof(cur_dev), "/dev/%s", st.disk);
-        for (int i = 0; i < nd; i++) {
-            snprintf(disk_items[i].tag,  256, "/dev/%s", disks[i].name);
-            int ssd = is_ssd(disks[i].name);
-            snprintf(disk_items[i].desc, 512, "%lld GB  %s  %s",
-                     disks[i].size_gb,
-                     ssd > 0 ? "SSD" : (ssd == 0 ? "HDD" : ""),
-                     disks[i].model);
-        }
-
-        char sel_disk[128]={0};
-        if (!radiolist_dlg(
-                L("Dual Boot — Step 1/2: Select disk",
-                  "Dual Boot — Paso 1/2: Selecciona el disco"),
-                L("Which disk contains the OS you want to keep?\n"
-                  "(Arch Linux will also be installed on this disk.)\n\n"
-                  "A new partition will be created automatically\n"
-                  "in the available free space. Nothing is modified yet.",
-                  "¿En que disco esta el sistema operativo que quieres conservar?\n"
-                  "(Arch Linux tambien se instalara en este disco.)\n\n"
-                  "Se creara automaticamente una nueva particion\n"
-                  "en el espacio libre disponible. Todavia no se modifica nada."),
-                disk_items, nd,
-                cur_dev[0] ? cur_dev : disk_items[0].tag,
-                sel_disk, sizeof(sel_disk))) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-
-        const char *dname_db = sel_disk;
-        if (!strncmp(dname_db,"/dev/",5)) dname_db += 5;
-        strncpy(st.disk, dname_db, sizeof(st.disk)-1);
-
-        {
-            char lsblk2[4096]={0};
-            char lsblk_cmd[256];
-            snprintf(lsblk_cmd, sizeof(lsblk_cmd), "lsblk %s 2>/dev/null", sel_disk);
-            FILE *fp2 = popen(lsblk_cmd, "r");
-            if (fp2) { (void)fread(lsblk2,1,sizeof(lsblk2)-1,fp2); pclose(fp2); }
-
-            char free_info[512]={0};
-            char free_cmd[256];
-            snprintf(free_cmd, sizeof(free_cmd),
-                "parted -s %s unit GB print free 2>/dev/null"
-                " | grep 'Free Space' | tail -1", sel_disk);
-            FILE *fp3 = popen(free_cmd, "r");
-            if (fp3) { (void)fread(free_info,1,sizeof(free_info)-1,fp3); pclose(fp3); trim_nl(free_info); }
-
-            char txt[MAX_OUT];
-            snprintf(txt, sizeof(txt),
-                L("Partitions on %s:\n\n%s\n\n"
-                  "Step 2 of 2: Choose the size for the new Arch Linux partition.\n\n"
-                  "[+] A NEW partition will be created in the free space.\n"
-                  "[+] All existing partitions (Windows, etc.) stay untouched.\n\n"
-                  "Available free space: %s",
-                  "Particiones en %s:\n\n%s\n\n"
-                  "Paso 2 de 2: Elige el tamaño de la nueva particion de Arch Linux.\n\n"
-                  "[+] Se creara una NUEVA particion en el espacio libre.\n"
-                  "[+] Todas las particiones existentes (Windows, etc.) quedan intactas.\n\n"
-                  "Espacio libre disponible: %s"),
-                sel_disk, lsblk2,
-                free_info[0] ? free_info : L("unknown","desconocido"));
-            msgbox(L("Dual Boot — Partition Overview",
-                     "Dual Boot — Vista de particiones"), txt);
-        }
-
-        while (1) {
-            char size_prompt[512];
-            snprintf(size_prompt, sizeof(size_prompt),
-                L("How many GB should the new Arch Linux partition be?\n\n"
-                  "   Minimum recommended: 20 GB\n"
-                  "   Typical desktop install: 40-80 GB\n\n"
-                  "   The partition will be created in the free space of %s.\n"
-                  "   Your existing OS data will NOT be touched.\n\n"
-                  "   Enter size in GB (10-2000):",
-                  "¿Cuantos GB debe tener la nueva particion de Arch Linux?\n\n"
-                  "   Minimo recomendado: 20 GB\n"
-                  "   Instalacion de escritorio tipica: 40-80 GB\n\n"
-                  "   La particion se creara en el espacio libre de %s.\n"
-                  "   Los datos de tu OS actual NO seran tocados.\n\n"
-                  "   Introduce el tamaño en GB (10-2000):"),
-                sel_disk);
-            char size_str[16]={0};
-            char init_size[8]; snprintf(init_size,sizeof(init_size),"%d",st.db_size_gb>0?st.db_size_gb:30);
-            if (!inputbox_dlg(
-                    L("Dual Boot — Step 2/2: Partition size",
-                      "Dual Boot — Paso 2/2: Tamaño de la particion"),
-                    size_prompt, init_size, size_str, sizeof(size_str))) {
-                if (g_home_requested) { g_home_requested=0; return 2; }
-                return 0;
-            }
-            trim_nl(size_str);
-            int gb = atoi(size_str);
-            if (gb >= 10 && gb <= 2000) {
-                st.db_size_gb = gb;
-                break;
-            }
-            msgbox(L("Invalid size","Tamaño invalido"),
-                   L("Please enter a number between 10 and 2000.\nExample: 40",
-                     "Por favor introduce un numero entre 10 y 2000.\nEjemplo: 40"));
-        }
-
-        if (is_uefi()) {
-            char auto_efi[128]={0};
-            {
-                char efi_cmd[256];
-                snprintf(efi_cmd, sizeof(efi_cmd),
-                    "lsblk -b -p -n -l -o NAME,FSTYPE,PARTTYPE %s 2>/dev/null"
-                    " | grep -i 'c12a7328\\|vfat\\|fat32' | head -1", sel_disk);
-                FILE *fp3 = popen(efi_cmd, "r");
-                if (fp3) {
-                    char line[256]={0};
-                    if (fgets(line,sizeof(line),fp3))
-                        sscanf(line, "%127s", auto_efi);
-                    pclose(fp3);
-                }
-                if (!auto_efi[0]) {
-                    snprintf(efi_cmd, sizeof(efi_cmd),
-                        "blkid -o list 2>/dev/null | grep -i 'vfat\\|fat32' | grep '%s' | awk '{print $1}' | head -1",
-                        sel_disk);
-                    FILE *fp4 = popen(efi_cmd, "r");
-                    if (fp4) {
-                        char line[256]={0};
-                        if (fgets(line,sizeof(line),fp4)) {
-                            trim_nl(line);
-                            if (line[0]) strncpy(auto_efi, line, sizeof(auto_efi)-1);
-                        }
-                        pclose(fp4);
-                    }
-                }
-            }
-
-            if (auto_efi[0]) {
-                strncpy(st.db_efi, auto_efi, sizeof(st.db_efi)-1);
-            } else {
-                char efi_scan[256];
-                snprintf(efi_scan, sizeof(efi_scan),
-                    "lsblk -b -p -n -o PATH,FSTYPE,PARTTYPE --pairs %s 2>/dev/null"
-                    " | grep -i 'c12a7328' | head -1", sel_disk);
-                FILE *fp5 = popen(efi_scan,"r");
-                if (fp5) {
-                    char line[256]={0}; (void)fgets(line,sizeof(line),fp5); pclose(fp5);
-                    char *pp = strstr(line,"PATH=\"");
-                    if (pp) sscanf(pp+6,"%127[^\"]",st.db_efi);
-                }
-            }
-        }
-
-        st.db_swap[0] = '\0';
-
-        return 1;
-    }
-    return 1;
-}
-
-static int screen_filesystem(void) {
-
-    char summary[256];
-    snprintf(summary,sizeof(summary),
-        L(" Summary: disk=%s  kernel=%s",
-          " Resumen: disco=%s  kernel=%s"),
-        st.disk[0]?st.disk:"?", st.kernel);
-
-    MenuItem items[4];
-    strncpy(items[0].tag,"ext4",255);
-    snprintf(items[0].desc,511,"%s",L(
-        "ext4    Stable, fast, universal   No snapshots",
-        "ext4    Estable, rápido, universal   Sin snapshots"));
-    strncpy(items[1].tag,"btrfs",255);
-    snprintf(items[1].desc,511,"%s",L(
-        "btrfs   Snapshots, compression   Slightly more complex",
-        "btrfs   Snapshots, compresión    Algo más complejo"));
-    strncpy(items[2].tag,"xfs",255);
-    snprintf(items[2].desc,511,"%s",L(
-        "xfs     Great for large files    No snapshots, no shrink",
-        "xfs     Excelente para archivos grandes   Sin snapshots"));
-    strncpy(items[3].tag,"zfs",255);
-    snprintf(items[3].desc,511,"%s",L(
-        "zfs     Advanced checksums       [EXPERIMENTAL] complex setup",
-        "zfs     Checksums avanzados      [EXPERIMENTAL] configuración compleja"));
-
-    char dlg_text[512];
-    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("Choose the filesystem for your root partition.\n"
-          "For most users: ext4 (simple) or btrfs (snapshots).",
-          "Elige el sistema de archivos para la partición raíz.\n"
-          "Para la mayoría: ext4 (simple) o btrfs (snapshots)."));
-
-    char out[16]={0};
-    if (!radiolist_dlg(L(" Filesystem"," Sistema de archivos"),
-                       dlg_text,
-                       items, 4, st.filesystem, out, sizeof(out))) {
-        if (g_home_requested) { g_home_requested=0; return 2; }
-        return 0;
-    }
-
-    if (!strcmp(out,"zfs")) {
-        msgbox(L("ZFS - Important Notes","ZFS - Notas importantes"),
-               L("ZFS on Arch Linux:\n\n"
-                 "  - Requires the archzfs repository (added automatically).\n"
-                 "  - Kernel forced to 'linux' (archzfs modules are version-locked).\n"
-                 "  - GRUB will be used as bootloader (forced).\n"
-                 "  - Snapper disabled (btrfs-only feature).\n"
-                 "  - ZFS is experimental in this installer.\n\n"
-                 "If you see ZFS-related errors, check the log.",
-                 "ZFS en Arch Linux:\n\n"
-                 "  - Requiere el repositorio archzfs (se agrega automáticamente).\n"
-                 "  - Kernel forzado a 'linux' (módulos archzfs son versión-específicos).\n"
-                 "  - Se usará GRUB como bootloader (forzado).\n"
-                 "  - Snapper desactivado (solo para btrfs).\n"
-                 "  - ZFS es experimental en este instalador.\n\n"
-                 "Si hay errores de ZFS, revisa el log."));
-        strncpy(st.bootloader,  "grub",  sizeof(st.bootloader)-1);
-        strncpy(st.kernel,      "linux", sizeof(st.kernel)-1);
-        strncpy(st.kernel_list, "linux", sizeof(st.kernel_list)-1);
-        st.snapper = 0;
-    }
-    strncpy(st.filesystem, out, sizeof(st.filesystem)-1);
-    return 1;
-}
-
-static int screen_kernel(void) {
-
-    char summary[256];
-    snprintf(summary,sizeof(summary),
-        L(" Summary: disk=%s  fs=%s",
-          " Resumen: disco=%s  fs=%s"),
-        st.disk[0]?st.disk:"?", st.filesystem);
-
-    MenuItem items[5];
-    strncpy(items[0].tag,"linux",255);
-    snprintf(items[0].desc,511,"%s",L(
-        "linux           Latest stable   Best hardware support  (recommended)",
-        "linux           Último estable   Mejor soporte hw  (recomendado)"));
-    strncpy(items[1].tag,"linux-lts",255);
-    snprintf(items[1].desc,511,"%s",L(
-        "linux-lts       Rock-solid   Longer support   Older features",
-        "linux-lts       Muy estable   Soporte largo   Funciones más antiguas"));
-    strncpy(items[2].tag,"linux-zen",255);
-    snprintf(items[2].desc,511,"%s",L(
-        "linux-zen       Desktop/gaming tweaks   Slightly more power usage",
-        "linux-zen       Optimizado escritorio/gaming   Algo más consumo"));
-    strncpy(items[3].tag,"linux-hardened",255);
-    snprintf(items[3].desc,511,"%s",L(
-        "linux-hardened  Security patches   Some apps may break",
-        "linux-hardened  Parches seguridad   Algunas apps pueden fallar"));
-    strncpy(items[4].tag,"linux-cachyos",255);
-    snprintf(items[4].desc,511,"%s",L(
-        "linux-cachyos   Max performance   Needs cachyos repo   Less tested",
-        "linux-cachyos   Máximo rendimiento   Requiere repo cachyos   Menos probado"));
-
-    char kl_copy[512]; strncpy(kl_copy, st.kernel_list, sizeof(kl_copy)-1);
-    const char *defs[8]={0}; int ndefs=0;
-    char *tok = strtok(kl_copy, " ");
-    while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL," "); }
-
-    char dlg_text[512];
-    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L("Choose one or more kernels. SPACE to toggle.\n"
-          "The first selected kernel will be used for boot.",
-          "Elige uno o más kernels. ESPACIO para marcar.\n"
-          "El primer kernel seleccionado se usará para arrancar."));
-
-    char sel[8][256]; int nsel = -1;
-    while (nsel < 1) {
-        nsel = checklist_dlg(
-            L(" Kernel"," Kernel"),
-            dlg_text,
-            items, 5, defs, ndefs, sel, 8);
-        if (nsel < 0) {
-            if (g_home_requested) { g_home_requested=0; return 2; }
-            return 0;
-        }
-        if (nsel == 0) {
-            msgbox(L("No kernel selected","Sin kernel seleccionado"),
-                   L("You must select at least one kernel.",
-                     "Debes seleccionar al menos un kernel."));
-        }
-    }
-
-    st.kernel_list[0] = '\0';
-    for (int i = 0; i < nsel; i++) {
-        if (i) strncat(st.kernel_list, " ", sizeof(st.kernel_list)-strlen(st.kernel_list)-1);
-        strncat(st.kernel_list, sel[i], sizeof(st.kernel_list)-strlen(st.kernel_list)-1);
-    }
-    strncpy(st.kernel, sel[0], sizeof(st.kernel)-1);
-    return 1;
-}
-
-static int screen_bootloader(void) {
-    int uefi = is_uefi();
-
-    char summary[256];
-    snprintf(summary,sizeof(summary),
-        L(" Summary: fs=%s  kernel=%s  mode=%s",
-          " Resumen: fs=%s  kernel=%s  modo=%s"),
-        st.filesystem, st.kernel, uefi?"UEFI":"BIOS");
-
-    MenuItem items[3]; int ni;
-    if (!uefi) {
-        strncpy(items[0].tag,"grub",255);
-        snprintf(items[0].desc,511,"%s",L(
-            "GRUB    Works everywhere   Dual-boot friendly  (recommended)",
-            "GRUB    Funciona en todo   Ideal para dual boot  (recomendado)"));
-        strncpy(items[1].tag,"limine",255);
-        snprintf(items[1].desc,511,"%s",L(
-            "Limine  Fast, modern   Less common, less documentation",
-            "Limine  Rápido, moderno   Menos común, menos documentación"));
-        ni=2;
-    } else {
-        strncpy(items[0].tag,"grub",255);
-        snprintf(items[0].desc,511,"%s",L(
-            "GRUB          Universal   Dual-boot   UEFI+BIOS  (recommended)",
-            "GRUB          Universal   Dual boot   UEFI+BIOS  (recomendado)"));
-        strncpy(items[1].tag,"systemd-boot",255);
-        snprintf(items[1].desc,511,"%s",L(
-            "systemd-boot  Minimal & fast   UEFI only   No BIOS support",
-            "systemd-boot  Mínimo y rápido   Solo UEFI   Sin soporte BIOS"));
-        strncpy(items[2].tag,"limine",255);
-        snprintf(items[2].desc,511,"%s",L(
-            "Limine        Lightweight   UEFI   Less documentation",
-            "Limine        Ligero   UEFI   Menos documentación"));
-        ni=3;
-    }
-
-    char dlg_text[4096];
-    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L(" The bootloader is the first program that runs when you turn on the PC.\n"
-          "   It loads your Linux kernel.\n\n"
-          "  GRUB -> The classic choice. Works on both old (BIOS) and new (UEFI) PCs.\n"
-          "          PROS: well documented, supports dual boot (Windows+Linux),\n"
-          "                theme support, rescue mode.\n"
-          "          CONS: slower to start than alternatives.\n\n"
-          "  systemd-boot -> Simple and fast (UEFI only).\n"
-          "          PROS: boots very quickly, minimal config, integrated with systemd.\n"
-          "          CONS: UEFI only, no graphical theme, limited dual-boot support.\n\n"
-          "  Limine -> Modern and lightweight.\n"
-          "          PROS: very fast, simple config file, supports UEFI and BIOS.\n"
-          "          CONS: less community documentation than GRUB.\n\n"
-          "   If unsure, choose GRUB.",
-          " El gestor de arranque es el primer programa que arranca al encender el PC.\n"
-          "   Carga el kernel de Linux.\n\n"
-          "  GRUB -> La opción clásica. Funciona en PCs antiguos (BIOS) y modernos (UEFI).\n"
-          "          PROS: muy documentado, soporta dual boot (Windows+Linux),\n"
-          "                temas visuales, modo de rescate.\n"
-          "          CONS: arranque algo más lento que las alternativas.\n\n"
-          "  systemd-boot -> Simple y rápido (solo UEFI).\n"
-          "          PROS: arranca muy rápido, config mínima, integrado con systemd.\n"
-          "          CONS: solo UEFI, sin temas gráficos, soporte dual boot limitado.\n\n"
-          "  Limine -> Moderno y ligero.\n"
-          "          PROS: muy rápido, config simple, soporta UEFI y BIOS.\n"
-          "          CONS: menos documentación en la comunidad que GRUB.\n\n"
-          "   Si no sabes cuál elegir, elige GRUB."));
-
-    char out[16]={0};
-    if (!radiolist_dlg(L(" Bootloader"," Gestor de arranque"),
-                       dlg_text, items, ni, st.bootloader, out, sizeof(out))) {
-        if (g_home_requested) { g_home_requested=0; return 2; }
-        return 0;
-    }
-    strncpy(st.bootloader,out,sizeof(st.bootloader)-1);
-    return 1;
-}
-
-static int screen_mirrors(void) {
-    MenuItem items[2];
-    strncpy(items[0].tag,"yes",255);
-    snprintf(items[0].desc,511,"%s",L("Yes - auto-select fastest mirrors","Si - seleccionar mirrors mas rapidos"));
-    strncpy(items[1].tag,"no",255);
-    snprintf(items[1].desc,511,"%s",L("No  - keep default mirrors","No  - mantener mirrors por defecto"));
-    char out[8]={0};
-    if (!radiolist_dlg(L("Mirror Optimization","Optimizacion de mirrors"),
-                       L("Use reflector to select the 10 fastest mirrors? (recommended)",
-                         "Usar reflector para seleccionar los 10 mirrors mas rapidos? (recomendado)"),
-                       items,2,st.mirrors?"yes":"no",out,sizeof(out))) return 0;
-    st.mirrors = !strcmp(out,"yes");
-
-    if (st.mirrors) {
-        infobox_dlg(L("Testing network speed...","Probando velocidad de red..."),
-                    L("Measuring download speed to archlinux.org...",
-                      "Midiendo velocidad de descarga a archlinux.org..."));
-        double speed = measure_mirror_speed("https://archlinux.org/packages/");
-        char speed_msg[256];
-        if (speed > 0) {
-            double kbps = speed / 1024.0;
-            snprintf(speed_msg,sizeof(speed_msg),
-                     L("Network speed: %.0f KB/s\n\nreflector will find the fastest mirrors for your location.",
-                       "Velocidad de red: %.0f KB/s\n\nreflector elegira los mirrors mas rapidos para tu ubicacion."),
-                     kbps);
-        } else {
-            snprintf(speed_msg,sizeof(speed_msg),"%s",
-                     L("Speed test inconclusive.\nreflector will still attempt to find fast mirrors.",
-                       "Test de velocidad no concluyente.\nreflector intentara encontrar mirrors rapidos."));
-        }
-        msgbox(L("Speed Test","Test de velocidad"), speed_msg);
-    }
-    return 1;
-}
-
-static int screen_locale(void) {
-    const char *locales[][2] = {
-        {"en_US.UTF-8","English (United States)      en_US.UTF-8"},
-        {"en_GB.UTF-8","English (United Kingdom)     en_GB.UTF-8"},
-        {"es_ES.UTF-8","Espanol (Espana)              es_ES.UTF-8"},
-        {"es_MX.UTF-8","Espanol (Mexico)              es_MX.UTF-8"},
-        {"es_AR.UTF-8","Espanol (Argentina)           es_AR.UTF-8"},
-        {"fr_FR.UTF-8","Francais (France)             fr_FR.UTF-8"},
-        {"de_DE.UTF-8","Deutsch (Deutschland)         de_DE.UTF-8"},
-        {"it_IT.UTF-8","Italiano (Italia)             it_IT.UTF-8"},
-        {"pt_PT.UTF-8","Portugues (Portugal)          pt_PT.UTF-8"},
-        {"pt_BR.UTF-8","Portugues (Brasil)            pt_BR.UTF-8"},
-        {"ru_RU.UTF-8","Russkiy (Rossiya)             ru_RU.UTF-8"},
-        {"pl_PL.UTF-8","Polski (Polska)               pl_PL.UTF-8"},
-        {"nl_NL.UTF-8","Nederlands (Nederland)        nl_NL.UTF-8"},
-        {"cs_CZ.UTF-8","Cestina (Ceska republika)     cs_CZ.UTF-8"},
-        {"hu_HU.UTF-8","Magyar (Magyarorszag)         hu_HU.UTF-8"},
-        {"ro_RO.UTF-8","Romana (Romania)              ro_RO.UTF-8"},
-        {"da_DK.UTF-8","Dansk (Danmark)               da_DK.UTF-8"},
-        {"nb_NO.UTF-8","Norsk (Norge)                 nb_NO.UTF-8"},
-        {"sv_SE.UTF-8","Svenska (Sverige)             sv_SE.UTF-8"},
-        {"fi_FI.UTF-8","Suomi (Suomi)                 fi_FI.UTF-8"},
-        {"tr_TR.UTF-8","Turkce (Turkiye)              tr_TR.UTF-8"},
-        {"ja_JP.UTF-8","Japanese (Japan)              ja_JP.UTF-8"},
-        {"ko_KR.UTF-8","Korean (Korea)                ko_KR.UTF-8"},
-        {"zh_CN.UTF-8","Chinese Simplified (China)    zh_CN.UTF-8"},
-        {"ar_SA.UTF-8","Arabic (Saudi Arabia)         ar_SA.UTF-8"},
+static GtkWidget *build_locale(void) {
+    static const char *LOCALES[][2] = {
+        {"en_US.UTF-8","English (United States)"},
+        {"en_GB.UTF-8","English (United Kingdom)"},
+        {"es_ES.UTF-8","Español (España)"},
+        {"es_MX.UTF-8","Español (México)"},
+        {"es_AR.UTF-8","Español (Argentina)"},
+        {"fr_FR.UTF-8","Français (France)"},
+        {"de_DE.UTF-8","Deutsch (Deutschland)"},
+        {"it_IT.UTF-8","Italiano (Italia)"},
+        {"pt_PT.UTF-8","Português (Portugal)"},
+        {"pt_BR.UTF-8","Português (Brasil)"},
+        {"ru_RU.UTF-8","Русский (Россия)"},
+        {"pl_PL.UTF-8","Polski (Polska)"},
+        {"nl_NL.UTF-8","Nederlands (Nederland)"},
+        {"cs_CZ.UTF-8","Čeština (Česká republika)"},
+        {"hu_HU.UTF-8","Magyar (Magyarország)"},
+        {"ro_RO.UTF-8","Română (România)"},
+        {"da_DK.UTF-8","Dansk (Danmark)"},
+        {"nb_NO.UTF-8","Norsk (Norge)"},
+        {"sv_SE.UTF-8","Svenska (Sverige)"},
+        {"fi_FI.UTF-8","Suomi (Suomi)"},
+        {"tr_TR.UTF-8","Türkçe (Türkiye)"},
+        {"ja_JP.UTF-8","日本語 (日本)"},
+        {"ko_KR.UTF-8","한국어 (대한민국)"},
+        {"zh_CN.UTF-8","简体中文 (中国)"},
+        {"ar_SA.UTF-8","العربية (السعودية)"},
         {NULL,NULL}
     };
-    int n=0; while(locales[n][0]) n++;
-    MenuItem *items = malloc(n*sizeof(MenuItem));
-    for (int i=0;i<n;i++) {
-        strncpy(items[i].tag,locales[i][0],255);
-        strncpy(items[i].desc,locales[i][1],511);
-    }
-    char out[32]={0};
-    int ok = radiolist_dlg(
-        L("System Locale","Idioma del sistema instalado"),
-        L("Choose the locale for the INSTALLED SYSTEM.",
-          "Elige el locale para el SISTEMA INSTALADO."),
-        items, n, st.locale, out, sizeof(out));
-    free(items);
-    if (!ok) return 0;
-    strncpy(st.locale,out,sizeof(st.locale)-1);
 
-    const char *skm = kv_get(LOCALE_TO_KEYMAP,out);
-    if (skm && strcmp(skm,st.keymap)) {
-        char q[512];
-        snprintf(q,sizeof(q),
-                 L("The locale '%s' typically uses keymap '%s'.\n\nCurrent keymap: '%s'\n\nSwitch keymap to '%s'?",
-                   "El locale '%s' suele usar el teclado '%s'.\n\nTeclado actual: '%s'\n\nCambiar teclado a '%s'?"),
-                 out,skm,st.keymap,skm);
-        if (yesno_dlg(L("Keyboard suggestion","Sugerencia de teclado"),q)) {
-            strncpy(st.keymap,skm,sizeof(st.keymap)-1);
-            char cmd[128]; snprintf(cmd,sizeof(cmd),"loadkeys '%s' >/dev/null 2>&1",skm);
-            system(cmd);
-        }
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("System Locale","Locale del sistema")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Choose the locale for the INSTALLED system (language, date, number formats).",
+                   "Elige el locale para el sistema INSTALADO (idioma, fechas, formatos numéricos).")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    W_locale_combo = gtk_combo_box_text_new();
+    int sel_idx = 0;
+    for (int i = 0; LOCALES[i][0]; i++) {
+        char buf[80];
+        snprintf(buf,sizeof(buf),"%-32s  %s",LOCALES[i][0],LOCALES[i][1]);
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(W_locale_combo),
+                                   LOCALES[i][0], buf);
+        if (!strcmp(LOCALES[i][0], st.locale)) sel_idx = i;
     }
-    return 1;
+    gtk_combo_box_set_active(GTK_COMBO_BOX(W_locale_combo), sel_idx);
+    gtk_widget_set_size_request(W_locale_combo, 400, -1);
+
+    GtkWidget *card = make_card();
+    gtk_box_pack_start(GTK_BOX(card),
+        make_field_row(L("Locale:","Locale:"), W_locale_combo),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
 }
 
-static int screen_keymap(void) {
-    const char *wanted[] = {
+static GtkWidget *build_keymap(void) {
+    static const char *KM_IDS[] = {
         "us","es","uk","fr","de","it","ru","ara",
         "pt-latin9","br-abnt2","pl2","hu","cz-qwerty",
         "sk-qwerty","ro_win","dk","no","sv-latin1",
         "fi","nl","tr_q-latin5","ja106","kr106", NULL
     };
-    char avail[8192]={0};
-    FILE *fp = popen("localectl list-keymaps 2>/dev/null || true","r");
-    if (fp) { (void)fread(avail,1,sizeof(avail)-1,fp); pclose(fp); }
+    static const char *KM_NAMES[] = {
+        "us — English (US)","es — Español","uk — English (UK)","fr — Français",
+        "de — Deutsch","it — Italiano","ru — Русский","ara — Arabic",
+        "pt-latin9 — Português (PT)","br-abnt2 — Português (BR)","pl2 — Polski",
+        "hu — Magyar","cz-qwerty — Čeština","sk-qwerty — Slovenčina","ro_win — Română",
+        "dk — Dansk","no — Norsk","sv-latin1 — Svenska","fi — Suomi",
+        "nl — Nederlands","tr_q-latin5 — Türkçe","ja106 — 日本語","kr106 — 한국어", NULL
+    };
 
-    MenuItem items[32]; int ni=0;
-    for (int i=0; wanted[i] && ni<32; i++) {
-        if (avail[0]) {
-            char pat[64]; snprintf(pat,sizeof(pat),"\n%s\n",wanted[i]);
-            char avail2[8200]; snprintf(avail2,sizeof(avail2),"\n%s\n",avail);
-            if (!strstr(avail2,pat)) continue;
-        }
-        strncpy(items[ni].tag,wanted[i],255);
-        snprintf(items[ni].desc,511,"Keyboard layout: %s",wanted[i]);
-        ni++;
-    }
-    if (ni==0) {
-        for (int i=0; wanted[i]&&ni<32; i++) {
-            strncpy(items[ni].tag,wanted[i],255);
-            snprintf(items[ni].desc,511,"Keyboard layout: %s",wanted[i]);
-            ni++;
-        }
-    }
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
 
-    char out[32]={0};
-    if (!radiolist_dlg(L("Keyboard Layout","Distribucion de teclado"),
-                       L("Select your keyboard layout.\n"
-                         "Applied to both TTY console and the desktop (X11/Wayland).",
-                         "Selecciona la distribucion de teclado.\n"
-                         "Se aplica a la TTY y al escritorio (X11/Wayland)."),
-                       items,ni,st.keymap,out,sizeof(out))) return 0;
-    strncpy(st.keymap,out,sizeof(st.keymap)-1);
-    char cmd[128]; snprintf(cmd,sizeof(cmd),"loadkeys '%s' >/dev/null 2>&1",out);
-    system(cmd);
-    return 1;
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Keyboard Layout","Distribución de teclado")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Applied to both the TTY console and the desktop (X11/Wayland).",
+                   "Se aplica a la TTY y al escritorio (X11/Wayland).")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    W_keymap_combo = gtk_combo_box_text_new();
+    int sel_idx = 0;
+    for (int i = 0; KM_IDS[i]; i++) {
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(W_keymap_combo),
+                                   KM_IDS[i], KM_NAMES[i]);
+        if (!strcmp(KM_IDS[i], st.keymap)) sel_idx = i;
+    }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(W_keymap_combo), sel_idx);
+    gtk_widget_set_size_request(W_keymap_combo, 340, -1);
+
+    GtkWidget *card = make_card();
+    gtk_box_pack_start(GTK_BOX(card),
+        make_field_row(L("Keyboard layout:","Distribución:"), W_keymap_combo),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
 }
 
-static int screen_timezone(void) {
+static void refresh_disk_list(void);
+
+static GtkWidget *build_disk(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Disk","Disco")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Select the disk where Arch Linux will be installed.\n"
+                   "⚠  The selected disk will be completely erased.",
+                   "Selecciona el disco donde se instalará Arch Linux.\n"
+                   "⚠  El disco seleccionado se borrará por completo.")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *disk_card = make_card();
+
+    GtkWidget *list_sw = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(list_sw),
+        GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(list_sw,-1,180);
+
+    W_disk_lb = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(W_disk_lb),GTK_SELECTION_SINGLE);
+    gtk_container_add(GTK_CONTAINER(list_sw),W_disk_lb);
+    gtk_box_pack_start(GTK_BOX(disk_card),list_sw,FALSE,FALSE,0);
+
+    GtkWidget *btn_refresh = gtk_button_new_with_label(
+        L("🔄  Refresh disk list","🔄  Actualizar lista de discos"));
+    g_signal_connect(btn_refresh,"clicked",G_CALLBACK(cb_refresh_disks),NULL);
+    gtk_box_pack_start(GTK_BOX(disk_card),btn_refresh,FALSE,FALSE,4);
+
+    gtk_box_pack_start(GTK_BOX(vbox),disk_card,FALSE,FALSE,0);
+
+    GtkWidget *opt_card = make_card();
+    GtkWidget *opt_title = gtk_label_new(L("Options","Opciones"));
+    add_class(opt_title,"card-title");
+    gtk_label_set_xalign(GTK_LABEL(opt_title),0.0f);
+    gtk_box_pack_start(GTK_BOX(opt_card),opt_title,FALSE,FALSE,0);
+
+    W_dualboot_chk = gtk_check_button_new_with_label(
+        L("Dual boot  (create new partition in free space, keep existing OS)",
+          "Dual boot  (crear nueva partición en espacio libre, conservar OS actual)"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_dualboot_chk), st.dualboot);
+    gtk_box_pack_start(GTK_BOX(opt_card),W_dualboot_chk,FALSE,FALSE,4);
+
+    W_dbsize_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
+    GtkWidget *db_lbl = gtk_label_new(L("Arch partition size (GB):","Tamaño partición Arch (GB):"));
+    gtk_label_set_xalign(GTK_LABEL(db_lbl),0.0f);
+    W_dbsize_entry = gtk_entry_new();
+    char db_str[8]; snprintf(db_str,sizeof(db_str),"%d",st.db_size_gb>0?st.db_size_gb:40);
+    gtk_entry_set_text(GTK_ENTRY(W_dbsize_entry),db_str);
+    gtk_widget_set_size_request(W_dbsize_entry,80,-1);
+    gtk_widget_set_margin_start(W_dbsize_box,20);
+    gtk_box_pack_start(GTK_BOX(W_dbsize_box),db_lbl,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(W_dbsize_box),W_dbsize_entry,FALSE,FALSE,0);
+    gtk_widget_set_no_show_all(W_dbsize_box,TRUE);
+    if (st.dualboot) gtk_widget_show_all(W_dbsize_box); else gtk_widget_hide(W_dbsize_box);
+    gtk_box_pack_start(GTK_BOX(opt_card),W_dbsize_box,FALSE,FALSE,0);
+
+    g_signal_connect(W_dualboot_chk,"toggled",G_CALLBACK(cb_dualboot_toggled),(gpointer)W_dbsize_box);
+
+    char sw_str[8];
+    snprintf(sw_str,sizeof(sw_str),"%s",st.swap[0]?st.swap:"8");
+    W_swap_entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(W_swap_entry),sw_str);
+    gtk_widget_set_size_request(W_swap_entry,80,-1);
+    GtkWidget *sw_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
+    GtkWidget *sw_lbl = gtk_label_new(L("Swap size (GB, 1-128):","Tamaño swap (GB, 1-128):"));
+    gtk_label_set_xalign(GTK_LABEL(sw_lbl),0.0f);
+    gtk_box_pack_start(GTK_BOX(sw_row),sw_lbl,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(sw_row),W_swap_entry,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(opt_card),sw_row,FALSE,FALSE,4);
+
+    gtk_box_pack_start(GTK_BOX(vbox),opt_card,FALSE,FALSE,0);
+
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+
+
+    return page;
+}
+
+static void refresh_disk_list(void) {
+    if (!W_disk_lb) return;
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(W_disk_lb));
+    for (GList *l=ch;l;l=l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(ch);
+
+    W_ndisks = list_disks(W_disks, 32);
+    for (int i=0;i<W_ndisks;i++) {
+        GtkWidget *rbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
+        gtk_container_set_border_width(GTK_CONTAINER(rbox),4);
+        char title[128];
+        int ssd = is_ssd(W_disks[i].name);
+        snprintf(title,sizeof(title),"/dev/%s   —   %lld GB   %s",
+                 W_disks[i].name, W_disks[i].size_gb,
+                 ssd>0?"SSD":"HDD");
+        GtkWidget *t = gtk_label_new(title);
+        gtk_label_set_xalign(GTK_LABEL(t),0.0f);
+        add_class(t,"list-tag");
+        GtkWidget *m = gtk_label_new(W_disks[i].model);
+        gtk_label_set_xalign(GTK_LABEL(m),0.0f);
+        add_class(m,"list-desc");
+        gtk_box_pack_start(GTK_BOX(rbox),t,FALSE,FALSE,0);
+        gtk_box_pack_start(GTK_BOX(rbox),m,FALSE,FALSE,0);
+        gtk_container_add(GTK_CONTAINER(W_disk_lb),rbox);
+    }
+
+    int pre = 0;
+    if (st.disk[0]) {
+        for (int i=0;i<W_ndisks;i++)
+            if (!strcmp(W_disks[i].name,st.disk)) { pre=i; break; }
+    }
+    GtkListBoxRow *r0 = gtk_list_box_get_row_at_index(GTK_LIST_BOX(W_disk_lb),pre);
+    if (r0) gtk_list_box_select_row(GTK_LIST_BOX(W_disk_lb),r0);
+    gtk_widget_show_all(W_disk_lb);
+}
+
+static GtkWidget *build_filesystem(void) {
+    static const struct { const char *id; const char *en; const char *es; } FS[] = {
+        {"ext4",  "ext4 — Stable, fast, universal.  No snapshots.",
+                  "ext4 — Estable, rápido, universal.  Sin snapshots."},
+        {"btrfs", "btrfs — Snapshots + compression.  Slightly more complex.",
+                  "btrfs — Snapshots + compresión.  Algo más complejo."},
+        {"xfs",   "xfs — Great for large files.  No snapshots, no shrink.",
+                  "xfs — Excelente para archivos grandes.  Sin snapshots."},
+        {"zfs",   "zfs — Advanced checksums.  [EXPERIMENTAL] complex setup.",
+                  "zfs — Checksums avanzados.  [EXPERIMENTAL] configuración compleja."},
+        {NULL,NULL,NULL}
+    };
+
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Filesystem","Sistema de archivos")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Choose the filesystem for the root partition.\n"
+                   "For most users: ext4 (simple) or btrfs (snapshots + compression).",
+                   "Elige el sistema de archivos para la partición raíz.\n"
+                   "Para la mayoría: ext4 (simple) o btrfs (snapshots + compresión).")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    GSList *grp = NULL;
+    for (int i=0;FS[i].id;i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
+        W_fs_radios[i] = gtk_radio_button_new_with_label(grp, FS[i].id);
+        grp = gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_fs_radios[i]));
+        if (!strcmp(FS[i].id, st.filesystem))
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_fs_radios[i]),TRUE);
+        gtk_box_pack_start(GTK_BOX(row),W_fs_radios[i],FALSE,FALSE,0);
+        GtkWidget *d = gtk_label_new(strcmp(st.lang,"en")==0 ? FS[i].en : FS[i].es);
+        gtk_label_set_xalign(GTK_LABEL(d),0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(d),TRUE);
+        add_class(d,"hint");
+        gtk_widget_set_margin_start(d,26);
+        gtk_box_pack_start(GTK_BOX(row),d,FALSE,FALSE,0);
+        gtk_box_pack_start(GTK_BOX(card),row,FALSE,FALSE,4);
+    }
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_kernel(void) {
+    static const struct { const char *id; const char *en; const char *es; } KN[] = {
+        {"linux",           "linux — Latest stable. Best hardware support. (recommended)",
+                            "linux — Último estable. Mejor soporte de hardware. (recomendado)"},
+        {"linux-lts",       "linux-lts — Rock-solid LTS. Longer support cycle.",
+                            "linux-lts — LTS muy estable. Ciclo de soporte largo."},
+        {"linux-zen",       "linux-zen — Desktop / gaming tweaks. Slightly more power usage.",
+                            "linux-zen — Optimizado escritorio/gaming. Algo más consumo."},
+        {"linux-hardened",  "linux-hardened — Security patches. Some apps may break.",
+                            "linux-hardened — Parches seguridad. Algunas apps pueden fallar."},
+        {"linux-cachyos",   "linux-cachyos — Max performance. Needs CachyOS repo.",
+                            "linux-cachyos — Máximo rendimiento. Requiere repo CachyOS."},
+        {NULL,NULL,NULL}
+    };
+
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Kernel","Kernel")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Select one or more kernels to install.  The first checked will be the default boot kernel.",
+                   "Selecciona uno o más kernels.  El primero marcado será el kernel de arranque predeterminado.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    for (int i=0;KN[i].id;i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
+        W_kern_checks[i] = gtk_check_button_new_with_label(KN[i].id);
+        int on = (strstr(st.kernel_list, KN[i].id) != NULL);
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_kern_checks[i]),on);
+        gtk_box_pack_start(GTK_BOX(row),W_kern_checks[i],FALSE,FALSE,0);
+        GtkWidget *d = gtk_label_new(strcmp(st.lang,"en")==0?KN[i].en:KN[i].es);
+        gtk_label_set_xalign(GTK_LABEL(d),0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(d),TRUE);
+        add_class(d,"hint");
+        gtk_widget_set_margin_start(d,26);
+        gtk_box_pack_start(GTK_BOX(row),d,FALSE,FALSE,0);
+        gtk_box_pack_start(GTK_BOX(card),row,FALSE,FALSE,4);
+    }
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_bootloader(void) {
+    static const struct { const char *id; const char *en; const char *es; } BL[] = {
+        {"grub",         "GRUB — Universal, widely supported, multi-boot friendly. (recommended)",
+                         "GRUB — Universal, amplio soporte, apto para multi-boot. (recomendado)"},
+        {"systemd-boot", "systemd-boot — Fast, minimal, UEFI-only.",
+                         "systemd-boot — Rápido, minimalista, solo UEFI."},
+        {"limine",       "limine — Modern, minimal BIOS+UEFI bootloader.",
+                         "limine — Moderno y mínimo, compatible BIOS+UEFI."},
+        {NULL,NULL,NULL}
+    };
+
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Bootloader","Gestor de arranque")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("The bootloader is the first program that runs when you start your computer.",
+                   "El gestor de arranque es el primer programa que se ejecuta al encender el equipo.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    GSList *grp = NULL;
+    for (int i=0;BL[i].id;i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
+        W_bl_radios[i] = gtk_radio_button_new_with_label(grp,BL[i].id);
+        grp = gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_bl_radios[i]));
+        if (!strcmp(BL[i].id,st.bootloader))
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_bl_radios[i]),TRUE);
+        if (!strcmp(BL[i].id,"systemd-boot") && !is_uefi())
+            gtk_widget_set_sensitive(W_bl_radios[i],FALSE);
+        gtk_box_pack_start(GTK_BOX(row),W_bl_radios[i],FALSE,FALSE,0);
+        GtkWidget *d = gtk_label_new(strcmp(st.lang,"en")==0?BL[i].en:BL[i].es);
+        gtk_label_set_xalign(GTK_LABEL(d),0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(d),TRUE);
+        add_class(d,"hint");
+        gtk_widget_set_margin_start(d,26);
+        gtk_box_pack_start(GTK_BOX(row),d,FALSE,FALSE,0);
+        gtk_box_pack_start(GTK_BOX(card),row,FALSE,FALSE,4);
+    }
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_mirrors(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Mirror Speed Optimization","Optimización de mirrors")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Mirrors are servers that host Arch Linux packages.",
+                   "Los mirrors son servidores que alojan los paquetes de Arch Linux.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    W_mirrors_chk = gtk_check_button_new_with_label(
+        L("Use reflector to automatically select the 5 fastest mirrors  (recommended)",
+          "Usar reflector para seleccionar automáticamente los 5 mirrors más rápidos  (recomendado)"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_mirrors_chk), st.mirrors);
+    gtk_box_pack_start(GTK_BOX(card),W_mirrors_chk,FALSE,FALSE,0);
+
+    GtkWidget *info = gtk_label_new(
+        L("  Reflector will test mirror speeds and update /etc/pacman.d/mirrorlist.\n"
+          "  This adds ~30 seconds to the start of the installation but speeds up package downloads.\n"
+          "  Disable if you have a very slow internet connection.",
+          "  Reflector mide la velocidad de los mirrors y actualiza /etc/pacman.d/mirrorlist.\n"
+          "  Añade ~30 segundos al inicio de la instalación pero acelera la descarga de paquetes.\n"
+          "  Desactívalo si tienes una conexión muy lenta."));
+    gtk_label_set_xalign(GTK_LABEL(info),0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(info),TRUE);
+    add_class(info,"hint");
+    gtk_box_pack_start(GTK_BOX(card),info,FALSE,FALSE,4);
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_identity(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Identity","Identidad")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Set your computer name and personal username.",
+                   "Establece el nombre del equipo y tu nombre de usuario personal.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+
+    W_hostname_e = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(W_hostname_e),"arch-pc");
+    if (st.hostname[0]) gtk_entry_set_text(GTK_ENTRY(W_hostname_e),st.hostname);
+    gtk_widget_set_size_request(W_hostname_e,320,-1);
+    gtk_box_pack_start(GTK_BOX(card),
+        make_field_row(L("Computer name (hostname):","Nombre del equipo (hostname):"),
+                       W_hostname_e),FALSE,FALSE,0);
+
+    GtkWidget *hn_hint = gtk_label_new(
+        L("Letters, numbers, hyphens.  Max 32 chars.  Must start with a letter.  Example: my-arch",
+          "Letras, números, guiones.  Máx 32 caracteres.  Debe empezar con letra.  Ejemplo: mi-arch"));
+    gtk_label_set_xalign(GTK_LABEL(hn_hint),0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(hn_hint),TRUE);
+    add_class(hn_hint,"hint");
+    gtk_widget_set_margin_start(hn_hint,4);
+    gtk_box_pack_start(GTK_BOX(card),hn_hint,FALSE,FALSE,0);
+
+    gtk_box_pack_start(GTK_BOX(card),gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),FALSE,FALSE,8);
+
+    W_username_e = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(W_username_e),"alice");
+    if (st.username[0]) gtk_entry_set_text(GTK_ENTRY(W_username_e),st.username);
+    gtk_widget_set_size_request(W_username_e,320,-1);
+    gtk_box_pack_start(GTK_BOX(card),
+        make_field_row(L("Username:","Nombre de usuario:"), W_username_e),FALSE,FALSE,0);
+
+    GtkWidget *un_hint = gtk_label_new(
+        L("Lowercase letters, numbers, hyphens.  Max 32 chars.  Example: alice",
+          "Letras minúsculas, números, guiones.  Máx 32 caracteres.  Ejemplo: alice"));
+    gtk_label_set_xalign(GTK_LABEL(un_hint),0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(un_hint),TRUE);
+    add_class(un_hint,"hint");
+    gtk_widget_set_margin_start(un_hint,4);
+    gtk_box_pack_start(GTK_BOX(card),un_hint,FALSE,FALSE,0);
+
+    W_id_err = gtk_label_new("");
+    add_class(W_id_err,"warn");
+    gtk_label_set_xalign(GTK_LABEL(W_id_err),0.0f);
+    gtk_box_pack_start(GTK_BOX(card),W_id_err,FALSE,FALSE,4);
+
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static void update_strength_label(GtkEntry *e, gpointer lbl) {
+    const char *p = gtk_entry_get_text(e);
+    int s = password_strength(p);
+    const char *texts_en[] = {"(empty)","⚠ WEAK","● MEDIUM","✓ STRONG"};
+    const char *texts_es[] = {"(vacía)","⚠ DÉBIL","● MEDIA","✓ FUERTE"};
+    const char *txt = (strcmp(st.lang,"en")==0?texts_en:texts_es)[s];
+    const char *cls[] = {"","strength-weak","strength-medium","strength-strong"};
+    GtkWidget *l = GTK_WIDGET(lbl);
+    gtk_label_set_text(GTK_LABEL(l),txt);
+    GtkStyleContext *ctx = gtk_widget_get_style_context(l);
+    gtk_style_context_remove_class(ctx,"strength-weak");
+    gtk_style_context_remove_class(ctx,"strength-medium");
+    gtk_style_context_remove_class(ctx,"strength-strong");
+    if (s>0) gtk_style_context_add_class(ctx,cls[s]);
+}
+
+static GtkWidget *build_passwords(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Passwords","Contraseñas")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Set passwords for the root (admin) and your personal user account.",
+                   "Establece contraseñas para root (administrador) y tu cuenta personal.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *rc = make_card();
+    GtkWidget *rt = gtk_label_new(L("🔑  Root Password  (administrator)","🔑  Contraseña de Root  (administrador)"));
+    gtk_label_set_xalign(GTK_LABEL(rt),0.0f);
+    add_class(rt,"card-title");
+    gtk_box_pack_start(GTK_BOX(rc),rt,FALSE,FALSE,0);
+
+    W_rpass1 = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(W_rpass1),FALSE);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(W_rpass1),L("Root password","Contraseña root"));
+    if (st.root_pass[0]) gtk_entry_set_text(GTK_ENTRY(W_rpass1),st.root_pass);
+    gtk_widget_set_size_request(W_rpass1,320,-1);
+    gtk_box_pack_start(GTK_BOX(rc),
+        make_field_row(L("Password:","Contraseña:"),W_rpass1),FALSE,FALSE,4);
+
+    W_rpass2 = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(W_rpass2),FALSE);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(W_rpass2),L("Confirm root password","Confirmar contraseña root"));
+    if (st.root_pass[0]) gtk_entry_set_text(GTK_ENTRY(W_rpass2),st.root_pass);
+    gtk_widget_set_size_request(W_rpass2,320,-1);
+    gtk_box_pack_start(GTK_BOX(rc),
+        make_field_row(L("Confirm:","Confirmar:"),W_rpass2),FALSE,FALSE,0);
+
+    W_rstr = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(W_rstr),0.0f);
+    gtk_box_pack_start(GTK_BOX(rc),W_rstr,FALSE,FALSE,2);
+    g_signal_connect(W_rpass1,"changed",G_CALLBACK(update_strength_label),(gpointer)W_rstr);
+    gtk_box_pack_start(GTK_BOX(vbox),rc,FALSE,FALSE,0);
+
+    GtkWidget *uc = make_card();
+    char ulbl_text[128];
+    snprintf(ulbl_text,sizeof(ulbl_text),
+        L("👤  User Password  (%s)","👤  Contraseña de usuario  (%s)"),
+        st.username[0] ? st.username : "your user");
+    GtkWidget *ut = gtk_label_new(ulbl_text);
+    gtk_label_set_xalign(GTK_LABEL(ut),0.0f);
+    add_class(ut,"card-title");
+    gtk_box_pack_start(GTK_BOX(uc),ut,FALSE,FALSE,0);
+
+    W_upass1 = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(W_upass1),FALSE);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(W_upass1),L("User password","Contraseña usuario"));
+    if (st.user_pass[0]) gtk_entry_set_text(GTK_ENTRY(W_upass1),st.user_pass);
+    gtk_widget_set_size_request(W_upass1,320,-1);
+    gtk_box_pack_start(GTK_BOX(uc),
+        make_field_row(L("Password:","Contraseña:"),W_upass1),FALSE,FALSE,4);
+
+    W_upass2 = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(W_upass2),FALSE);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(W_upass2),L("Confirm user password","Confirmar contraseña usuario"));
+    if (st.user_pass[0]) gtk_entry_set_text(GTK_ENTRY(W_upass2),st.user_pass);
+    gtk_widget_set_size_request(W_upass2,320,-1);
+    gtk_box_pack_start(GTK_BOX(uc),
+        make_field_row(L("Confirm:","Confirmar:"),W_upass2),FALSE,FALSE,0);
+
+    W_ustr = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(W_ustr),0.0f);
+    gtk_box_pack_start(GTK_BOX(uc),W_ustr,FALSE,FALSE,2);
+    g_signal_connect(W_upass1,"changed",G_CALLBACK(update_strength_label),(gpointer)W_ustr);
+    gtk_box_pack_start(GTK_BOX(vbox),uc,FALSE,FALSE,0);
+
+    GtkWidget *show_chk = gtk_check_button_new_with_label(
+        L("Show passwords","Mostrar contraseñas"));
+    typedef struct { GtkWidget *a,*b,*c,*d; } FourEntries;
+    FourEntries *fe = g_new0(FourEntries,1);
+    fe->a=W_rpass1; fe->b=W_rpass2; fe->c=W_upass1; fe->d=W_upass2;
+    g_signal_connect_data(show_chk,"toggled",
+        G_CALLBACK(cb_show_passwords),(gpointer)fe,(GClosureNotify)g_free,(GConnectFlags)0);
+    gtk_box_pack_start(GTK_BOX(vbox),show_chk,FALSE,FALSE,4);
+
+    W_pass_err = gtk_label_new("");
+    add_class(W_pass_err,"warn");
+    gtk_label_set_xalign(GTK_LABEL(W_pass_err),0.0f);
+    gtk_box_pack_start(GTK_BOX(vbox),W_pass_err,FALSE,FALSE,4);
+
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static void tz_region_changed(GtkComboBoxText *reg, gpointer city_combo);
+
+static GtkWidget *build_timezone(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Timezone","Zona horaria")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Select your timezone. This sets the system clock for the installed system.",
+                   "Selecciona tu zona horaria. Configura el reloj del sistema instalado.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
     char zones_raw[65536]={0};
-    FILE *fp = popen("timedatectl list-timezones 2>/dev/null || true","r");
+    FILE *fp = popen("timedatectl list-timezones 2>/dev/null","r");
     if (fp) { (void)fread(zones_raw,1,sizeof(zones_raw)-1,fp); pclose(fp); }
 
-    char **zones=NULL; int nz=0, zc=0;
-    if (zones_raw[0]) {
-        char *p=zones_raw;
-        while(*p) {
-            char *nl=strchr(p,'\n'); if(!nl) nl=p+strlen(p);
-            int len=nl-p;
-            if(len>0) {
-                if(nz>=zc) { zc=zc?zc*2:256; zones=realloc(zones,zc*sizeof(char*)); }
-                zones[nz]=strndup(p,len); nz++;
-            }
-            p=(*nl)?nl+1:nl;
-        }
-    }
-    if (nz==0) {
-        const char *defaults[]={"UTC","Europe/Madrid","Europe/London",
-                                 "America/New_York","America/Los_Angeles","Asia/Tokyo",NULL};
-        for(int i=0;defaults[i];i++) {
-            if(nz>=zc){zc=zc?zc*2:16;zones=realloc(zones,zc*sizeof(char*));}
-            zones[nz++]=strdup(defaults[i]);
-        }
-    }
-
     char *regions[256]; int nr=0;
-    for(int i=0;i<nz;i++) {
-        char *sl=strchr(zones[i],'/'); if(!sl) continue;
-        char reg[64]; int rlen=sl-zones[i]; if(rlen>63)rlen=63;
-        strncpy(reg,zones[i],rlen); reg[rlen]='\0';
-        int dup=0;
-        for(int j=0;j<nr;j++) if(!strcmp(regions[j],reg)){dup=1;break;}
-        if(!dup&&nr<255) regions[nr++]=strdup(reg);
+    char zones_copy[65536];
+    strncpy(zones_copy,zones_raw,sizeof(zones_copy)-1);
+    char *p=zones_copy, *nl;
+    while (*p && (nl=strchr(p,'\n'))) {
+        *nl='\0';
+        char *sl=strchr(p,'/');
+        if (sl) {
+            int rlen=sl-p; if(rlen<1){p=nl+1;continue;}
+            char reg[64]={0}; strncpy(reg,p,rlen<63?rlen:63);
+            int dup=0;
+            for(int j=0;j<nr;j++) if(!strcmp(regions[j],reg)){dup=1;break;}
+            if(!dup && nr<255) regions[nr++]=strdup(reg);
+        }
+        p=nl+1;
     }
 
-    MenuItem *reg_items = malloc((nr+1)*sizeof(MenuItem));
-    strncpy(reg_items[0].tag,"UTC",255); strncpy(reg_items[0].desc,"UTC",511);
-    for(int i=0;i<nr;i++) {
-        strncpy(reg_items[i+1].tag,regions[i],255);
-        strncpy(reg_items[i+1].desc,regions[i],511);
-    }
-
+    W_tz_region = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(W_tz_region),"UTC","UTC");
+    int sel_reg=0;
     char cur_reg[64]="UTC";
-    if(strchr(st.timezone,'/')) {
+    if (strchr(st.timezone,'/')) {
         char *sl=strchr(st.timezone,'/');
         int l=sl-st.timezone; if(l>63)l=63;
         strncpy(cur_reg,st.timezone,l); cur_reg[l]='\0';
     }
-
-    char sel_reg[64]={0};
-    if(!radiolist_dlg(L("Timezone - Region","Zona horaria - Region"),
-                      L("Select your region:","Selecciona tu region:"),
-                      reg_items,nr+1,cur_reg,sel_reg,sizeof(sel_reg))) {
-        for(int i=0;i<nr;i++) free(regions[i]);
-        free(reg_items);
-        for(int i=0;i<nz;i++) free(zones[i]);
-        free(zones);
-        return 0;
+    for (int i=0;i<nr;i++) {
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(W_tz_region),regions[i],regions[i]);
+        if (!strcmp(regions[i],cur_reg)) sel_reg=i+1;
     }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(W_tz_region),sel_reg);
+
+    W_tz_city = gtk_combo_box_text_new();
+
+    g_signal_connect(W_tz_region,"changed",G_CALLBACK(tz_region_changed),(gpointer)W_tz_city);
+    tz_region_changed(GTK_COMBO_BOX_TEXT(W_tz_region),(gpointer)W_tz_city);
+
+    GtkWidget *card = make_card();
+    gtk_widget_set_size_request(W_tz_region,300,-1);
+    gtk_widget_set_size_request(W_tz_city,  300,-1);
+    gtk_box_pack_start(GTK_BOX(card),
+        make_field_row(L("Region:","Región:"),W_tz_region),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(card),gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),FALSE,FALSE,6);
+    gtk_box_pack_start(GTK_BOX(card),
+        make_field_row(L("City:","Ciudad:"),W_tz_city),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+
     for(int i=0;i<nr;i++) free(regions[i]);
-    free(reg_items);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
 
-    if(!strcmp(sel_reg,"UTC")) {
-        strncpy(st.timezone,"UTC",sizeof(st.timezone)-1);
-        for(int i=0;i<nz;i++) free(zones[i]);
-        free(zones);
-        return 1;
-    }
+static void tz_region_changed(GtkComboBoxText *reg, gpointer city_widget) {
+    GtkComboBoxText *city = GTK_COMBO_BOX_TEXT(city_widget);
+    gtk_combo_box_text_remove_all(city);
 
-    MenuItem *city_items=NULL; int nc=0,cc=0;
-    for(int i=0;i<nz;i++) {
-        char *sl=strchr(zones[i],'/'); if(!sl) continue;
-        int rlen=sl-zones[i];
-        if(rlen!=(int)strlen(sel_reg)||strncmp(zones[i],sel_reg,rlen)) continue;
-        if(nc>=cc){cc=cc?cc*2:64;city_items=realloc(city_items,cc*sizeof(MenuItem));}
-        strncpy(city_items[nc].tag,sl+1,255);
-        strncpy(city_items[nc].desc,sl+1,511);
-        nc++;
-    }
-    for(int i=0;i<nz;i++) free(zones[i]);
-    free(zones);
+    const char *sel_reg = gtk_combo_box_get_active_id(GTK_COMBO_BOX(reg));
+    if (!sel_reg || !strcmp(sel_reg,"UTC")) { return; }
 
-    if(nc==0) {
-        if(city_items)free(city_items);
-        strncpy(st.timezone,sel_reg,sizeof(st.timezone)-1); return 1;
-    }
+    char zones_raw[65536]={0};
+    FILE *fp = popen("timedatectl list-timezones 2>/dev/null","r");
+    if (fp) { (void)fread(zones_raw,1,sizeof(zones_raw)-1,fp); pclose(fp); }
 
+    char *p=zones_raw, *nl;
     char cur_city[64]="";
-    char *sl=strchr(st.timezone,'/');
-    if(sl) strncpy(cur_city,sl+1,sizeof(cur_city)-1);
-
-    char hdr[128]; snprintf(hdr,sizeof(hdr),
-        L("Region: %s\nSelect your city:","Region: %s\nSelecciona tu ciudad:"),sel_reg);
-    char sel_city[128]={0};
-    int ok=radiolist_dlg(L("Timezone - City","Zona horaria - Ciudad"),hdr,
-                          city_items,nc,cur_city,sel_city,sizeof(sel_city));
-    free(city_items);
-    if(!ok) return 0;
-    snprintf(st.timezone,sizeof(st.timezone),"%s/%s",sel_reg,sel_city);
-    return 1;
-}
-
-static const char *get_desktop_preview_url(const char *name) {
-    if (!strcmp(name, "KDE Plasma")) return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/KDE-6.png";
-    if (!strcmp(name, "Cinnamon"))   return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/cinnamonn.jpg";
-    if (!strcmp(name, "GNOME"))      return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/gnome.jpg";
-    if (!strcmp(name, "Hyprland"))   return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/hyprland.png";
-    if (!strcmp(name, "LXQt"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/lxqt.jpg";
-    if (!strcmp(name, "MATE"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/mate.jpg";
-    if (!strcmp(name, "None"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/no.png";
-    if (!strcmp(name, "Sway"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/sway.jpg";
-    if (!strcmp(name, "XFCE"))       return "https://raw.githubusercontent.com/humrand/arch-installation-easy/main/SourceCode/images/xfce.jpg";
-    return NULL;
-}
-
-static int desktop_preview_confirm(const char *desktop_name) {
-    const char *url = get_desktop_preview_url(desktop_name);
-    if (!url) return 1;
-
-    char safe[64]; int si = 0;
-    for (const char *p = desktop_name; *p && si < 60; p++)
-        safe[si++] = (*p == ' ') ? '_' : *p;
-    safe[si] = '\0';
-
-    const char *ext = strrchr(url, '.');
-    if (!ext) ext = ".png";
-
-    char local_path[256];
-    snprintf(local_path, sizeof(local_path), "/tmp/arch_preview_%s%s", safe, ext);
-
-    if (access(local_path, F_OK) != 0) {
-        infobox_dlg(
-            L("Downloading preview...", "Descargando vista previa..."),
-            L("Fetching desktop screenshot, please wait...",
-              "Descargando captura del escritorio, por favor espera..."));
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd),
-                 "curl -s -L --max-time 20 -o '%s' '%s' 2>/dev/null",
-                 local_path, url);
-        (void)system(cmd);
-        if (g_infobox_window) {
-            gtk_widget_destroy(g_infobox_window);
-            g_infobox_window = NULL;
+    if (strchr(st.timezone,'/')) strncpy(cur_city,strchr(st.timezone,'/')+1,63);
+    int sel_idx=0, idx=0;
+    while (*p && (nl=strchr(p,'\n'))) {
+        *nl='\0';
+        char *sl=strchr(p,'/'); if(!sl){p=nl+1;continue;}
+        int rlen=sl-p;
+        if (rlen==(int)strlen(sel_reg) && !strncmp(p,sel_reg,rlen)) {
+            gtk_combo_box_text_append(city,sl+1,sl+1);
+            if (!strcmp(sl+1,cur_city)) sel_idx=idx;
+            idx++;
         }
+        p=nl+1;
     }
-
-    char title[128];
-    snprintf(title, sizeof(title),
-             L("Preview: %s", "Vista previa: %s"), desktop_name);
-
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        title, NULL, GTK_DIALOG_MODAL,
-        L("Install this DE",  "Instalar este escritorio"), GTK_RESPONSE_OK,
-        L("Back",             "Volver"),                   GTK_RESPONSE_CANCEL,
-        NULL);
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 1100, 680);
-    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
-
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-    gtk_container_set_border_width(GTK_CONTAINER(box), 8);
-
-    if (access(local_path, F_OK) == 0) {
-        GError *err = NULL;
-        GdkPixbuf *pb = gdk_pixbuf_new_from_file(local_path, &err);
-        if (pb) {
-            int orig_w = gdk_pixbuf_get_width(pb);
-            int orig_h = gdk_pixbuf_get_height(pb);
-            int max_w = 1060, max_h = 580;
-            double scale = 1.0;
-            if (orig_w > max_w) scale = (double)max_w / orig_w;
-            if (orig_h * scale > max_h) scale = (double)max_h / orig_h;
-            GdkPixbuf *scaled = gdk_pixbuf_scale_simple(
-                pb, (int)(orig_w * scale), (int)(orig_h * scale),
-                GDK_INTERP_BILINEAR);
-            g_object_unref(pb);
-            GtkWidget *img = gtk_image_new_from_pixbuf(scaled ? scaled : NULL);
-            if (scaled) g_object_unref(scaled);
-            GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
-            gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-                GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-            gtk_container_add(GTK_CONTAINER(scroll), img);
-            gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
-        } else {
-            char errmsg[256];
-            snprintf(errmsg, sizeof(errmsg),
-                     L("(Could not load preview image)\n%s",
-                       "(No se pudo cargar la imagen)\n%s"),
-                     err ? err->message : "");
-            if (err) g_error_free(err);
-            gtk_box_pack_start(GTK_BOX(box), gtk_label_new(errmsg), TRUE, TRUE, 0);
-        }
-    } else {
-        gtk_box_pack_start(GTK_BOX(box),
-            gtk_label_new(
-                L("(Preview not available -- network error?)",
-                  "(Vista previa no disponible -- error de red?)")),
-            TRUE, TRUE, 0);
-    }
-
-    char caption[128];
-    snprintf(caption, sizeof(caption),
-             L("Desktop: %s\n\nInstall this desktop environment?",
-               "Escritorio: %s\n\n?Instalar este entorno de escritorio?"),
-             desktop_name);
-    GtkWidget *cap_lbl = gtk_label_new(caption);
-    gtk_label_set_line_wrap(GTK_LABEL(cap_lbl), TRUE);
-    gtk_label_set_xalign(GTK_LABEL(cap_lbl), 0.5f);
-    gtk_box_pack_start(GTK_BOX(box), cap_lbl, FALSE, FALSE, 4);
-
-    gtk_widget_show_all(dlg);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-    return resp == GTK_RESPONSE_OK;
+    gtk_combo_box_set_active(GTK_COMBO_BOX(city),sel_idx);
 }
 
-
-static int screen_desktop(void) {
-    const char *desktops[][2] = {
-        {"KDE Plasma",L("KDE Plasma - full featured, modern","KDE Plasma - completo, moderno")},
-        {"GNOME",     L("GNOME     - clean, Wayland-first","GNOME     - limpio, Wayland primero")},
-        {"Cinnamon",  L("Cinnamon  - classic, Windows-like","Cinnamon  - clasico, similar a Windows")},
-        {"XFCE",      L("XFCE      - lightweight, traditional","XFCE      - ligero, tradicional")},
-        {"MATE",      L("MATE      - GNOME 2 fork, very stable","MATE      - fork de GNOME 2, muy estable")},
-        {"LXQt",      L("LXQt      - minimal Qt desktop","LXQt      - escritorio Qt minimalista")},
-        {"Hyprland",  L("Hyprland  - tiling Wayland compositor + animations",
-                        "Hyprland  - compositor Wayland tiling + animaciones")},
-        {"Sway",      L("Sway      - tiling Wayland compositor, i3-compatible",
-                        "Sway      - compositor Wayland tiling, compatible con i3")},
-        {"None",      L("None      - CLI only, no desktop","None      - solo terminal, sin escritorio")},
-        {NULL,NULL}
+static GtkWidget *build_desktop(void) {
+    static const struct {const char *id; const char *en; const char *es;} DE[] = {
+        {"KDE Plasma","KDE Plasma — Full-featured, modern, highly customizable",
+                      "KDE Plasma — Completo, moderno, muy personalizable"},
+        {"GNOME",     "GNOME — Clean, Wayland-first, minimalist",
+                      "GNOME — Limpio, enfocado en Wayland, minimalista"},
+        {"Cinnamon",  "Cinnamon — Classic feel, Windows-like layout",
+                      "Cinnamon — Clásico, disposición similar a Windows"},
+        {"XFCE",      "XFCE — Lightweight, stable, traditional",
+                      "XFCE — Ligero, estable, tradicional"},
+        {"MATE",      "MATE — GNOME 2 fork, very stable",
+                      "MATE — Fork de GNOME 2, muy estable"},
+        {"LXQt",      "LXQt — Minimal Qt desktop, very light",
+                      "LXQt — Escritorio Qt mínimo, muy ligero"},
+        {"Hyprland",  "Hyprland — Tiling Wayland compositor + animations",
+                      "Hyprland — Compositor Wayland tiling + animaciones"},
+        {"Sway",      "Sway — Tiling Wayland compositor, i3-compatible",
+                      "Sway — Compositor Wayland tiling, compatible con i3"},
+        {"None",      "None — CLI only, no desktop environment",
+                      "Ninguno — Solo terminal, sin escritorio"},
+        {NULL,NULL,NULL}
     };
-    int n=0; while(desktops[n][0]) n++;
-    MenuItem *items = malloc(n*sizeof(MenuItem));
-    for(int i=0;i<n;i++) {
-        strncpy(items[i].tag,desktops[i][0],255);
-        strncpy(items[i].desc,desktops[i][1],511);
+
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Desktop Environment","Entorno de escritorio")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Select one or more desktop environments to install.\n"
+                   "The display manager of the first selected DE will be enabled.",
+                   "Selecciona uno o más entornos de escritorio.\n"
+                   "El gestor de pantalla del primer DE seleccionado se habilitará.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    for (int i=0;DE[i].id;i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
+        W_de_checks[i] = gtk_check_button_new_with_label(DE[i].id);
+        int on = (strstr(st.desktop_list,DE[i].id)!=NULL);
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_de_checks[i]),on);
+        gtk_box_pack_start(GTK_BOX(row),W_de_checks[i],FALSE,FALSE,0);
+        GtkWidget *d = gtk_label_new(strcmp(st.lang,"en")==0?DE[i].en:DE[i].es);
+        gtk_label_set_xalign(GTK_LABEL(d),0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(d),TRUE);
+        add_class(d,"hint");
+        gtk_widget_set_margin_start(d,26);
+        gtk_box_pack_start(GTK_BOX(row),d,FALSE,FALSE,0);
+        gtk_box_pack_start(GTK_BOX(card),row,FALSE,FALSE,4);
     }
-
-    char dl_copy[512]; strncpy(dl_copy, st.desktop_list, sizeof(dl_copy)-1);
-    const char *defs[8]={0}; int ndefs=0;
-    char *tok = strtok(dl_copy,"|");
-    while (tok && ndefs < 8) { defs[ndefs++] = tok; tok = strtok(NULL,"|"); }
-
-    char sel[8][256]; int nsel = -1;
-    for (;;) {
-
-        nsel = checklist_dlg(
-            L("Desktop Environment","Entorno de escritorio"),
-            L("Select one or more desktop environments to install.\n"
-              "Use SPACE to toggle. The DM of the first selected DE will be enabled.\n"
-              "Select 'None' if you want a CLI-only install.",
-              "Selecciona uno o mas entornos de escritorio.\n"
-              "Usa ESPACIO para activar/desactivar. El DM del primer DE se habilitara.\n"
-              "Selecciona 'None' para una instalacion solo de terminal."),
-            items, n, defs, ndefs, sel, 8);
-        if (nsel < 0) { free(items); return 0; }
-        if (nsel == 0) {
-            msgbox(L("No selection","Sin seleccion"),
-                   L("Select at least one option (or 'None' for CLI).",
-                     "Selecciona al menos una opcion (o 'None' para solo terminal)."));
-            continue;
-        }
-
-        char cleaned[8][256]; int nc = 0;
-        int has_non_none = 0;
-        for (int i = 0; i < nsel; i++) if (strcmp(sel[i], "None")) has_non_none = 1;
-        for (int i = 0; i < nsel; i++) {
-            if (has_non_none && !strcmp(sel[i], "None")) continue;
-            strncpy(cleaned[nc++], sel[i], 255);
-        }
-        if (nc == 0) { strncpy(cleaned[0], "None", 255); nc = 1; }
-
-        if (!desktop_preview_confirm(cleaned[0])) {
-
-            nsel = -1;
-            continue;
-        }
-
-        st.desktop_list[0] = '\0';
-        for (int i = 0; i < nc; i++) {
-            if (i) strncat(st.desktop_list, "|",
-                           sizeof(st.desktop_list) - strlen(st.desktop_list) - 1);
-            strncat(st.desktop_list, cleaned[i],
-                    sizeof(st.desktop_list) - strlen(st.desktop_list) - 1);
-        }
-        strncpy(st.desktop, cleaned[0], sizeof(st.desktop) - 1);
-        free(items);
-        return 1;
-    }
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
 }
 
-static int screen_gpu(void) {
-    char detected[32]="None"; detect_gpu(detected,sizeof(detected));
-    if(strcmp(detected,"None")&&!strcmp(st.gpu,"None"))
-        strncpy(st.gpu,detected,sizeof(st.gpu)-1);
+static GtkWidget *build_gpu(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
 
-    char hint[128];
-    snprintf(hint,sizeof(hint),L("Detected GPU: %s","GPU detectada: %s"),detected);
+    char detected[32]={0}; detect_gpu(detected,sizeof(detected));
 
-    const char *gpus[][2]={
-        {"NVIDIA",      L("NVIDIA proprietary (nvidia/nvidia-dkms + utils)","NVIDIA propietario")},
-        {"AMD",         L("AMD open-source (mesa + vulkan-radeon)","AMD open-source (mesa + vulkan-radeon)")},
-        {"Intel",       L("Intel open-source (mesa + vulkan-intel)","Intel open-source (mesa + vulkan-intel)")},
-        {"Intel+NVIDIA",L("Intel + NVIDIA hybrid","Intel + NVIDIA hibrido")},
-        {"Intel+AMD",   L("Intel + AMD hybrid","Intel + AMD hibrido")},
-        {"None",        L("No additional GPU drivers","Sin drivers adicionales de GPU")},
-        {NULL,NULL}
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("GPU Drivers","Drivers de GPU")),FALSE,FALSE,0);
+    char sub_text[128];
+    snprintf(sub_text,sizeof(sub_text),
+        L("Detected GPU: %s","GPU detectada: %s"), detected[0]?detected:"Unknown");
+    gtk_box_pack_start(GTK_BOX(vbox),make_sub(sub_text),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+
+    static const char *GPU_OPTS[] = {
+        "None","Intel","AMD","NVIDIA","Intel+NVIDIA","Intel+AMD",NULL
     };
-    int n=0; while(gpus[n][0]) n++;
-    MenuItem *items=malloc(n*sizeof(MenuItem));
-    for(int i=0;i<n;i++) {
-        strncpy(items[i].tag,gpus[i][0],255);
-        strncpy(items[i].desc,gpus[i][1],511);
+    W_gpu_combo = gtk_combo_box_text_new();
+    int sel_gpu=0;
+    for (int i=0;GPU_OPTS[i];i++) {
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(W_gpu_combo),GPU_OPTS[i],GPU_OPTS[i]);
+        if (!strcmp(GPU_OPTS[i],detected)||!strcmp(GPU_OPTS[i],st.gpu)) sel_gpu=i;
     }
-    char text[256]; snprintf(text,sizeof(text),"%s\n\n%s",hint,
-        L("Select GPU driver:","Selecciona el driver de GPU:"));
-    char out[32]={0};
-    int ok=radiolist_dlg(L("GPU Drivers","Drivers GPU"),text,items,n,st.gpu,out,sizeof(out));
-    free(items);
-    if(!ok) return 0;
-    strncpy(st.gpu,out,sizeof(st.gpu)-1);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(W_gpu_combo),sel_gpu);
+    if (!st.gpu[0] || !strcmp(st.gpu,"None")) {
+        for (int i=0;GPU_OPTS[i];i++)
+            if (!strcmp(GPU_OPTS[i],detected)){gtk_combo_box_set_active(GTK_COMBO_BOX(W_gpu_combo),i);break;}
+    }
+    gtk_widget_set_size_request(W_gpu_combo,260,-1);
+    gtk_box_pack_start(GTK_BOX(card),
+        make_field_row(L("GPU:","GPU:"),W_gpu_combo),FALSE,FALSE,0);
 
-    if (!strcmp(st.gpu,"Intel+NVIDIA")) {
-        MenuItem om[3];
-        strncpy(om[0].tag,"hybrid",255);
-        snprintf(om[0].desc,511,"%s",
-                 L("Hybrid   - iGPU for display, dGPU on demand (best battery)",
-                   "Hibrido  - iGPU para pantalla, dGPU bajo demanda (mejor bateria)"));
-        strncpy(om[1].tag,"integrated",255);
-        snprintf(om[1].desc,511,"%s",
-                 L("Integrated - iGPU only (max battery, no NVIDIA)",
-                   "Integrada    - solo iGPU (maxima bateria, sin NVIDIA)"));
-        strncpy(om[2].tag,"nvidia",255);
-        snprintf(om[2].desc,511,"%s",
-                 L("NVIDIA   - dGPU only (max performance, more power)",
-                   "NVIDIA   - solo dGPU (maxima potencia, mas consumo)"));
-        char om_out[16]={0};
-        radiolist_dlg(L("Optimus Mode","Modo Optimus"),
-                      L("Select the GPU mode for your hybrid laptop.\n"
-                        "(Can be changed later with: envycontrol -s <mode>)",
-                        "Selecciona el modo GPU para tu laptop hibrida.\n"
-                        "(Se puede cambiar luego con: envycontrol -s <modo>)"),
-                      om, 3, st.optimus_mode, om_out, sizeof(om_out));
-        if (om_out[0]) strncpy(st.optimus_mode, om_out, sizeof(st.optimus_mode)-1);
+    W_optimus_box = gtk_box_new(GTK_ORIENTATION_VERTICAL,4);
+    GtkWidget *om_lbl = gtk_label_new(
+        L("Optimus mode (Intel+NVIDIA hybrid laptops):","Modo Optimus (portátiles Intel+NVIDIA):"));
+    gtk_label_set_xalign(GTK_LABEL(om_lbl),0.0f);
+    gtk_box_pack_start(GTK_BOX(W_optimus_box),om_lbl,FALSE,FALSE,0);
+
+    W_optimus_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(W_optimus_combo),"hybrid",
+        L("Hybrid — use both GPUs, best battery+performance","Híbrido — usa ambas GPUs, mejor batería+rendimiento"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(W_optimus_combo),"integrated",
+        L("Integrated only — NVIDIA off, max battery","Solo integrada — NVIDIA apagada, máxima batería"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(W_optimus_combo),"nvidia",
+        L("NVIDIA only — max performance, drains battery","Solo NVIDIA — máximo rendimiento, consume batería"));
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(W_optimus_combo),
+        st.optimus_mode[0]?st.optimus_mode:"hybrid");
+    gtk_widget_set_size_request(W_optimus_combo,360,-1);
+    gtk_box_pack_start(GTK_BOX(W_optimus_box),W_optimus_combo,FALSE,FALSE,0);
+    gtk_widget_set_margin_start(W_optimus_box,4);
+    gtk_widget_set_margin_top(W_optimus_box,8);
+    gtk_box_pack_start(GTK_BOX(card),W_optimus_box,FALSE,FALSE,0);
+
+    const char *cur_gpu = gtk_combo_box_get_active_id(GTK_COMBO_BOX(W_gpu_combo));
+    gboolean show_opt = cur_gpu && !strcmp(cur_gpu,"Intel+NVIDIA");
+    gtk_widget_set_no_show_all(W_optimus_box,TRUE);
+    if (show_opt) gtk_widget_show_all(W_optimus_box); else gtk_widget_hide(W_optimus_box);
+
+    g_signal_connect(W_gpu_combo,"changed",G_CALLBACK(cb_gpu_combo_changed),(gpointer)W_optimus_box);
+
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_profile(void) {
+    static const struct {const char *id; const char *en; const char *es;} PR[] = {
+        {"none",      "None — base system only, no extras",
+                      "Ninguno — solo sistema base, sin extras"},
+        {"gaming",    "Gaming — Steam + Lutris + GameMode + MangoHud + Wine + multilib",
+                      "Gaming — Steam + Lutris + GameMode + MangoHud + Wine + multilib"},
+        {"developer", "Developer — git + Docker + Python + Node + Go + Rust + JDK + gdb",
+                      "Desarrollador — git + Docker + Python + Node + Go + Rust + JDK + gdb"},
+        {"minimal",   "Minimal — lightest possible (no profile extras)",
+                      "Minimal — instalación más ligera posible (sin extras de perfil)"},
+        {"privacy",   "Privacy — Tor + ufw + fail2ban + firejail + KeePassXC + BleachBit",
+                      "Privacidad — Tor + ufw + fail2ban + firejail + KeePassXC + BleachBit"},
+        {NULL,NULL,NULL}
+    };
+
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Installation Profile","Perfil de instalación")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Choose a pre-configured set of packages to install alongside the base system.",
+                   "Elige un conjunto preconfigurado de paquetes a instalar junto al sistema base.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    GSList *grp=NULL;
+    for (int i=0;PR[i].id;i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
+        W_prof_radios[i] = gtk_radio_button_new_with_label(grp,PR[i].id);
+        grp = gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_prof_radios[i]));
+        if (!strcmp(PR[i].id,st.profile))
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_prof_radios[i]),TRUE);
+        gtk_box_pack_start(GTK_BOX(row),W_prof_radios[i],FALSE,FALSE,0);
+        GtkWidget *d=gtk_label_new(strcmp(st.lang,"en")==0?PR[i].en:PR[i].es);
+        gtk_label_set_xalign(GTK_LABEL(d),0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(d),TRUE);
+        add_class(d,"hint");
+        gtk_widget_set_margin_start(d,26);
+        gtk_box_pack_start(GTK_BOX(row),d,FALSE,FALSE,0);
+        gtk_box_pack_start(GTK_BOX(card),row,FALSE,FALSE,4);
+    }
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_dotfiles(void) {
+    static const struct {const char *id; const char *en; const char *es;} DOT[] = {
+        {"none",      "None — skip dotfiles","Ninguno — omitir dotfiles"},
+        {"caelestia", "Caelestia — install caelestia-dots (Hyprland rice)",
+                      "Caelestia — instalar caelestia-dots (rice para Hyprland)"},
+        {"custom",    "Custom — provide your own git repository URL",
+                      "Personalizado — URL de tu propio repositorio git"},
+        {NULL,NULL,NULL}
+    };
+
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Dotfiles","Dotfiles")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Optionally install dotfiles after the base system is set up.\n"
+                   "(Requires Hyprland + internet. Non-fatal if it fails.)",
+                   "Opcionalmente instala dotfiles después de configurar el sistema.\n"
+                   "(Requiere Hyprland + internet. No es fatal si falla.)")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    GSList *grp=NULL;
+    for (int i=0;DOT[i].id;i++) {
+        W_dot_radios[i] = gtk_radio_button_new_with_label(grp,
+            strcmp(st.lang,"en")==0?DOT[i].en:DOT[i].es);
+        grp = gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_dot_radios[i]));
+        if (!strcmp(DOT[i].id,st.dotfiles))
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_dot_radios[i]),TRUE);
+        g_object_set_data(G_OBJECT(W_dot_radios[i]),"dot_id",(gpointer)DOT[i].id);
+        gtk_box_pack_start(GTK_BOX(card),W_dot_radios[i],FALSE,FALSE,4);
+    }
+
+    W_dot_url_box = gtk_box_new(GTK_ORIENTATION_VERTICAL,4);
+    GtkWidget *u_lbl = gtk_label_new(L("Git repository URL:","URL del repositorio git:"));
+    gtk_label_set_xalign(GTK_LABEL(u_lbl),0.0f);
+    W_dot_url = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(W_dot_url),"https://github.com/user/dotfiles.git");
+    if (st.dotfiles_url[0]) gtk_entry_set_text(GTK_ENTRY(W_dot_url),st.dotfiles_url);
+    gtk_widget_set_size_request(W_dot_url,380,-1);
+    gtk_box_pack_start(GTK_BOX(W_dot_url_box),u_lbl,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(W_dot_url_box),W_dot_url,FALSE,FALSE,0);
+    gtk_widget_set_margin_start(W_dot_url_box,24);
+    gtk_widget_set_no_show_all(W_dot_url_box,TRUE);
+    if (!strcmp(st.dotfiles,"custom")) gtk_widget_show_all(W_dot_url_box);
+    else gtk_widget_hide(W_dot_url_box);
+    gtk_box_pack_start(GTK_BOX(card),W_dot_url_box,FALSE,FALSE,0);
+
+    for (int i=0;DOT[i].id;i++) {
+        g_signal_connect(W_dot_radios[i],"toggled",
+            G_CALLBACK(cb_dot_radio_toggled),(gpointer)W_dot_url_box);
+    }
+
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_yay(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("AUR Helper — yay","AUR Helper — yay")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("yay gives you access to the AUR — 80,000+ community packages\n"
+                   "like Spotify, Discord, AnyDesk, and thousands more.",
+                   "yay da acceso al AUR — más de 80.000 paquetes de la comunidad\n"
+                   "como Spotify, Discord, AnyDesk, y miles más.")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    GSList *grp=NULL;
+    W_yay_yes = gtk_radio_button_new_with_label(NULL,
+        L("✓  Install yay  (recommended)","✓  Instalar yay  (recomendado)"));
+    grp = gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_yay_yes));
+    GtkWidget *yay_no = gtk_radio_button_new_with_label(grp,
+        L("✗  Skip  (official packages only)","✗  Omitir  (solo paquetes oficiales)"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_yay_yes),  st.yay);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(yay_no),    !st.yay);
+    gtk_box_pack_start(GTK_BOX(card),W_yay_yes,FALSE,FALSE,4);
+    gtk_box_pack_start(GTK_BOX(card),yay_no,FALSE,FALSE,4);
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_flatpak(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Flatpak + Flathub","Flatpak + Flathub")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Flatpak is a universal, sandboxed app delivery system.\n"
+                   "Flathub has GIMP, VLC, Spotify, VS Code, OBS, Signal, and many more.",
+                   "Flatpak es un sistema universal de distribución de apps en sandbox.\n"
+                   "Flathub tiene GIMP, VLC, Spotify, VS Code, OBS, Signal, y muchas más.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    GSList *grp=NULL;
+    W_flatpak_yes = gtk_radio_button_new_with_label(NULL,
+        L("✓  Install Flatpak + Flathub  (recommended)","✓  Instalar Flatpak + Flathub  (recomendado)"));
+    grp = gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_flatpak_yes));
+    GtkWidget *fp_no = gtk_radio_button_new_with_label(grp,L("✗  Skip","✗  Omitir"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_flatpak_yes),  st.flatpak);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(fp_no),         !st.flatpak);
+    gtk_box_pack_start(GTK_BOX(card),W_flatpak_yes,FALSE,FALSE,4);
+    gtk_box_pack_start(GTK_BOX(card),fp_no,FALSE,FALSE,4);
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_snapper(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("BTRFS Snapshots — Snapper","Snapshots BTRFS — Snapper")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Snapper automatically takes snapshots before/after every system update.\n"
+                   "If something breaks, roll back in seconds — like a time machine for your OS.\n"
+                   "(Requires btrfs filesystem.)",
+                   "Snapper toma automáticamente snapshots antes/después de cada actualización.\n"
+                   "Si algo se rompe, vuelve atrás en segundos — como una máquina del tiempo.\n"
+                   "(Requiere sistema de archivos btrfs.)")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+    if (strcmp(st.filesystem,"btrfs")) {
+        GtkWidget *info = gtk_label_new(
+            L("⚠  Snapper is not available — requires btrfs filesystem.\n"
+              "   Change filesystem to btrfs to enable snapshots.",
+              "⚠  Snapper no está disponible — requiere sistema de archivos btrfs.\n"
+              "   Cambia el sistema de archivos a btrfs para habilitar snapshots."));
+        gtk_label_set_xalign(GTK_LABEL(info),0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(info),TRUE);
+        add_class(info,"warn");
+        gtk_box_pack_start(GTK_BOX(card),info,FALSE,FALSE,4);
+    }
+    GSList *grp=NULL;
+    W_snapper_yes = gtk_radio_button_new_with_label(NULL,
+        L("✓  Enable automatic snapshots  (recommended with btrfs)",
+          "✓  Activar snapshots automáticos  (recomendado con btrfs)"));
+    grp = gtk_radio_button_get_group(GTK_RADIO_BUTTON(W_snapper_yes));
+    GtkWidget *sn_no = gtk_radio_button_new_with_label(grp,L("✗  Skip","✗  Omitir"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_snapper_yes), st.snapper);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sn_no),        !st.snapper);
+    if (strcmp(st.filesystem,"btrfs")) {
+        gtk_widget_set_sensitive(W_snapper_yes,FALSE);
+        gtk_widget_set_sensitive(sn_no,FALSE);
+    }
+    gtk_box_pack_start(GTK_BOX(card),W_snapper_yes,FALSE,FALSE,4);
+    gtk_box_pack_start(GTK_BOX(card),sn_no,FALSE,FALSE,4);
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_extra_pkgs(void) {
+    static const struct {const char *id; const char *en; const char *es;} PKGS[] = {
+        {"firefox",       "firefox — Web browser",                      "firefox — Navegador web"},
+        {"chromium",      "chromium — Chrome-based browser",            "chromium — Navegador basado en Chrome"},
+        {"libreoffice",   "libreoffice-fresh — Office suite",           "libreoffice-fresh — Suite ofimática"},
+        {"vlc",           "vlc — Media player",                         "vlc — Reproductor multimedia"},
+        {"gimp",          "gimp — Image editor",                        "gimp — Editor de imágenes"},
+        {"inkscape",      "inkscape — Vector graphics",                 "inkscape — Gráficos vectoriales"},
+        {"thunderbird",   "thunderbird — Email client",                 "thunderbird — Cliente de correo"},
+        {"telegram",      "telegram-desktop — Messenger",               "telegram-desktop — Mensajería"},
+        {"discord",       "discord — Voice/text chat (via Flatpak)",    "discord — Chat voz/texto (vía Flatpak)"},
+        {"obs-studio",    "obs-studio — Screen recording",              "obs-studio — Grabación de pantalla"},
+        {"kdenlive",      "kdenlive — Video editor",                    "kdenlive — Editor de vídeo"},
+        {"krita",         "krita — Digital painting",                   "krita — Pintura digital"},
+        {"blender",       "blender — 3D modeling",                      "blender — Modelado 3D"},
+        {"audacity",      "audacity — Audio editor",                    "audacity — Editor de audio"},
+        {"neovim",        "neovim — Text editor",                       "neovim — Editor de texto"},
+        {"code",          "code — Visual Studio Code (OSS)",            "code — Visual Studio Code (OSS)"},
+        {"htop",          "htop — Process monitor",                     "htop — Monitor de procesos"},
+        {"tmux",          "tmux — Terminal multiplexer",                "tmux — Multiplexor de terminal"},
+        {"git",           "git — Version control",                      "git — Control de versiones"},
+        {"nmap",          "nmap — Network scanner",                     "nmap — Escáner de red"},
+        {"wireshark-qt",  "wireshark — Packet analyser",                "wireshark — Analizador de paquetes"},
+        {"cups",          "cups — Printing support",                    "cups — Soporte de impresión"},
+        {"sane",          "sane — Scanner support",                     "sane — Soporte de escáner"},
+        {"docker",        "docker — Container engine",                  "docker — Motor de contenedores"},
+        {"virtualbox",    "virtualbox — Virtual machines",              "virtualbox — Máquinas virtuales"},
+        {"wine",          "wine — Windows compatibility layer",         "wine — Capa de compatibilidad Windows"},
+        {"steam",         "steam — Steam gaming client",                "steam — Cliente de juegos Steam"},
+        {"lutris",        "lutris — Game launcher (Linux+Windows)",     "lutris — Lanzador de juegos (Linux+Windows)"},
+        {"syncthing",     "syncthing — File synchronization",           "syncthing — Sincronización de archivos"},
+        {"nextcloud",     "nextcloud-client — Cloud storage",           "nextcloud-client — Almacenamiento en nube"},
+        {"keepassxc",     "keepassxc — Password manager",               "keepassxc — Gestor de contraseñas"},
+        {"fish",          "fish — Friendly shell (set as default)",      "fish — Shell amigable (establecer como predeterminada)"},
+        {NULL,NULL,NULL}
+    };
+
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Extra Packages","Paquetes extra")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Select additional packages to install.\n"
+                   "You can always install more packages later with pacman or yay.",
+                   "Selecciona paquetes adicionales a instalar.\n"
+                   "Siempre puedes instalar más paquetes después con pacman o yay.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *search = gtk_search_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(search),
+        L("Filter packages…","Filtrar paquetes…"));
+    gtk_box_pack_start(GTK_BOX(vbox),search,FALSE,FALSE,0);
+
+    GtkWidget *card = make_card();
+
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid),6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid),24);
+
+    W_npkgs = 0;
+    for (int i=0;PKGS[i].id && W_npkgs<MAX_EXTRA_PKGS;i++) {
+        W_pkg_ids[W_npkgs] = PKGS[i].id;
+        W_pkg_checks[W_npkgs] = gtk_check_button_new_with_label(
+            strcmp(st.lang,"en")==0 ? PKGS[i].en : PKGS[i].es);
+        int on = (strstr(st.extra_pkgs, PKGS[i].id) != NULL);
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_pkg_checks[W_npkgs]),on);
+
+        int col = W_npkgs % 2;
+        int row = W_npkgs / 2;
+        gtk_grid_attach(GTK_GRID(grid), W_pkg_checks[W_npkgs], col, row, 1, 1);
+        W_npkgs++;
+    }
+
+    FilterData *fd = g_new0(FilterData,1);
+    fd->checks = W_pkg_checks;
+    fd->n = W_npkgs;
+    g_signal_connect_data(search,"search-changed",
+        G_CALLBACK(cb_pkg_filter),(gpointer)fd,(GClosureNotify)g_free,(GConnectFlags)0);
+
+    gtk_container_add(GTK_CONTAINER(card),grid);
+    gtk_box_pack_start(GTK_BOX(vbox),card,FALSE,FALSE,0);
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static void refresh_review(void);
+
+static GtkWidget *build_review(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Review Configuration","Revisar configuración")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Please review all settings before proceeding.\n"
+                   "Click Back to change anything.",
+                   "Revisa todos los ajustes antes de continuar.\n"
+                   "Haz clic en Atrás para modificar cualquier valor.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *tv_sw = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tv_sw),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(tv_sw,TRUE);
+
+    W_review_tv = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(W_review_tv),FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(W_review_tv),FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(W_review_tv),GTK_WRAP_WORD_CHAR);
+    gtk_container_set_border_width(GTK_CONTAINER(W_review_tv),10);
+    gtk_container_add(GTK_CONTAINER(tv_sw),W_review_tv);
+    gtk_box_pack_start(GTK_BOX(vbox),tv_sw,TRUE,TRUE,0);
+
+    GtkWidget *warn = gtk_label_new(
+        L("⚠  The installation will ERASE the selected disk.\n"
+          "   All data on that disk will be permanently lost.",
+          "⚠  La instalación BORRARÁ el disco seleccionado.\n"
+          "   Todos los datos de ese disco se perderán de forma permanente."));
+    add_class(warn,"warn");
+    gtk_label_set_justify(GTK_LABEL(warn),GTK_JUSTIFY_CENTER);
+    gtk_label_set_line_wrap(GTK_LABEL(warn),TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox),warn,FALSE,FALSE,8);
+
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static void refresh_review(void) {
+    if (!W_review_tv) return;
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(W_review_tv));
+    char text[4096]={0};
+    int n=0;
+#define RV(fmt,...) n += snprintf(text+n,sizeof(text)-n,fmt"\n",##__VA_ARGS__)
+    RV("══════════════════════════════════════════");
+    RV("  Arch Linux Installation Summary");
+    RV("══════════════════════════════════════════");
+    RV("");
+    RV("  Mode         : %s", st.quick?"Quick":"Custom");
+    RV("  Language     : %s", st.lang);
+    RV("  Locale       : %s", st.locale);
+    RV("  Keyboard     : %s", st.keymap);
+    RV("  Timezone     : %s", st.timezone);
+    RV("");
+    RV("  Disk         : /dev/%s", st.disk);
+    RV("  Swap         : %s GB", st.swap);
+    RV("  Dual boot    : %s", st.dualboot?"Yes":"No");
+    RV("  Filesystem   : %s", st.filesystem);
+    RV("  Kernel(s)    : %s", st.kernel_list);
+    RV("  Bootloader   : %s", st.bootloader);
+    RV("  Mirrors      : %s", st.mirrors?"reflector (auto)":"no");
+    RV("");
+    RV("  Hostname     : %s", st.hostname);
+    RV("  Username     : %s", st.username);
+    RV("");
+    RV("  Desktop(s)   : %s", st.desktop_list);
+    RV("  GPU driver   : %s", st.gpu);
+    if (!strcmp(st.gpu,"Intel+NVIDIA"))
+    RV("  Optimus mode : %s", st.optimus_mode);
+    RV("  Profile      : %s", st.profile);
+    RV("  Dotfiles     : %s", st.dotfiles);
+    if (!strcmp(st.dotfiles,"custom"))
+    RV("  Dotfiles URL : %s", st.dotfiles_url);
+    RV("  yay          : %s", st.yay?"yes":"no");
+    RV("  Flatpak      : %s", st.flatpak?"yes":"no");
+    RV("  Snapper      : %s", st.snapper?"yes":"no");
+    if (st.extra_pkgs[0])
+    RV("  Extra pkgs   : %s", st.extra_pkgs);
+    RV("");
+    RV("══════════════════════════════════════════");
+#undef RV
+    gtk_text_buffer_set_text(buf,text,-1);
+
+    GtkTextIter start; gtk_text_buffer_get_start_iter(buf,&start);
+    GtkTextTag *bold = gtk_text_buffer_create_tag(buf,NULL,"weight",PANGO_WEIGHT_BOLD,NULL);
+    GtkTextTag *blue = gtk_text_buffer_create_tag(buf,NULL,"foreground","#58a6ff",NULL);
+    GtkTextIter end;  gtk_text_buffer_get_end_iter(buf,&end);
+    gtk_text_buffer_apply_tag(buf,bold,&start,&end);
+    (void)blue;
+}
+
+static void gtk_run_preflight(void);
+
+static GtkWidget *build_preflight(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sv),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Pre-install Checks","Verificación pre-instalación")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_sub(L("Verifying that the system is ready to install.",
+                   "Verificando que el sistema está listo para instalar.")),
+        FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *tv_sw = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tv_sw),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(tv_sw,TRUE);
+
+    W_pre_tv = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(W_pre_tv),FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(W_pre_tv),GTK_WRAP_WORD_CHAR);
+    gtk_container_set_border_width(GTK_CONTAINER(W_pre_tv),10);
+    gtk_container_add(GTK_CONTAINER(tv_sw),W_pre_tv);
+    gtk_box_pack_start(GTK_BOX(vbox),tv_sw,TRUE,TRUE,0);
+
+    W_pre_ok = gtk_label_new("");
+    add_class(W_pre_ok,"warn");
+    gtk_label_set_xalign(GTK_LABEL(W_pre_ok),0.5f);
+    gtk_box_pack_start(GTK_BOX(vbox),W_pre_ok,FALSE,FALSE,4);
+
+    gtk_container_add(GTK_CONTAINER(sv),vbox);
+    gtk_box_pack_start(GTK_BOX(page),sv,TRUE,TRUE,0);
+    return page;
+}
+
+static void gtk_run_preflight(void) {
+    if (!W_pre_tv) return;
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(W_pre_tv));
+    char text[4096]={0};
+    int n=0, ok=1;
+#define PF(sym,fmt,...) n+=snprintf(text+n,sizeof(text)-n,"  %s  "fmt"\n",sym,##__VA_ARGS__)
+
+    PF("🔍","Running pre-install checks…");
+    n+=snprintf(text+n,sizeof(text)-n,"\n");
+
+    int net_ok = check_connectivity();
+    PF(net_ok?"✓":"✗","Internet connection: %s",net_ok?"OK":"FAIL — no internet!");
+    if (!net_ok) ok=0;
+
+    int disk_ok = (st.disk[0]!='\0');
+    PF(disk_ok?"✓":"✗","Disk selected: %s",disk_ok?st.disk:"NONE");
+    if (!disk_ok) ok=0;
+
+    if (disk_ok) {
+        char path[128]; snprintf(path,sizeof(path),"/dev/%s",st.disk);
+        int acc_ok = (access(path,F_OK)==0);
+        PF(acc_ok?"✓":"✗","Disk accessible (%s): %s",path,acc_ok?"OK":"FAIL");
+        if (!acc_ok) ok=0;
+    }
+
+    int id_ok = (st.hostname[0]&&st.username[0]);
+    PF(id_ok?"✓":"✗","Hostname/username: %s",id_ok?"OK":"MISSING");
+    if (!id_ok) ok=0;
+
+    int pw_ok = (st.root_pass[0]&&st.user_pass[0]);
+    PF(pw_ok?"✓":"✗","Passwords set: %s",pw_ok?"OK":"MISSING");
+    if (!pw_ok) ok=0;
+
+    long ram_mb = 0;
+    FILE *fp=fopen("/proc/meminfo","r");
+    if (fp) {
+        char line[128];
+        while (fgets(line,sizeof(line),fp)) {
+            if (strncmp(line,"MemTotal:",9)==0){sscanf(line+9,"%ld",&ram_mb);break;}
+        }
+        fclose(fp);
+    }
+    ram_mb /= 1024;
+    int ram_ok = (ram_mb >= 512);
+    PF(ram_ok?"✓":"⚠","RAM: %ld MB %s",ram_mb,ram_ok?"OK":"(low, may be slow)");
+
+    int uefi = is_uefi();
+    PF("ℹ","Boot mode: %s",uefi?"UEFI":"BIOS/MBR");
+
+    int pac_ok = (access("/usr/bin/pacman",X_OK)==0);
+    PF(pac_ok?"✓":"✗","pacman available: %s",pac_ok?"OK":"FAIL — not Arch live ISO?");
+    if (!pac_ok) ok=0;
+
+    n+=snprintf(text+n,sizeof(text)-n,"\n");
+    if (ok)
+        n+=snprintf(text+n,sizeof(text)-n,"  ✓  All checks passed — ready to install!\n");
+    else
+        n+=snprintf(text+n,sizeof(text)-n,
+            "  ✗  Some checks FAILED.  Fix the issues before proceeding.\n");
+
+#undef PF
+    gtk_text_buffer_set_text(buf,text,-1);
+    if (W_pre_ok) {
+        gtk_label_set_text(GTK_LABEL(W_pre_ok),
+            ok ? L("✓  System ready to install.","✓  Sistema listo para instalar.")
+               : L("✗  Fix the issues above and click Back to correct them.",
+                   "✗  Corrige los problemas anteriores y haz clic en Atrás para corregirlos."));
+    }
+    W_pre_result = ok;
+}
+
+static GtkWidget *build_install(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+        make_title(L("Installing Arch Linux…","Instalando Arch Linux…")),FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    W_inst_stage = gtk_label_new(
+        L("Preparing installation…","Preparando instalación…"));
+    gtk_label_set_xalign(GTK_LABEL(W_inst_stage),0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(W_inst_stage),TRUE);
+    add_class(W_inst_stage,"card-title");
+    gtk_box_pack_start(GTK_BOX(vbox),W_inst_stage,FALSE,FALSE,0);
+
+    W_inst_prog = gtk_progress_bar_new();
+    gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(W_inst_prog),TRUE);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(W_inst_prog),0.0);
+    gtk_widget_set_size_request(W_inst_prog,-1,18);
+    gtk_box_pack_start(GTK_BOX(vbox),W_inst_prog,FALSE,FALSE,0);
+
+    GtkWidget *log_frame = gtk_frame_new(L("Installation Log","Registro de instalación"));
+    GtkWidget *log_sw = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(log_sw),
+        GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(log_sw,TRUE);
+    W_inst_tv = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(W_inst_tv),FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(W_inst_tv),FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(W_inst_tv),GTK_WRAP_CHAR);
+    gtk_container_set_border_width(GTK_CONTAINER(W_inst_tv),8);
+    gtk_container_add(GTK_CONTAINER(log_sw),W_inst_tv);
+    gtk_container_add(GTK_CONTAINER(log_frame),log_sw);
+    gtk_box_pack_start(GTK_BOX(vbox),log_frame,TRUE,TRUE,0);
+
+    gtk_box_pack_start(GTK_BOX(page),vbox,TRUE,TRUE,0);
+    return page;
+}
+
+static GtkWidget *build_finish(void) {
+    GtkWidget *page = make_page_wrap();
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL,20);
+    gtk_widget_set_valign(vbox,GTK_ALIGN_CENTER);
+    gtk_widget_set_halign(vbox,GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(page),vbox,TRUE,TRUE,0);
+
+    GtkWidget *icon = gtk_label_new("✓");
+    gtk_widget_set_name(icon,"done-icon");
+    {
+        GtkCssProvider *p=gtk_css_provider_new();
+        gtk_css_provider_load_from_data(p,"label#done-icon{font-size:64px;color:#3fb950;}",-1,NULL);
+        gtk_style_context_add_provider(gtk_widget_get_style_context(icon),
+            GTK_STYLE_PROVIDER(p),GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        g_object_unref(p);
+    }
+    gtk_box_pack_start(GTK_BOX(vbox),icon,FALSE,FALSE,0);
+
+    GtkWidget *title = gtk_label_new(
+        L("Arch Linux installed successfully!","¡Arch Linux instalado correctamente!"));
+    add_class(title,"welcome-title");
+    gtk_label_set_justify(GTK_LABEL(title),GTK_JUSTIFY_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox),title,FALSE,FALSE,0);
+
+    char msg[256];
+    snprintf(msg,sizeof(msg),
+        L("Installed for: %s@%s","Instalado para: %s@%s"),
+        st.username,st.hostname);
+    GtkWidget *sub = gtk_label_new(msg);
+    gtk_label_set_justify(GTK_LABEL(sub),GTK_JUSTIFY_CENTER);
+    add_class(sub,"page-sub");
+    gtk_box_pack_start(GTK_BOX(vbox),sub,FALSE,FALSE,0);
+
+    gtk_box_pack_start(GTK_BOX(vbox),make_divider(),FALSE,FALSE,0);
+
+    GtkWidget *steps_lbl = gtk_label_new(
+        L("Next steps after reboot:\n"
+          "  • Log in with your username and password\n"
+          "  • Run  pacman -Syu  to update packages\n"
+          "  • Check the Arch Wiki for tips",
+          "Pasos tras el reinicio:\n"
+          "  • Inicia sesión con tu usuario y contraseña\n"
+          "  • Ejecuta  pacman -Syu  para actualizar paquetes\n"
+          "  • Consulta la Arch Wiki para consejos"));
+    gtk_label_set_xalign(GTK_LABEL(steps_lbl),0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(steps_lbl),TRUE);
+    add_class(steps_lbl,"hint");
+    gtk_box_pack_start(GTK_BOX(vbox),steps_lbl,FALSE,FALSE,0);
+
+    GtkWidget *reboot_btn = gtk_button_new_with_label(
+        L("🔄  Reboot Now","🔄  Reiniciar ahora"));
+    add_class(reboot_btn,"suggested-action");
+    gtk_widget_set_size_request(reboot_btn,200,48);
+    gtk_widget_set_halign(reboot_btn,GTK_ALIGN_CENTER);
+    g_signal_connect(reboot_btn,"clicked",G_CALLBACK(cb_reboot),NULL);
+    gtk_box_pack_start(GTK_BOX(vbox),reboot_btn,FALSE,FALSE,0);
+
+    return page;
+}
+
+
+static int val_welcome(void)  { return 1; }
+
+static int val_language(void) {
+    if (W_lang_es && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_lang_es)))
+        strncpy(st.lang,"es",sizeof(st.lang)-1);
+    else
+        strncpy(st.lang,"en",sizeof(st.lang)-1);
+    return 1;
+}
+
+static int val_network(void) { return 1; } 
+
+static int val_mode(void) {
+    int quick = (W_mode_quick_radio &&
+                 gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_mode_quick_radio)));
+    st.quick = quick;
+
+    if (quick) {
+        if (!st.filesystem[0] || !strcmp(st.filesystem,"ext4"))
+            strncpy(st.filesystem,"btrfs",sizeof(st.filesystem)-1);
+        if (!strcmp(st.desktop_list,"None")||!st.desktop_list[0])
+            strncpy(st.desktop_list,"KDE Plasma",sizeof(st.desktop_list)-1);
+        strncpy(st.desktop,"KDE Plasma",sizeof(st.desktop)-1);
+        if (!strcmp(st.kernel,"linux"))
+            strncpy(st.kernel_list,"linux",sizeof(st.kernel_list)-1);
+        if (!strcmp(st.bootloader,"grub") || !st.bootloader[0])
+            strncpy(st.bootloader,"grub",sizeof(st.bootloader)-1);
+        st.yay=1; st.snapper=1; st.flatpak=1; st.mirrors=1;
+    }
+
+    g_pages = quick ? QUICK_PAGES : CUSTOM_PAGES;
+    update_sidebar();
+    return 1;
+}
+
+static int val_locale(void) {
+    if (W_locale_combo) {
+        const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(W_locale_combo));
+        if (id) {
+            strncpy(st.locale,id,sizeof(st.locale)-1);
+            const char *km = kv_get(LOCALE_TO_KEYMAP,id);
+            if (km) strncpy(st.keymap,km,sizeof(st.keymap)-1);
+        }
     }
     return 1;
 }
 
-static int screen_yay(void) {
-
-    char summary[256];
-    snprintf(summary,sizeof(summary),
-        L(" Summary: user=%s  desktop=%s  fs=%s",
-          " Resumen: usuario=%s  escritorio=%s  fs=%s"),
-        st.username[0]?st.username:"?", st.desktop, st.filesystem);
-
-    MenuItem items[2];
-    strncpy(items[0].tag,"yes",255);
-    snprintf(items[0].desc,511,"%s",L(
-        "Yes  Install yay  (recommended for most users)",
-        "Sí   Instalar yay  (recomendado para la mayoría)"));
-    strncpy(items[1].tag,"no",255);
-    snprintf(items[1].desc,511,"%s",L(
-        "No   Skip  (only use official Arch packages)",
-        "No   Omitir  (solo usar paquetes oficiales de Arch)"));
-
-    char dlg_text[4096];
-    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L(" What is yay?\n\n"
-          "   Arch Linux has an official package repository (thousands of apps).\n"
-          "   But the AUR (Arch User Repository) has tens of thousands MORE packages\n"
-          "   contributed by the community — like Spotify, Discord, AnyDesk, etc.\n\n"
-          "   yay is an AUR helper: it lets you install AUR packages just as easily\n"
-          "   as official ones, using the same  'yay -S package'  command.\n\n"
-          "   PROS: access to 80,000+ extra packages, easy to use.\n"
-          "   CONS: AUR packages are community-maintained (review before installing).\n\n"
-          "    Recommended: YES",
-          " ¿Qué es yay?\n\n"
-          "   Arch Linux tiene un repositorio oficial (miles de apps).\n"
-          "   Pero el AUR (Arch User Repository) tiene decenas de miles MÁS,\n"
-          "   mantenidos por la comunidad — como Spotify, Discord, AnyDesk, etc.\n\n"
-          "   yay es un asistente AUR: te permite instalar paquetes del AUR igual\n"
-          "   de fácil que los oficiales, con el mismo comando  'yay -S paquete'.\n\n"
-          "   PROS: acceso a 80.000+ paquetes extra, fácil de usar.\n"
-          "   CONS: los paquetes AUR son de la comunidad (revísalos antes de instalar).\n\n"
-          "    Recomendado: SÍ"));
-
-    char out[8]={0};
-    if (!radiolist_dlg(L(" AUR Helper (yay)"," AUR Helper (yay)"),
-                       dlg_text, items, 2, st.yay?"yes":"no", out, sizeof(out))) {
-        if (g_home_requested) { g_home_requested=0; return 2; }
-        return 0;
+static int val_keymap(void) {
+    if (W_keymap_combo) {
+        const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(W_keymap_combo));
+        if (id) strncpy(st.keymap,id,sizeof(st.keymap)-1);
+        char cmd[128]; snprintf(cmd,sizeof(cmd),"loadkeys %s 2>/dev/null",st.keymap);
+        system(cmd);
     }
-    st.yay=!strcmp(out,"yes");
     return 1;
 }
 
-static int screen_snapper(void) {
-    if(strcmp(st.filesystem,"btrfs")) { st.snapper=0; return 1; }
-
-    char summary[256];
-    snprintf(summary,sizeof(summary),
-        L(" Summary: fs=btrfs  kernel=%s  yay=%s",
-          " Resumen: fs=btrfs  kernel=%s  yay=%s"),
-        st.kernel, st.yay?"yes":"no");
-
-    MenuItem items[2];
-    strncpy(items[0].tag,"yes",255);
-    snprintf(items[0].desc,511,"%s",L(
-        "Yes  Enable automatic snapshots  (recommended with btrfs)",
-        "Sí   Activar snapshots automáticos  (recomendado con btrfs)"));
-    strncpy(items[1].tag,"no",255);
-    snprintf(items[1].desc,511,"%s",L(
-        "No   Skip","No   Omitir"));
-
-    char dlg_text[4096];
-    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L(" What is Snapper?\n\n"
-          "   Snapper is a tool that automatically takes a 'photo' (snapshot)\n"
-          "   of your system before and after every software installation or update.\n\n"
-          "   If an update breaks something, you can roll back to the previous\n"
-          "   snapshot in seconds — like a time machine for your system!\n\n"
-          "   This installer also sets up grub-btrfs so you can boot into\n"
-          "   any snapshot directly from the GRUB menu.\n\n"
-          "   PROS: automatic safety net, easy recovery, no extra effort needed.\n"
-          "   CONS: uses some extra disk space (snapshots store changed files).\n\n"
-          "     Requires btrfs filesystem — which you already selected. \n\n"
-          "    Recommended: YES",
-          " ¿Qué es Snapper?\n\n"
-          "   Snapper es una herramienta que toma automáticamente una 'foto' (snapshot)\n"
-          "   del sistema antes y después de cada instalación o actualización.\n\n"
-          "   Si una actualización rompe algo, puedes volver al estado anterior\n"
-          "   en segundos — ¡como una máquina del tiempo para tu sistema!\n\n"
-          "   Este instalador también configura grub-btrfs para que puedas arrancar\n"
-          "   desde cualquier snapshot directamente en el menú de GRUB.\n\n"
-          "   PROS: red de seguridad automática, recuperación fácil, sin esfuerzo.\n"
-          "   CONS: usa algo más de espacio en disco (los snapshots guardan cambios).\n\n"
-          "     Requiere el sistema de archivos btrfs — que ya tienes seleccionado. \n\n"
-          "    Recomendado: SÍ"));
-
-    char out[8]={0};
-    if (!radiolist_dlg(L(" BTRFS Snapshots (Snapper)"," Snapshots BTRFS (Snapper)"),
-                       dlg_text, items, 2, st.snapper?"yes":"no", out, sizeof(out))) {
-        if (g_home_requested) { g_home_requested=0; return 2; }
-        return 0;
-    }
-    st.snapper=!strcmp(out,"yes");
-    return 1;
-}
-
-static int screen_flatpak(void) {
-    if(!strcmp(st.desktop,"None")) { st.flatpak=0; return 1; }
-
-    char summary[256];
-    snprintf(summary,sizeof(summary),
-        L(" Summary: desktop=%s  yay=%s",
-          " Resumen: escritorio=%s  yay=%s"),
-        st.desktop, st.yay?"yes":"no");
-
-    MenuItem items[2];
-    strncpy(items[0].tag,"yes",255);
-    snprintf(items[0].desc,511,"%s",L(
-        "Yes  Install Flatpak + Flathub  (recommended)",
-        "Sí   Instalar Flatpak + Flathub  (recomendado)"));
-    strncpy(items[1].tag,"no",255);
-    snprintf(items[1].desc,511,"%s",L(
-        "No   Skip","No   Omitir"));
-
-    char dlg_text[4096];
-    snprintf(dlg_text,sizeof(dlg_text),"%s\n\n%s",summary,
-        L(" What is Flatpak?\n\n"
-          "   Flatpak is a universal way to install apps that works on ANY Linux distro.\n"
-          "   Apps installed via Flatpak run in a sandbox (isolated from the system).\n\n"
-          "   Flathub is the main Flatpak store — it has apps like:\n"
-          "   GIMP, VLC, Spotify, VS Code, LibreOffice, OBS, Signal, and many more.\n\n"
-          "   PROS: sandboxed (safer), always up to date, easy to install any app,\n"
-          "         great for apps not in Arch repos.\n"
-          "   CONS: apps are larger (each brings its own libraries),\n"
-          "         slightly slower first launch.\n\n"
-          "   With yay (AUR) AND Flatpak you'll have access to virtually any app.\n\n"
-          "    Recommended: YES",
-          " ¿Qué es Flatpak?\n\n"
-          "   Flatpak es una forma universal de instalar apps que funciona en CUALQUIER\n"
-          "   distribución Linux. Las apps se ejecutan en un sandbox (aisladas del sistema).\n\n"
-          "   Flathub es la tienda principal de Flatpak — tiene apps como:\n"
-          "   GIMP, VLC, Spotify, VS Code, LibreOffice, OBS, Signal, y muchas más.\n\n"
-          "   PROS: sandboxed (más seguro), siempre actualizado, fácil instalar cualquier app,\n"
-          "         ideal para apps no disponibles en los repos de Arch.\n"
-          "   CONS: las apps son más grandes (cada una trae sus propias librerías),\n"
-          "         primer arranque algo más lento.\n\n"
-          "   Con yay (AUR) Y Flatpak tendrás acceso a prácticamente cualquier app.\n\n"
-          "    Recomendado: SÍ"));
-
-    char out[8]={0};
-    if (!radiolist_dlg(L(" Flatpak"," Flatpak"),
-                       dlg_text, items, 2, st.flatpak?"yes":"no", out, sizeof(out))) {
-        if (g_home_requested) { g_home_requested=0; return 2; }
-        return 0;
-    }
-    st.flatpak=!strcmp(out,"yes");
-    return 1;
-}
-
-static int screen_profile(void) {
-    MenuItem items[5];
-    strncpy(items[0].tag,"none",255);
-    snprintf(items[0].desc,511,"%s",
-             L("None      - no profile, just base system",
-               "Ninguno   - sin perfil, solo el sistema base"));
-    strncpy(items[1].tag,"gaming",255);
-    snprintf(items[1].desc,511,"%s",
-             L("Gaming    - Steam + Lutris + GameMode + MangoHud + Wine + multilib",
-               "Gaming    - Steam + Lutris + GameMode + MangoHud + Wine + multilib"));
-    strncpy(items[2].tag,"developer",255);
-    snprintf(items[2].desc,511,"%s",
-             L("Developer - git + Docker + Python + Node + Go + Rust + JDK + gdb",
-               "Desarrollador - git + Docker + Python + Node + Go + Rust + JDK + gdb"));
-    strncpy(items[3].tag,"minimal",255);
-    snprintf(items[3].desc,511,"%s",
-             L("Minimal   - no profile extras (lightest possible install)",
-               "Minimal   - sin extras de perfil (instalacion mas ligera)"));
-    strncpy(items[4].tag,"privacy",255);
-    snprintf(items[4].desc,511,"%s",
-             L("Privacy   - Tor + ufw + fail2ban + firejail + KeePassXC + BleachBit",
-               "Privacidad - Tor + ufw + fail2ban + firejail + KeePassXC + BleachBit"));
-
-    char out[32]={0};
-    if (!radiolist_dlg(
-            L("Installation Profile","Perfil de instalacion"),
-            L("Choose a profile to pre-select a set of packages.\n\n"
-              "Gaming:    multilib is REQUIRED and will be enabled automatically.\n"
-              "Developer: Docker, full toolchain.\n"
-              "Privacy:   firewall + anonymization tools.\n"
-              "Minimal:   only what you explicitly selected above.",
-              "Elige un perfil para preseleccionar paquetes.\n\n"
-              "Gaming:    se requiere y habilita multilib automaticamente.\n"
-              "Desarrollador: Docker, toolchain completo.\n"
-              "Privacidad: firewall + herramientas de anonimizacion.\n"
-              "Minimal:   solo lo que seleccionaste manualmente."),
-            items, 5, st.profile, out, sizeof(out)))
-        return 0;
-    strncpy(st.profile, out, sizeof(st.profile)-1);
-    return 1;
-}
-
-static int screen_dotfiles(void) {
-    if (!strstr(st.desktop_list, "Hyprland")) {
-        strncpy(st.dotfiles, "none", sizeof(st.dotfiles)-1);
-        st.dotfiles_url[0] = '\0';
-        return 1;
-    }
-
-    MenuItem items[3];
-    strncpy(items[0].tag,"none",255);
-    snprintf(items[0].desc,511,"%s",
-             L("None     - skip dotfiles","Ninguno - omitir dotfiles"));
-    strncpy(items[1].tag,"caelestia",255);
-    snprintf(items[1].desc,511,"%s",
-             L("Caelestia - install caelestia-dots (Hyprland rice)",
-               "Caelestia - instalar caelestia-dots (rice para Hyprland)"));
-    strncpy(items[2].tag,"custom",255);
-    snprintf(items[2].desc,511,"%s",
-             L("Custom   - provide your own git repository URL",
-               "Personalizado - URL de tu propio repositorio git"));
-
-    char out[32]={0};
-    if (!radiolist_dlg(
-            L("Dotfiles / Post-install","Dotfiles / Post-instalacion"),
-            L("Install dotfiles after the base system is set up?\n\n"
-              "The script ~/dots/install.sh (or setup.sh) will be run as your user.\n"
-              "Internet is required. Errors here are non-fatal.",
-              "Instalar dotfiles despues de configurar el sistema base?\n\n"
-              "Se ejecutara ~/dots/install.sh (o setup.sh) como tu usuario.\n"
-              "Necesitas internet. Los errores aqui no son fatales."),
-            items, 3, st.dotfiles, out, sizeof(out)))
-        return 0;
-    strncpy(st.dotfiles, out, sizeof(st.dotfiles)-1);
-
-    if (!strcmp(out,"custom")) {
-        char url[256]={0};
-        if (!inputbox_dlg(
-                L("Dotfiles URL","URL de dotfiles"),
-                L("Enter the git repository URL for your dotfiles:",
-                  "Ingresa la URL del repositorio git de tus dotfiles:"),
-                st.dotfiles_url, url, sizeof(url)))
+static int val_disk(void) {
+    if (W_disk_lb) {
+        GtkListBoxRow *sel = gtk_list_box_get_selected_row(GTK_LIST_BOX(W_disk_lb));
+        if (!sel) {
+            msgbox(L("No disk","Sin disco"),
+                   L("Please select a disk to install Arch Linux.",
+                     "Por favor selecciona un disco donde instalar Arch Linux."));
             return 0;
-        strncpy(st.dotfiles_url, url, sizeof(st.dotfiles_url)-1);
-    }
-    return 1;
-}
-
-static int screen_extra_packages(void) {
-    static const char *pkgs[][2] = {
-        {"btop",                 "Resource monitor (CPU/RAM/disk/net)"},
-        {"htop",                 "Interactive process viewer"},
-        {"fastfetch",            "Fast system info display"},
-        {"neofetch",             "Classic system info display"},
-        {"tmux",                 "Terminal multiplexer"},
-        {"neovim",               "Modern Vim-based text editor"},
-        {"micro",                "Easy terminal editor (Ctrl+S saves)"},
-        {"ranger",               "Terminal file manager (vim keys)"},
-        {"nnn",                  "Ultra-fast terminal file manager"},
-        {"bat",                  "cat with syntax highlighting"},
-        {"eza",                  "Modern ls replacement with colors"},
-        {"fd",                   "Fast alternative to find"},
-        {"ripgrep",              "Extremely fast grep replacement"},
-        {"fzf",                  "Fuzzy finder for the shell"},
-        {"ncdu",                 "Disk usage analyzer (TUI)"},
-        {"tree",                 "Directory tree viewer"},
-        {"wget",                 "CLI download tool"},
-        {"aria2",                "Fast multi-protocol downloader"},
-        {"yt-dlp",               "Download YouTube and other videos"},
-        {"nmap",                 "Network scanner"},
-        {"p7zip",                "7z archive support"},
-        {"unrar",                "RAR archive support"},
-        {"mpv",                  "Fast, lightweight media player"},
-        {"ffmpeg",               "Multimedia converter and toolkit"},
-        {"imagemagick",          "CLI image manipulation"},
-        {"zsh",                  "Z shell (use with oh-my-zsh)"},
-        {"fish",                 "User-friendly interactive shell"},
-        {"noto-fonts",           "Google Noto fonts (wide Unicode)"},
-        {"ttf-hack-nerd-font",   "Hack font with Nerd Font icons"},
-        {NULL, NULL}
-    };
-
-    int n = 0;
-    while (pkgs[n][0]) n++;
-    MenuItem *items = malloc(n * sizeof(MenuItem));
-    for (int i = 0; i < n; i++) {
-        strncpy(items[i].tag,  pkgs[i][0], 255);
-        strncpy(items[i].desc, pkgs[i][1], 511);
+        }
+        int idx = gtk_list_box_row_get_index(sel);
+        if (idx >= 0 && idx < W_ndisks)
+            strncpy(st.disk,W_disks[idx].name,sizeof(st.disk)-1);
     }
 
-    char sel[64][256];
-    int nsel = checklist_dlg(
-        L("Additional Packages", "Paquetes adicionales"),
-        L("Select packages to install (SPACE to toggle, ENTER to confirm).\n"
-          "Press Cancel or ESC to skip all.",
-          "Selecciona paquetes a instalar (ESPACIO activa, ENTER confirma).\n"
-          "Cancela o ESC para omitir todos."),
-        items, n, NULL, 0, sel, 64);
-    free(items);
+    if (W_swap_entry) {
+        const char *s = gtk_entry_get_text(GTK_ENTRY(W_swap_entry));
+        if (!validate_swap(s)) {
+            msgbox(L("Invalid swap","Swap inválida"),
+                   L("Swap size must be a number between 1 and 128.",
+                     "El tamaño de swap debe ser un número entre 1 y 128."));
+            return 0;
+        }
+        strncpy(st.swap,s,sizeof(st.swap)-1);
+    }
 
-    st.extra_pkgs[0] = '\0';
-    int fish_selected = 0;
-    if (nsel > 0) {
-        for (int i = 0; i < nsel; i++) {
-            if (i) strncat(st.extra_pkgs, " ", sizeof(st.extra_pkgs) - strlen(st.extra_pkgs) - 1);
-            strncat(st.extra_pkgs, sel[i], sizeof(st.extra_pkgs) - strlen(st.extra_pkgs) - 1);
-            if (!strcmp(sel[i], "fish")) fish_selected = 1;
+    if (W_dualboot_chk) {
+        st.dualboot = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_dualboot_chk));
+        if (st.dualboot && W_dbsize_entry) {
+            const char *s = gtk_entry_get_text(GTK_ENTRY(W_dbsize_entry));
+            int v = atoi(s);
+            if (v < 10 || v > 2000) {
+                msgbox(L("Invalid size","Tamaño inválido"),
+                       L("Partition size must be between 10 and 2000 GB.",
+                         "El tamaño de la partición debe estar entre 10 y 2000 GB."));
+                return 0;
+            }
+            st.db_size_gb = v;
         }
     }
-    if (fish_selected) {
-        st.fish_default = yesno_dlg(
-            L("fish shell", "fish shell"),
-            L("fish was selected.\n\nSet fish as the default shell for your user?",
-              "Has seleccionado fish.\n\n?Establecer fish como shell por defecto para tu usuario?"));
-    } else {
-        st.fish_default = 0;
+
+    char warn[256];
+    snprintf(warn,sizeof(warn),
+        L("⚠  This will ERASE all data on /dev/%s.\n\nAre you sure?",
+          "⚠  Esto BORRARÁ todos los datos de /dev/%s.\n\n¿Estás seguro?"),
+        st.disk);
+    if (!yesno_dlg(L("Confirm disk erase","Confirmar borrado de disco"),warn))
+        return 0;
+
+    return 1;
+}
+
+static int val_filesystem(void) {
+    for (int i=0;i<4;i++) {
+        if (W_fs_radios[i] &&
+            gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_fs_radios[i]))) {
+            strncpy(st.filesystem,FS_IDS[i],sizeof(st.filesystem)-1);
+            break;
+        }
     }
     return 1;
 }
 
-static int review_confirm_dlg(const char *title, const char *text) {
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(title, NULL, GTK_DIALOG_MODAL,
-        L("Install","Instalar"), GTK_RESPONSE_OK,
-        L("Back","Atrás"),       GTK_RESPONSE_CANCEL,
-        NULL);
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 720, 540);
-    if (g_fullscreen) gtk_window_maximize(GTK_WINDOW(dlg));
-
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-    gtk_container_set_border_width(GTK_CONTAINER(box), 0);
-
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-
-    GtkWidget *tv = gtk_text_view_new();
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
-    gtk_text_view_set_monospace(GTK_TEXT_VIEW(tv), TRUE);
-    gtk_container_set_border_width(GTK_CONTAINER(tv), 8);
-    GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv));
-    gtk_text_buffer_set_text(buf, text, -1);
-    gtk_container_add(GTK_CONTAINER(scroll), tv);
-
-    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
-    gtk_widget_show_all(dlg);
-
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-    return resp == GTK_RESPONSE_OK;
-}
-
-static int screen_review(void) {
-    char microcode[32]; detect_cpu(microcode,sizeof(microcode));
-    if(!microcode[0]) strncpy(microcode,L("none detected","no detectado"),sizeof(microcode)-1);
-    const char *x11 = kv_get(CONSOLE_TO_X11,st.keymap);
-    if(!x11) x11=st.keymap;
-    const char *boot_mode = is_uefi()?"UEFI":"BIOS";
-
-    char text[5120]={0};
-    char line[512];
-#define ROW(label,val) do { snprintf(line,sizeof(line),"  %-22s %s\n",label,val); strncat(text,line,sizeof(text)-strlen(text)-1); } while(0)
-    snprintf(line,sizeof(line),"%s\n\n",L("Review your settings:","Revisa tu configuracion:"));
-    strncat(text,line,sizeof(text)-strlen(text)-1);
-
-    ROW("Mode",           st.quick?L("Quick","Rapida"):L("Custom","Personalizada"));
-    ROW("Boot",           boot_mode);
-    ROW("Install type",   st.dualboot?L("Dual Boot","Dual Boot"):L("Full Disk","Disco completo"));
-    ROW("Installer lang", st.lang);
-    ROW("System locale",  st.locale);
-    ROW("Hostname",       st.hostname[0]?st.hostname:"NOT SET");
-    ROW(L("Username","Usuario"), st.username[0]?st.username:"NOT SET");
-    ROW("Filesystem",     st.filesystem);
-    ROW("Kernels",        st.kernel_list);
-    ROW("Bootloader",     st.bootloader);
-    ROW("Microcode",      microcode);
-    if (st.dualboot) {
-        char disk_str[128]; snprintf(disk_str,sizeof(disk_str),"/dev/%s",st.disk);
-        ROW("Disk (dual)",  st.disk[0]?disk_str:"NOT SET");
-        char sz_str[32]; snprintf(sz_str,sizeof(sz_str),"%d GB (new partition)", st.db_size_gb);
-        ROW("Arch size",    sz_str);
-        if (is_uefi()) ROW("EFI part", st.db_efi[0]?st.db_efi:"auto-detect");
-    } else {
-        char disk_str[128]; snprintf(disk_str,sizeof(disk_str),"/dev/%s",st.disk);
-        ROW("Disk",       st.disk[0]?disk_str:"NOT SET");
-        char swap_str[32]; snprintf(swap_str,sizeof(swap_str),"%s GB",st.swap);
-        ROW("Swap",       swap_str);
+static int val_kernel(void) {
+    char list[512]={0}; int first=1;
+    for (int i=0;i<5;i++) {
+        if (W_kern_checks[i] &&
+            gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_kern_checks[i]))) {
+            if (!first) strncat(list," ",sizeof(list)-strlen(list)-1);
+            strncat(list,KERN_IDS[i],sizeof(list)-strlen(list)-1);
+            if (first) { strncpy(st.kernel,KERN_IDS[i],sizeof(st.kernel)-1); first=0; }
+        }
     }
-    ROW("Mirrors",        st.mirrors?L("reflector (auto)","reflector (auto)"):L("default","por defecto"));
-    ROW("Keymap TTY",     st.keymap);
-    ROW("Keymap X11",     x11);
-    ROW("Timezone",       st.timezone);
-    ROW("Desktops",       st.desktop_list);
-    ROW("GPU",            st.gpu);
-    ROW("Audio",          strcmp(st.desktop,"None")?"pipewire":L("none","ninguno"));
-    ROW("Flatpak",        st.flatpak?L("yes","si"):"no");
-    ROW("yay",            st.yay?L("yes","si"):"no");
-    ROW("snapper",        st.snapper?L("yes","si"):"no");
-    if (st.extra_pkgs[0]) ROW("Extra pkgs", st.extra_pkgs);
-#undef ROW
-
-    char missing[256]={0};
-    if(!st.hostname[0]) strncat(missing,"hostname, ",sizeof(missing)-strlen(missing)-1);
-    if(!st.username[0]) strncat(missing,"username, ",sizeof(missing)-strlen(missing)-1);
-    if (!st.dualboot && !st.disk[0])
-        strncat(missing,"disk, ",sizeof(missing)-strlen(missing)-1);
-    if (st.dualboot && !st.disk[0])
-        strncat(missing,"disk, ",sizeof(missing)-strlen(missing)-1);
-    if (st.dualboot && st.db_size_gb <= 0)
-        strncat(missing,"partition size, ",sizeof(missing)-strlen(missing)-1);
-    if(!st.root_pass[0]) strncat(missing,L("root password","contrasena root"),sizeof(missing)-strlen(missing)-1);
-
-    if(missing[0]) {
-        strncat(text,"\n",sizeof(text)-strlen(text)-1);
-        snprintf(line,sizeof(line),
-                 L("MISSING: %s\n\nGo back to fix before continuing.",
-                   "FALTA: %s\n\nVuelve atras para corregirlo."), missing);
-        strncat(text,line,sizeof(text)-strlen(text)-1);
-        msgbox(L("Review - Incomplete","Revision - Incompleto"),text);
+    if (!list[0]) {
+        msgbox(L("No kernel","Sin kernel"),
+               L("Please select at least one kernel.",
+                 "Por favor selecciona al menos un kernel."));
         return 0;
     }
-
-    strncat(text,L("\nAll settings look good.","Todo listo."),sizeof(text)-strlen(text)-1);
-    char confirm_msg[6144];
-    if (st.dualboot) {
-        char dual_warn[256];
-        snprintf(dual_warn, sizeof(dual_warn),
-            L("\n\nWARNING: A new %d GB partition will be created on /dev/%s.\n\nProceed?",
-              "\n\nADVERTENCIA: Se creara una nueva particion de %d GB en /dev/%s.\n\nProceder?"),
-            st.db_size_gb, st.disk);
-        snprintf(confirm_msg,sizeof(confirm_msg),"%s%s", text, dual_warn);
-    } else {
-        snprintf(confirm_msg,sizeof(confirm_msg),"%s%s%s%s",
-                 text,
-                 L("\n\nWARNING: THIS WILL ERASE /dev/","\n\nADVERTENCIA: SE BORRARA /dev/"),
-                 st.disk,
-                 L(".\n\nProceed?",".\n\nProceder?"));
-    }
-    return review_confirm_dlg(L("Review & Confirm","Revisar y confirmar"),confirm_msg);
+    strncpy(st.kernel_list,list,sizeof(st.kernel_list)-1);
+    return 1;
 }
 
-static void screen_finish(void) {
-    pid_t prog_pid = spawn_gtk_progress(
-        L("Installation Complete!", "¡Instalación Completa!"),
-        L("Arch Linux installed successfully!\n\n"
-          "Remove the USB / installation media now.\n\n"
-          "The system will reboot automatically...",
-          "¡Arch Linux instalado correctamente!\n\n"
-          "Extrae ahora el USB / medio de instalación.\n\n"
-          "El sistema se reiniciará automáticamente..."));
+static int val_bootloader(void) {
+    for (int i=0;i<3;i++) {
+        if (W_bl_radios[i] &&
+            gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_bl_radios[i]))) {
+            strncpy(st.bootloader,BL_IDS[i],sizeof(st.bootloader)-1);
+            break;
+        }
+    }
+    if (!strcmp(st.bootloader,"systemd-boot") && !is_uefi()) {
+        msgbox(L("BIOS system","Sistema BIOS"),
+               L("systemd-boot requires UEFI.  Please choose GRUB or Limine.",
+                 "systemd-boot requiere UEFI.  Por favor elige GRUB o Limine."));
+        return 0;
+    }
+    return 1;
+}
 
-    if (prog_pid < 0) {
-        sleep(5);
-        (void)system("umount -R /mnt 2>/dev/null");
-        (void)system("reboot");
-        exit(0);
+static int val_mirrors(void) {
+    if (W_mirrors_chk)
+        st.mirrors = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_mirrors_chk));
+    return 1;
+}
+
+static int val_identity(void) {
+    const char *hn="", *un="";
+    if (W_hostname_e) hn = gtk_entry_get_text(GTK_ENTRY(W_hostname_e));
+    if (W_username_e) un = gtk_entry_get_text(GTK_ENTRY(W_username_e));
+
+    if (!validate_name(hn)) {
+        if (W_id_err) gtk_label_set_text(GTK_LABEL(W_id_err),
+            L("✗  Hostname must start with a letter, contain only letters/numbers/hyphens, max 32 chars.",
+              "✗  El hostname debe empezar con letra, contener solo letras/números/guiones, máx 32 chars."));
+        if (W_hostname_e) add_class(W_hostname_e,"error");
+        return 0;
+    }
+    if (!validate_name(un)) {
+        if (W_id_err) gtk_label_set_text(GTK_LABEL(W_id_err),
+            L("✗  Username must start with a letter, contain only lowercase letters/numbers/hyphens, max 32 chars.",
+              "✗  El usuario debe empezar con letra, contener solo letras minúsculas/números/guiones, máx 32 chars."));
+        if (W_username_e) add_class(W_username_e,"error");
+        return 0;
+    }
+    for (const char *p=un;*p;p++) {
+        if (isupper((unsigned char)*p)) {
+            if (W_id_err) gtk_label_set_text(GTK_LABEL(W_id_err),
+                L("✗  Username must be all lowercase.",
+                  "✗  El nombre de usuario debe estar todo en minúsculas."));
+            return 0;
+        }
     }
 
-    int fd = g_prog_fd;   
-    for (int i = 1; i <= 10; i++) {
-        usleep(500000);
-        char buf[128];
-        int pct       = i * 10;
-        int secs_left = 5 - (i / 2);
-        snprintf(buf, sizeof(buf),
-                 "# %s %d...\n%d\n",
-                 L("Rebooting in", "Reiniciando en"),
-                 secs_left > 0 ? secs_left : 0,
-                 pct);
-        (void)write(fd, buf, strlen(buf));
+    if (W_id_err) gtk_label_set_text(GTK_LABEL(W_id_err),"");
+    if (W_hostname_e) {
+        GtkStyleContext *ctx = gtk_widget_get_style_context(W_hostname_e);
+        gtk_style_context_remove_class(ctx,"error");
     }
-    close(fd);
-    g_prog_fd = -1;
-    if (prog_pid > 0) waitpid(prog_pid, NULL, 0);
+    if (W_username_e) {
+        GtkStyleContext *ctx = gtk_widget_get_style_context(W_username_e);
+        gtk_style_context_remove_class(ctx,"error");
+    }
+    strncpy(st.hostname,hn,sizeof(st.hostname)-1);
+    strncpy(st.username,un,sizeof(st.username)-1);
+    return 1;
+}
 
-    (void)system("umount -R /mnt 2>/dev/null");
-    (void)system("reboot");
-    exit(0);
+static int val_passwords(void) {
+    const char *rp1="",*rp2="",*up1="",*up2="";
+    if (W_rpass1) rp1=gtk_entry_get_text(GTK_ENTRY(W_rpass1));
+    if (W_rpass2) rp2=gtk_entry_get_text(GTK_ENTRY(W_rpass2));
+    if (W_upass1) up1=gtk_entry_get_text(GTK_ENTRY(W_upass1));
+    if (W_upass2) up2=gtk_entry_get_text(GTK_ENTRY(W_upass2));
+
+    if (!rp1[0]) {
+        if (W_pass_err) gtk_label_set_text(GTK_LABEL(W_pass_err),
+            L("✗  Root password cannot be empty.","✗  La contraseña de root no puede estar vacía."));
+        return 0;
+    }
+    if (strcmp(rp1,rp2)) {
+        if (W_pass_err) gtk_label_set_text(GTK_LABEL(W_pass_err),
+            L("✗  Root passwords do not match.","✗  Las contraseñas de root no coinciden."));
+        return 0;
+    }
+    if (!up1[0]) {
+        if (W_pass_err) gtk_label_set_text(GTK_LABEL(W_pass_err),
+            L("✗  User password cannot be empty.","✗  La contraseña de usuario no puede estar vacía."));
+        return 0;
+    }
+    if (strcmp(up1,up2)) {
+        if (W_pass_err) gtk_label_set_text(GTK_LABEL(W_pass_err),
+            L("✗  User passwords do not match.","✗  Las contraseñas de usuario no coinciden."));
+        return 0;
+    }
+    if (W_pass_err) gtk_label_set_text(GTK_LABEL(W_pass_err),"");
+    strncpy(st.root_pass,rp1,sizeof(st.root_pass)-1);
+    strncpy(st.user_pass,up1,sizeof(st.user_pass)-1);
+    return 1;
+}
+
+static int val_timezone(void) {
+    if (W_tz_region) {
+        const char *reg = gtk_combo_box_get_active_id(GTK_COMBO_BOX(W_tz_region));
+        if (!reg||!strcmp(reg,"UTC")) {
+            strncpy(st.timezone,"UTC",sizeof(st.timezone)-1);
+        } else if (W_tz_city) {
+            const char *city = gtk_combo_box_get_active_id(GTK_COMBO_BOX(W_tz_city));
+            if (city) {
+                char tz[128];
+                snprintf(tz,sizeof(tz),"%s/%s",reg,city);
+                strncpy(st.timezone,tz,sizeof(st.timezone)-1);
+            }
+        }
+    }
+    return 1;
+}
+
+static int val_desktop(void) {
+    char list[512]={0}; int first=1;
+    static const char *DE_NAMES[]={"KDE Plasma","GNOME","Cinnamon","XFCE","MATE","LXQt","Hyprland","Sway","None"};
+    for (int i=0;i<9;i++) {
+        if (W_de_checks[i] &&
+            gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_de_checks[i]))) {
+            if (!first) strncat(list,",",sizeof(list)-strlen(list)-1);
+            strncat(list,DE_NAMES[i],sizeof(list)-strlen(list)-1);
+            if (first) { strncpy(st.desktop,DE_NAMES[i],sizeof(st.desktop)-1); first=0; }
+        }
+    }
+    if (!list[0]) strncpy(list,"None",sizeof(list)-1);
+    strncpy(st.desktop_list,list,sizeof(st.desktop_list)-1);
+    return 1;
+}
+
+static int val_gpu(void) {
+    if (W_gpu_combo) {
+        const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(W_gpu_combo));
+        if (id) strncpy(st.gpu,id,sizeof(st.gpu)-1);
+    }
+    if (!strcmp(st.gpu,"Intel+NVIDIA") && W_optimus_combo) {
+        const char *om = gtk_combo_box_get_active_id(GTK_COMBO_BOX(W_optimus_combo));
+        if (om) strncpy(st.optimus_mode,om,sizeof(st.optimus_mode)-1);
+    }
+    return 1;
+}
+
+static int val_profile(void) {
+    for (int i=0;i<5;i++) {
+        if (W_prof_radios[i] &&
+            gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_prof_radios[i]))) {
+            strncpy(st.profile,PROF_IDS[i],sizeof(st.profile)-1);
+            break;
+        }
+    }
+    return 1;
+}
+
+static int val_dotfiles(void) {
+    for (int i=0;i<3;i++) {
+        if (W_dot_radios[i] &&
+            gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_dot_radios[i]))) {
+            strncpy(st.dotfiles,DOT_IDS[i],sizeof(st.dotfiles)-1);
+            break;
+        }
+    }
+    if (!strcmp(st.dotfiles,"custom") && W_dot_url) {
+        const char *u = gtk_entry_get_text(GTK_ENTRY(W_dot_url));
+        if (!u||!u[0]) {
+            msgbox(L("URL required","URL requerida"),
+                   L("Please enter the git repository URL for your dotfiles.",
+                     "Por favor introduce la URL del repositorio git de tus dotfiles."));
+            return 0;
+        }
+        strncpy(st.dotfiles_url,u,sizeof(st.dotfiles_url)-1);
+    }
+    return 1;
+}
+
+static int val_yay(void) {
+    st.yay = (W_yay_yes &&
+              gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_yay_yes)));
+    return 1;
+}
+
+static int val_flatpak(void) {
+    st.flatpak = (W_flatpak_yes &&
+                  gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_flatpak_yes)));
+    return 1;
+}
+
+static int val_snapper(void) {
+    st.snapper = (W_snapper_yes &&
+                  gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_snapper_yes)));
+    return 1;
+}
+
+static int val_extra_pkgs(void) {
+    char pkgs[2048]={0};
+    for (int i=0;i<W_npkgs;i++) {
+        if (W_pkg_checks[i] &&
+            gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_pkg_checks[i]))) {
+            if (pkgs[0]) strncat(pkgs," ",sizeof(pkgs)-strlen(pkgs)-1);
+            strncat(pkgs,W_pkg_ids[i],sizeof(pkgs)-strlen(pkgs)-1);
+            if (!strcmp(W_pkg_ids[i],"fish")) st.fish_default=1;
+        }
+    }
+    strncpy(st.extra_pkgs,pkgs,sizeof(st.extra_pkgs)-1);
+    return 1;
+}
+
+static int val_review(void) {
+    return yesno_dlg(
+        L("Start installation?","¿Iniciar instalación?"),
+        L("All settings confirmed.  The disk will now be partitioned and\n"
+          "Arch Linux will be installed.  This cannot be undone.\n\nContinue?",
+          "Todos los ajustes confirmados.  El disco será particionado y\n"
+          "Arch Linux será instalado.  Esto no se puede deshacer.\n\n¿Continuar?"));
+}
+
+static int val_preflight(void) {
+    gtk_run_preflight();
+    if (!W_pre_result) {
+        msgbox(L("Pre-check failed","Verificación fallida"),
+               L("Some checks failed.  Please fix the issues before continuing.",
+                 "Algunas verificaciones fallaron.  Por favor corrige los problemas antes de continuar."));
+        return 0;
+    }
+    return 1;
+}
+
+static int val_install_start(void) {
+    if (W_inst_done) {
+        if (!W_inst_success) {
+            char msg[1100];
+            snprintf(msg,sizeof(msg),
+                L("Installation failed:\n%s","La instalación falló:\n%s"),
+                W_inst_reason);
+            msgbox(L("Installation failed","Instalación fallida"),msg);
+            return 0; 
+        }
+        return 1;  
+    }
+
+    W_inst_done=0; W_inst_success=0; W_inst_reason[0]='\0';
+    gtk_widget_set_sensitive(g_next_btn,FALSE);
+    gtk_widget_set_sensitive(g_back_btn,FALSE);
+    gtk_widget_set_sensitive(g_cancel_btn,FALSE);
+
+    IB *ib = (IB*)malloc(sizeof(IB));
+    if (!ib) return 0;
+    memset(ib,0,sizeof(IB));
+    pthread_mutex_init(&ib->lock,NULL);
+    ib->on_progress = inst_on_progress;
+    ib->on_stage    = inst_on_stage;
+    ib->on_done     = inst_on_done;
+    ib->ud          = NULL;
+
+    pthread_t tid;
+    pthread_create(&tid,NULL,ib_run_thread,(void*)ib);
+    pthread_detach(tid);
+    return 0; 
+}
+
+static int val_finish(void) {
+    system("reboot");
+    return 0;
 }
 
 typedef struct {
-    const char *name;
-    int        (*fn)(void);
-    int         can_go_back;
-} Step;
+    const char *id;
+    int       (*validate)(void);
+    void      (*on_show)(void);   
+} PageSpec;
 
-static int screen_welcome_wrap(void)  { screen_welcome();  return 1; }
-static int screen_language_wrap(void)  { screen_language(); return 1; }
-static int screen_network_wrap(void) {
-    g_fullscreen = 0;
-    screen_network();
-    g_fullscreen = 1;
-    return 1;
+static const PageSpec PAGE_SPECS[] = {
+    {"welcome",    val_welcome,      NULL},
+    {"language",   val_language,     NULL},
+    {"network",    val_network,      NULL},
+    {"mode",       val_mode,         NULL},
+    {"locale",     val_locale,       NULL},
+    {"keymap",     val_keymap,       NULL},
+    {"disk",       val_disk,         refresh_disk_list},
+    {"filesystem", val_filesystem,   NULL},
+    {"kernel",     val_kernel,       NULL},
+    {"bootloader", val_bootloader,   NULL},
+    {"mirrors",    val_mirrors,      NULL},
+    {"identity",   val_identity,     NULL},
+    {"passwords",  val_passwords,    NULL},
+    {"timezone",   val_timezone,     NULL},
+    {"desktop",    val_desktop,      NULL},
+    {"gpu",        val_gpu,          NULL},
+    {"profile",    val_profile,      NULL},
+    {"dotfiles",   val_dotfiles,     NULL},
+    {"yay",        val_yay,          NULL},
+    {"flatpak",    val_flatpak,      NULL},
+    {"snapper",    val_snapper,      NULL},
+    {"extra_pkgs", val_extra_pkgs,   NULL},
+    {"review",     val_review,       refresh_review},
+    {"preflight",  val_preflight,    NULL},
+    {"install",    val_install_start,NULL},
+    {"finish",     val_finish,       NULL},
+    {NULL,NULL,NULL}
+};
+
+static const PageSpec *find_spec(const char *id) {
+    for (int i=0;PAGE_SPECS[i].id;i++)
+        if (!strcmp(PAGE_SPECS[i].id,id)) return &PAGE_SPECS[i];
+    return NULL;
 }
-static int screen_finish_wrap(void)    { screen_finish();   return 1; }
-static int screen_install_wrap(void)   { return screen_install(); }
-static int screen_preflight_wrap(void) { return run_preflight(); }
 
-static void ensure_x11_deps(void) {
-static const char *deps[] = {
-        "xorg-server", "xorg-xinit", "xorg-xinput",
-        "xf86-input-libinput", "xf86-video-fbdev", "xf86-video-vesa",
-        "xdotool", "xorg-xsetroot", "openbox",
-        "xterm", "pcmanfm", "feh", "imagemagick", "tint2",
-        NULL
+
+
+static void on_next_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    const char *cur_id = g_pages[g_cur];
+
+    if (!strcmp(cur_id,"install") && W_inst_done) {
+        if (W_inst_success && g_pages[g_cur+1]) {
+            goto_page(g_cur+1);
+        }
+        return;
+    }
+
+    if (!strcmp(cur_id,"finish")) {
+        system("reboot");
+        return;
+    }
+
+    const PageSpec *spec = find_spec(cur_id);
+
+    if (spec && spec->validate) {
+        if (!spec->validate()) return; 
+    }
+
+    if (g_pages[g_cur+1]) {
+        int next_idx = g_cur+1;
+        goto_page(next_idx);
+        const PageSpec *ns = find_spec(g_pages[next_idx]);
+        if (ns && ns->on_show) ns->on_show();
+    }
+}
+
+static void on_back_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    if (g_cur > 0) goto_page(g_cur-1);
+}
+
+static void on_cancel_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    if (yesno_dlg(
+            L("Cancel installation?","¿Cancelar instalación?"),
+            L("Are you sure you want to quit the installer?",
+              "¿Estás seguro de que quieres salir del instalador?"))) {
+        gtk_main_quit();
+    }
+}
+
+static gboolean on_delete_event(GtkWidget *w, GdkEvent *e, gpointer d) {
+    (void)w;(void)e;(void)d;
+    on_cancel_clicked(NULL,NULL);
+    return TRUE; 
+}
+
+static GtkWidget *build_wizard_window(void) {
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(win), TITLE " " VERSION);
+    gtk_window_set_default_size(GTK_WINDOW(win), 1100, 720);
+    gtk_window_maximize(GTK_WINDOW(win));
+    gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
+    g_signal_connect(win,"delete-event",G_CALLBACK(on_delete_event),NULL);
+
+    g_main_window = win;
+
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(win), outer);
+
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    add_class(header,"header-bar");
+    gtk_widget_set_size_request(header,-1,48);
+    gtk_container_set_border_width(GTK_CONTAINER(header),0);
+
+    GtkWidget *logo_lbl = gtk_label_new("⟨ Arch Linux Installer ⟩");
+    add_class(logo_lbl,"step-name");
+    gtk_widget_set_margin_start(logo_lbl,16);
+    gtk_box_pack_start(GTK_BOX(header),logo_lbl,FALSE,FALSE,0);
+
+    g_step_counter = gtk_label_new("1 / 1");
+    add_class(g_step_counter,"step-num");
+    gtk_widget_set_margin_end(g_step_counter,16);
+    gtk_box_pack_end(GTK_BOX(header),g_step_counter,FALSE,FALSE,0);
+
+    gtk_box_pack_start(GTK_BOX(outer),header,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(outer),
+        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),FALSE,FALSE,0);
+
+    GtkWidget *body = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0);
+    gtk_widget_set_vexpand(body,TRUE);
+    gtk_box_pack_start(GTK_BOX(outer),body,TRUE,TRUE,0);
+
+    GtkWidget *sidebar_sw = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sidebar_sw),
+        GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(sidebar_sw,220,-1);
+    add_class(sidebar_sw,"sidebar");
+
+    g_sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL,0);
+    add_class(g_sidebar_box,"sidebar");
+    gtk_container_add(GTK_CONTAINER(sidebar_sw),g_sidebar_box);
+    gtk_box_pack_start(GTK_BOX(body),sidebar_sw,FALSE,FALSE,0);
+
+    gtk_box_pack_start(GTK_BOX(body),
+        gtk_separator_new(GTK_ORIENTATION_VERTICAL),FALSE,FALSE,0);
+
+    g_stack = gtk_stack_new();
+    gtk_stack_set_transition_type(GTK_STACK(g_stack),
+        GTK_STACK_TRANSITION_TYPE_SLIDE_LEFT_RIGHT);
+    gtk_stack_set_transition_duration(GTK_STACK(g_stack),200);
+    gtk_widget_set_hexpand(g_stack,TRUE);
+    gtk_widget_set_vexpand(g_stack,TRUE);
+    gtk_box_pack_start(GTK_BOX(body),g_stack,TRUE,TRUE,0);
+
+    typedef struct { const char *id; GtkWidget *(*build)(void); } BuildPair;
+    static const BuildPair BUILDERS[] = {
+        {"welcome",    build_welcome},
+        {"language",   build_language},
+        {"network",    build_network},
+        {"mode",       build_mode},
+        {"locale",     build_locale},
+        {"keymap",     build_keymap},
+        {"disk",       build_disk},
+        {"filesystem", build_filesystem},
+        {"kernel",     build_kernel},
+        {"bootloader", build_bootloader},
+        {"mirrors",    build_mirrors},
+        {"identity",   build_identity},
+        {"passwords",  build_passwords},
+        {"timezone",   build_timezone},
+        {"desktop",    build_desktop},
+        {"gpu",        build_gpu},
+        {"profile",    build_profile},
+        {"dotfiles",   build_dotfiles},
+        {"yay",        build_yay},
+        {"flatpak",    build_flatpak},
+        {"snapper",    build_snapper},
+        {"extra_pkgs", build_extra_pkgs},
+        {"review",     build_review},
+        {"preflight",  build_preflight},
+        {"install",    build_install},
+        {"finish",     build_finish},
+        {NULL,NULL}
     };
 
-    int missing = 0;
-    for (int i = 0; deps[i]; i++) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "pacman -Q %s >/dev/null 2>&1", deps[i]);
-        if (system(cmd) != 0) {
-            printf("[!] Missing: %s\n", deps[i]);
-            missing = 1;
-        }
+    for (int i=0;BUILDERS[i].id;i++) {
+        GtkWidget *page = BUILDERS[i].build();
+        gtk_stack_add_named(GTK_STACK(g_stack),page,BUILDERS[i].id);
     }
 
-    if (missing) {
-        printf("[*] Installing desktop session dependencies...\n");
-        fflush(stdout);
-        if (system("pacman -Sy --noconfirm "
-                   "xorg-server xorg-xinit xorg-xinput xf86-input-libinput "
-                   "xf86-video-fbdev xf86-video-vesa xdotool xorg-xsetroot "
-                   "openbox xterm pcmanfm feh imagemagick tint2") != 0) {
-            fprintf(stderr,
-                "[!] WARNING: Some deps failed to install.\n"
-                "    The installer will try to continue anyway.\n");
-        } else {
-            printf("[+] Desktop dependencies installed.\n");
-        }
-        fflush(stdout);
-    }
+    gtk_box_pack_start(GTK_BOX(outer),
+        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),FALSE,FALSE,0);
+
+    GtkWidget *nav = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12);
+    add_class(nav,"nav-bar");
+    gtk_box_pack_start(GTK_BOX(outer),nav,FALSE,FALSE,0);
+
+    g_back_btn   = gtk_button_new_with_label(L("← Back","← Atrás"));
+    g_cancel_btn = gtk_button_new_with_label(L("✕ Cancel","✕ Cancelar"));
+    g_next_btn   = gtk_button_new_with_label(L("Next →","Siguiente →"));
+    add_class(g_next_btn,"suggested-action");
+    add_class(g_cancel_btn,"destructive-action");
+
+    gtk_widget_set_size_request(g_back_btn,  120,40);
+    gtk_widget_set_size_request(g_cancel_btn,120,40);
+    gtk_widget_set_size_request(g_next_btn,  150,40);
+
+    g_signal_connect(g_back_btn,  "clicked",G_CALLBACK(on_back_clicked),  NULL);
+    g_signal_connect(g_next_btn,  "clicked",G_CALLBACK(on_next_clicked),  NULL);
+    g_signal_connect(g_cancel_btn,"clicked",G_CALLBACK(on_cancel_clicked),NULL);
+
+    gtk_box_pack_start(GTK_BOX(nav),g_back_btn,  FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(nav),g_cancel_btn,FALSE,FALSE,0);
+    gtk_box_pack_end  (GTK_BOX(nav),g_next_btn,  FALSE,FALSE,0);
+
+    goto_page(0);
+    gtk_widget_show_all(win);
+
+    return win;
+}
+
+
+static void ensure_x11_deps(void) {
+    if (access("/usr/lib/libgtk-3.so.0",F_OK)==0 ||
+        access("/usr/lib/libgtk-3.so",  F_OK)==0) return;
+
+    fprintf(stderr,"[installer] GTK3 not found, attempting to install…\n");
+    system("pacman -Sy --noconfirm --needed gtk3 xorg-server xorg-xinit "
+           "openbox xterm 2>/dev/null || true");
 }
 
 static void write_openbox_env(void) {
-    (void)system("mkdir -p /root/.config/openbox");
-    (void)system("mkdir -p /root/.config/tint2");
-    (void)system("mkdir -p /root/Desktop");
-
-    FILE *m = fopen("/root/.config/openbox/menu.xml", "w");
-    if (m) {
-        fprintf(m, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-        fprintf(m, "<openbox_menu xmlns=\"http://openbox.org/3.4/menu\">\n");
-        fprintf(m, "  <menu id=\"root-menu\" label=\"Desktop\">\n");
-        fprintf(m, "    <item label=\"Terminal\">\n");
-        fprintf(m, "      <action name=\"Execute\"><command>xterm</command></action>\n");
-        fprintf(m, "    </item>\n");
-        fprintf(m, "    <item label=\"File Manager\">\n");
-        fprintf(m, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
-        fprintf(m, "    </item>\n");
-        fprintf(m, "    <separator/>\n");
-        fprintf(m, "    <item label=\"Reconfigure Openbox\">\n");
-        fprintf(m, "      <action name=\"Reconfigure\"/>\n");
-        fprintf(m, "    </item>\n");
-        fprintf(m, "  </menu>\n");
-        fprintf(m, "</openbox_menu>\n");
-        fclose(m);
-    }
-
-    FILE *r = fopen("/root/.config/openbox/rc.xml", "w");
-    if (r) {
-        fprintf(r, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-        fprintf(r, "<openbox_config xmlns=\"http://openbox.org/3.4/rc\"\n");
-        fprintf(r, "  xmlns:xi=\"http://www.w3.org/2001/XInclude\">\n");
-        fprintf(r, "  <theme>\n");
-        fprintf(r, "    <n>Clearlooks</n>\n");
-        fprintf(r, "    <titleLayout>NLIMC</titleLayout>\n");
-        fprintf(r, "    <keepBorder>yes</keepBorder>\n");
-        fprintf(r, "    <animateIconify>no</animateIconify>\n");
-        fprintf(r, "    <font place=\"ActiveWindow\">\n");
-        fprintf(r, "      <n>Sans Bold</n><size>10</size>\n");
-        fprintf(r, "      <weight>Bold</weight><slant>Normal</slant>\n");
-        fprintf(r, "    </font>\n");
-        fprintf(r, "    <font place=\"InactiveWindow\">\n");
-        fprintf(r, "      <n>Sans</n><size>10</size>\n");
-        fprintf(r, "      <weight>Normal</weight><slant>Normal</slant>\n");
-        fprintf(r, "    </font>\n");
-        fprintf(r, "  </theme>\n");
-        fprintf(r, "  <desktops><number>1</number><firstdesk>1</firstdesk>"
-                   "<names><n>Desktop</n></names></desktops>\n");
-        fprintf(r, "  <resize><drawContents>yes</drawContents></resize>\n");
-        fprintf(r, "  <focus><focusNew>yes</focusNew>"
-                   "<followMouse>no</followMouse></focus>\n");
-        fprintf(r, "  <keyboard>\n");
-        fprintf(r, "    <chainQuitKey>C-g</chainQuitKey>\n");
-        fprintf(r, "    <keybind key=\"super-t\">\n");
-        fprintf(r, "      <action name=\"Execute\"><command>xterm</command></action>\n");
-        fprintf(r, "    </keybind>\n");
-        fprintf(r, "    <keybind key=\"C-A-t\">\n");
-        fprintf(r, "      <action name=\"Execute\"><command>xterm</command></action>\n");
-        fprintf(r, "    </keybind>\n");
-        fprintf(r, "    <keybind key=\"super-e\">\n");
-        fprintf(r, "      <action name=\"Execute\"><command>pcmanfm</command></action>\n");
-        fprintf(r, "    </keybind>\n");
-        fprintf(r, "    <keybind key=\"A-F4\">\n");
-        fprintf(r, "      <action name=\"Close\"/>\n");
-        fprintf(r, "    </keybind>\n");
-        fprintf(r, "    <keybind key=\"super-Up\">\n");
-        fprintf(r, "      <action name=\"ToggleMaximizeFull\"/>\n");
-        fprintf(r, "    </keybind>\n");
-        fprintf(r, "    <keybind key=\"super-Down\">\n");
-        fprintf(r, "      <action name=\"Unmaximize\"/>\n");
-        fprintf(r, "    </keybind>\n");
-        fprintf(r, "  </keyboard>\n");
-        fprintf(r, "  <mouse>\n");
-        fprintf(r, "    <dragThreshold>1</dragThreshold>\n");
-        fprintf(r, "    <doubleClickTime>200</doubleClickTime>\n");
-        fprintf(r, "    <context name=\"Desktop\">\n");
-        fprintf(r, "      <mousebind button=\"Right\" action=\"Press\">\n");
-        fprintf(r, "        <action name=\"ShowMenu\"><menu>root-menu</menu></action>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "    </context>\n");
-        fprintf(r, "    <context name=\"Root\">\n");
-        fprintf(r, "      <mousebind button=\"Right\" action=\"Press\">\n");
-        fprintf(r, "        <action name=\"ShowMenu\"><menu>root-menu</menu></action>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "    </context>\n");
-        fprintf(r, "    <context name=\"Titlebar\">\n");
-        fprintf(r, "      <mousebind button=\"Left\" action=\"Drag\">\n");
-        fprintf(r, "        <action name=\"Move\"/>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "      <mousebind button=\"Left\" action=\"DoubleClick\">\n");
-        fprintf(r, "        <action name=\"ToggleMaximizeFull\"/>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "    </context>\n");
-        fprintf(r, "    <context name=\"Frame\">\n");
-        fprintf(r, "      <mousebind button=\"A-Left\" action=\"Drag\">\n");
-        fprintf(r, "        <action name=\"Move\"/>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "      <mousebind button=\"A-Right\" action=\"Drag\">\n");
-        fprintf(r, "        <action name=\"Resize\"/>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "    </context>\n");
-        fprintf(r, "    <context name=\"Close\">\n");
-        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
-        fprintf(r, "        <action name=\"Close\"/>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "    </context>\n");
-        fprintf(r, "    <context name=\"Maximize\">\n");
-        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
-        fprintf(r, "        <action name=\"ToggleMaximizeFull\"/>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "    </context>\n");
-        fprintf(r, "    <context name=\"Iconify\">\n");
-        fprintf(r, "      <mousebind button=\"Left\" action=\"Click\">\n");
-        fprintf(r, "        <action name=\"Iconify\"/>\n");
-        fprintf(r, "      </mousebind>\n");
-        fprintf(r, "    </context>\n");
-        fprintf(r, "  </mouse>\n");
-        fprintf(r, "  <applications>\n");
-
-        fprintf(r, "    <application class=\"Yad\" type=\"normal\">\n");
-        fprintf(r, "      <maximized>yes</maximized>\n");
-        fprintf(r, "      <decor>no</decor>\n");
-        fprintf(r, "    </application>\n");
-
-        fprintf(r, "    <application class=\"XTerm\" type=\"normal\">\n");
-        fprintf(r, "      <decor>yes</decor>\n");
-        fprintf(r, "    </application>\n");
-        fprintf(r, "    <application class=\"Pcmanfm\" type=\"normal\">\n");
-        fprintf(r, "      <decor>yes</decor>\n");
-        fprintf(r, "    </application>\n");
-        fprintf(r, "  </applications>\n");
-        fprintf(r, "</openbox_config>\n");
-        fclose(r);
-    }
-
-    FILE *t = fopen("/root/.config/tint2/tint2rc", "w");
-    if (t) {
-        fprintf(t, "rounded = 0\nborder_width = 0\n"
-                   "background_color = #0d1117 100\n"
-                   "border_color = #30363d 0\n\n");
-        fprintf(t, "rounded = 4\nborder_width = 1\n"
-                   "background_color = #1f2d45 100\n"
-                   "border_color = #58a6ff 70\n\n");
-        fprintf(t, "rounded = 4\nborder_width = 0\n"
-                   "background_color = #161b22 90\n"
-                   "border_color = #30363d 40\n\n");
-        fprintf(t, "panel_items = TSC\n");
-        fprintf(t, "panel_size = 100%% 36\n");
-        fprintf(t, "panel_margin = 0 0\n");
-        fprintf(t, "panel_padding = 4 2 4\n");
-        fprintf(t, "panel_background_id = 1\n");
-        fprintf(t, "panel_position = bottom center horizontal\n");
-        fprintf(t, "panel_layer = normal\n");
-        fprintf(t, "panel_monitor = all\n");
-        fprintf(t, "autohide = 0\n");
-        fprintf(t, "wm_menu = 1\n");
-        fprintf(t, "taskbar_mode = single_desktop\n\n");
-        fprintf(t, "taskbar_padding = 0 2 4\n");
-        fprintf(t, "taskbar_background_id = 0\n");
-        fprintf(t, "taskbar_active_background_id = 0\n\n");
-        fprintf(t, "task_icon = 1\n");
-        fprintf(t, "task_text = 1\n");
-        fprintf(t, "task_maximum_size = 200 30\n");
-        fprintf(t, "task_centered = 1\n");
-        fprintf(t, "task_padding = 4 2 4\n");
-        fprintf(t, "task_font = Sans 9\n");
-        fprintf(t, "task_font_color = #c9d1d9 100\n");
-        fprintf(t, "task_active_font_color = #79c0ff 100\n");
-        fprintf(t, "task_icon_asb = 100 0 0\n");
-        fprintf(t, "task_background_id = 3\n");
-        fprintf(t, "task_active_background_id = 2\n\n");
-        fprintf(t, "systray_padding = 4 4 6\n");
-        fprintf(t, "systray_background_id = 0\n");
-        fprintf(t, "systray_sort = ascending\n");
-        fprintf(t, "systray_icon_size = 22\n");
-        fprintf(t, "systray_icon_asb = 100 0 0\n\n");
-        fprintf(t, "time1_format = %%H:%%M\n");
-        fprintf(t, "time2_format = %%d/%%m/%%Y\n");
-        fprintf(t, "time1_font = Sans Bold 10\n");
-        fprintf(t, "time2_font = Sans 8\n");
-        fprintf(t, "clock_font_color = #c9d1d9 100\n");
-        fprintf(t, "clock_padding = 8 0\n");
-        fprintf(t, "clock_background_id = 0\n");
-        fprintf(t, "clock_tooltip = %%A %%d %%B %%Y\n");
-        fclose(t);
-    }
-
-    FILE *xr = fopen("/root/.Xresources", "w");
-    if (xr) {
-        fprintf(xr, "XTerm*background:   #0d1117\n");
-        fprintf(xr, "XTerm*foreground:   #c9d1d9\n");
-        fprintf(xr, "XTerm*cursorColor:  #58a6ff\n");
-        fprintf(xr, "XTerm*color0:  #161b22\nXTerm*color1:  #ff7b72\n");
-        fprintf(xr, "XTerm*color2:  #3fb950\nXTerm*color3:  #d29922\n");
-        fprintf(xr, "XTerm*color4:  #58a6ff\nXTerm*color5:  #bc8cff\n");
-        fprintf(xr, "XTerm*color6:  #39c5cf\nXTerm*color7:  #b1bac4\n");
-        fprintf(xr, "XTerm*color8:  #6e7681\nXTerm*color9:  #ffa198\n");
-        fprintf(xr, "XTerm*color10: #56d364\nXTerm*color11: #e3b341\n");
-        fprintf(xr, "XTerm*color12: #79c0ff\nXTerm*color13: #d2a8ff\n");
-        fprintf(xr, "XTerm*color14: #56d4dd\nXTerm*color15: #f0f6fc\n");
-        fprintf(xr, "XTerm*faceName:     Monospace\n");
-        fprintf(xr, "XTerm*faceSize:     11\n");
-        fprintf(xr, "XTerm*geometry:     100x28\n");
-        fprintf(xr, "XTerm*scrollBar:    false\n");
-        fprintf(xr, "XTerm*borderWidth:  0\n");
-        fprintf(xr, "XTerm*internalBorder: 8\n");
-        fprintf(xr, "XTerm*title:        Terminal\n");
-        fclose(xr);
-    }
-
-    FILE *d;
-    d = fopen("/root/Desktop/terminal.desktop", "w");
-    if (d) {
-        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
-        fprintf(d, "Name=Terminal\nComment=Open a terminal window\n");
-        fprintf(d, "Exec=xterm\nIcon=utilities-terminal\n");
-        fprintf(d, "Terminal=false\nCategories=System;TerminalEmulator;\n");
-        fclose(d);
-        (void)system("chmod +x /root/Desktop/terminal.desktop");
-    }
-    d = fopen("/root/Desktop/files.desktop", "w");
-    if (d) {
-        fprintf(d, "[Desktop Entry]\nVersion=1.0\nType=Application\n");
-        fprintf(d, "Name=File Manager\nComment=Browse the file system\n");
-        fprintf(d, "Exec=pcmanfm\nIcon=system-file-manager\n");
-        fprintf(d, "Terminal=false\nCategories=System;FileManager;\n");
-        fclose(d);
-        (void)system("chmod +x /root/Desktop/files.desktop");
-    }
+    system("mkdir -p /root/.config/openbox");
+    FILE *f=fopen("/root/.config/openbox/rc.xml","w");
+    if (!f) return;
+    fprintf(f,
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+"<openbox_config xmlns=\"http://openbox.org/3.4/rc\">\n"
+"  <theme><font place=\"ActiveWindow\"><size>1</size></font>"
+"<name>Bear2</name></theme>\n"
+"  <desktops><number>1</number></desktops>\n"
+"  <applications>\n"
+"    <application class=\"*\"><decor>no</decor>"
+"<maximized>yes</maximized></application>\n"
+"  </applications>\n"
+"</openbox_config>\n");
+    fclose(f);
 }
 
-static void ensure_display(void) {
-    if (getenv("DISPLAY") != NULL) return;
+static void ensure_display(int argc, char **argv) {
+    if (getenv("DISPLAY")) return;  
+    if (getenv("WAYLAND_DISPLAY")) return; 
 
     ensure_x11_deps();
-
     write_openbox_env();
 
-    char exepath[1024] = {0};
-    ssize_t elen = readlink("/proc/self/exe", exepath, sizeof(exepath) - 1);
-    if (elen <= 0) strncpy(exepath, "/usr/local/bin/arch_installer", sizeof(exepath)-1);
-    else exepath[elen] = '\0';
+    char xinitrc[512];
+    snprintf(xinitrc,sizeof(xinitrc),
+        "#!/bin/sh\n"
+        "openbox &\n"
+        "exec %s\n", argv[0]);
+    FILE *xi=fopen("/tmp/_arch_easy_xinitrc","w");
+    if (xi) { fputs(xinitrc,xi); fclose(xi); chmod("/tmp/_arch_easy_xinitrc",0755); }
 
-    const char *xinitrc = "/tmp/.arch_installer_xinitrc";
-    FILE *f = fopen(xinitrc, "w");
-    if (!f) {
-        fprintf(stderr, "[!] Cannot write xinitrc – starting without X.\n");
-        return;
-    }
-    fprintf(f, "#!/bin/sh\n");
-    fprintf(f, "export XDG_SESSION_TYPE=x11\n");
-    fprintf(f, "export GSETTINGS_BACKEND=memory\n");
-    fprintf(f, "export GTK_THEME=Adwaita\n");
-    fprintf(f, "export GDK_BACKEND=x11\n");
-    fprintf(f, "export DCONF_PROFILE=/dev/null\n");
-    fprintf(f, "export LIBINPUT_ENABLE_DEVICE_GROUP=1\n");
-    fprintf(f, "xrandr --auto 2>/dev/null || true\n");
-    fprintf(f, "xset r rate 300 30 2>/dev/null || true\n");
-    fprintf(f, "\n");
+    setenv("DISPLAY",":0",1);
+    char cmd[1024];
+    snprintf(cmd,sizeof(cmd),
+        "xinit /tmp/_arch_easy_xinitrc -- :0 -nolisten tcp &>/tmp/xinit.log &");
+    system(cmd);
+    sleep(2);
 
-    fprintf(f, "xrdb -merge /root/.Xresources 2>/dev/null || true\n");
-    fprintf(f, "\n");
-
-    fprintf(f, "openbox &\n");
-    fprintf(f, "sleep 0.5\n");
-    fprintf(f, "\n");
-
-    fprintf(f, "xsetroot -solid '#0d1117'\n");
-    fprintf(f, "\n");
-
-    fprintf(f, "tint2 &\n");
-    fprintf(f, "\n");
-
-    fprintf(f, "xsetroot -cursor_name left_ptr\n");
-    fprintf(f, "\n");
-    fprintf(f, "xinput list >/tmp/xinput_debug.txt 2>&1\n");
-    fprintf(f, "exec \"%s\"\n", exepath);
-    fclose(f);
-    chmod(xinitrc, 0755);
-
-    printf("[*] Launching Xorg display server...\n");
-    printf("    Log: /tmp/xorg_installer.log\n");
-    fflush(stdout);
-
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd),
-             "startx %s -- :0 -nolisten tcp "
-             ">>/tmp/xorg_installer.log 2>&1",
-             xinitrc);
-    execl("/bin/sh", "sh", "-c", cmd, NULL);
-
-    perror("[!] startx failed");
-    fprintf(stderr, "    Continuing in terminal mode (no X).\n");
+    execvp(argv[0],argv);
 }
 
-int main(void) {
-    if (geteuid() != 0) {
-        fprintf(stderr,
-            "This installer must be run as root.\n"
-            "Example: sudo ./arch_installer\n");
+int main(int argc, char **argv) {
+    ensure_display(argc, argv);
+
+    gtk_init(&argc, &argv);
+
+    setup_css();
+
+    st.laptop = is_laptop();
+    if (st.laptop) strncpy(st.optimus_mode,"hybrid",sizeof(st.optimus_mode)-1);
+
+    {
+        char detected[32]={0};
+        detect_gpu(detected,sizeof(detected));
+        if (detected[0] && strcmp(detected,"None"))
+            strncpy(st.gpu,detected,sizeof(st.gpu)-1);
+    }
+
+    {
+        int suggested = suggest_swap_gb();
+        if (suggested > 0) {
+            char sw[8];
+            snprintf(sw,sizeof(sw),"%d",suggested);
+            strncpy(st.swap,sw,sizeof(st.swap)-1);
+        }
+    }
+
+    g_wizard_window = build_wizard_window();
+    if (!g_wizard_window) {
+        fprintf(stderr,"[installer] Failed to create wizard window.\n");
         return 1;
     }
 
-    setenv("GSETTINGS_BACKEND", "memory", 1);
-    setenv("GTK_THEME", "Adwaita", 1);
-    setenv("GDK_BACKEND", "x11", 1);
-    ensure_display();
+    gtk_main();
 
-
-    screen_welcome_wrap();
-    screen_language_wrap();
-    screen_network_wrap();
-    int quick = screen_mode();
-
-    Step quick_steps[] = {
-        {L("Locale","Idioma sistema"),     screen_locale,        1},
-        {L("Keymap","Teclado"),            screen_keymap,        1},
-        {L("Disk","Disco"),                screen_disk,          1},
-        {L("Identity","Identidad"),        screen_identity,      1},
-        {L("Passwords","Contrasenas"),     screen_passwords,        1},
-        {L("Profile","Perfil"),            screen_profile,          1},
-        {L("Dotfiles","Dotfiles"),         screen_dotfiles,         1},
-        {L("Extra Packages","Paquetes extra"), screen_extra_packages, 1},
-        {L("Review","Revision"),           screen_review,           1},
-        {L("Preflight","Preflight"),       screen_preflight_wrap,   0},
-        {L("Install","Instalar"),          screen_install_wrap,     0},
-        {L("Finish","Finalizar"),          screen_finish_wrap,      0},
-        {NULL,NULL,0}
-    };
-
-    Step custom_steps[] = {
-        {L("Locale","Idioma sistema"),      screen_locale,        1},
-        {L("Disk","Disco"),                 screen_disk,          1},
-        {L("Filesystem","Sistema archivos"),screen_filesystem,    1},
-        {L("Kernel","Kernel"),              screen_kernel,        1},
-        {L("Bootloader","Bootloader"),      screen_bootloader,    1},
-        {L("Mirrors","Mirrors"),            screen_mirrors,       1},
-        {L("Identity","Identidad"),         screen_identity,      1},
-        {L("Passwords","Contrasenas"),      screen_passwords,     1},
-        {L("Keymap","Teclado"),             screen_keymap,        1},
-        {L("Timezone","Zona horaria"),      screen_timezone,      1},
-        {L("Desktop","Escritorio"),         screen_desktop,       1},
-        {"GPU",                              screen_gpu,           1},
-        {L("Profile","Perfil"),             screen_profile,       1},
-        {L("Dotfiles","Dotfiles"),          screen_dotfiles,      1},
-        {L("yay","yay"),                    screen_yay,           1},
-        {L("Flatpak","Flatpak"),            screen_flatpak,           1},
-        {L("Snapshots","Snapshots"),        screen_snapper,           1},
-        {L("Extra Packages","Paquetes extra"), screen_extra_packages, 1},
-        {L("Review","Revision"),            screen_review,            1},
-        {L("Preflight","Preflight"),        screen_preflight_wrap,    0},
-        {L("Install","Instalar"),           screen_install_wrap,  0},
-        {L("Finish","Finalizar"),           screen_finish_wrap,   0},
-        {NULL,NULL,0}
-    };
-
-    Step *steps = quick ? quick_steps : custom_steps;
-    int idx = 0;
-    while (steps[idx].fn) {
-        int result = steps[idx].fn();
-        if (result == 2) {
-
-            idx = 0;
-        } else if (result == 0 && steps[idx].can_go_back) {
-            if (idx == 0) {
-                if (yesno_dlg(L("Exit","Salir"),
-                              L("Exit the installer?","¿Salir del instalador?")))
-                    exit(0);
-            } else {
-                idx--;
-            }
-        } else {
-            idx++;
-        }
-    }
     return 0;
 }
