@@ -387,6 +387,25 @@ static const char *APP_CSS =
     "border: 1px solid #30363d; border-radius: 6px; }"
     "combobox button:hover { border-color: #58a6ff; }"
 
+    "window.combo { background-color: #161b22; border: 1px solid #30363d; }"
+    "window.combo scrolledwindow { background-color: #161b22; }"
+    "window.combo scrollbar { background-color: #21262d; }"
+    "window.combo scrollbar slider { background-color: #484f58; border-radius: 4px; }"
+
+    "window.combo treeview { background-color: #161b22; color: #c9d1d9; "
+    "border: none; outline: none; }"
+    "window.combo treeview:selected { background-color: #1f6feb; color: #ffffff; }"
+    "window.combo treeview:hover    { background-color: #1c2128; color: #e6edf3; }"
+    "window.combo treeview.view     { background-color: #161b22; color: #c9d1d9; }"
+    "window.combo treeview.view:selected { background-color: #1f6feb; color: #fff; }"
+    "window.combo treeview.view cell { padding: 6px 12px; }"
+
+    "menu { background-color: #161b22; color: #c9d1d9; "
+    "border: 1px solid #30363d; padding: 4px 0; }"
+    "menuitem { background-color: transparent; color: #c9d1d9; padding: 6px 16px; }"
+    "menuitem:hover { background-color: #1c2128; color: #e6edf3; }"
+    "menuitem:selected { background-color: #1f6feb; color: #ffffff; }"
+
     "separator { background-color: #30363d; }"
 
     "dialog .dialog-action-area button { min-width: 80px; }"
@@ -2938,6 +2957,42 @@ static const char *PRE_MODE_PAGES[] = {
     "welcome","language","network","mode", NULL
 };
 
+static const char *g_custom_pages_buf[32];
+
+static void rebuild_custom_pages(void) {
+    int n = 0;
+    int use_btrfs = !strcmp(st.filesystem, "btrfs");
+    int use_hypr  = (strstr(st.desktop_list, "Hyprland") != NULL);
+    g_custom_pages_buf[n++] = "welcome";
+    g_custom_pages_buf[n++] = "language";
+    g_custom_pages_buf[n++] = "network";
+    g_custom_pages_buf[n++] = "mode";
+    g_custom_pages_buf[n++] = "locale";
+    g_custom_pages_buf[n++] = "disk";
+    g_custom_pages_buf[n++] = "filesystem";
+    g_custom_pages_buf[n++] = "kernel";
+    g_custom_pages_buf[n++] = "bootloader";
+    g_custom_pages_buf[n++] = "mirrors";
+    g_custom_pages_buf[n++] = "identity";
+    g_custom_pages_buf[n++] = "passwords";
+    g_custom_pages_buf[n++] = "keymap";
+    g_custom_pages_buf[n++] = "timezone";
+    g_custom_pages_buf[n++] = "desktop";
+    g_custom_pages_buf[n++] = "gpu";
+    g_custom_pages_buf[n++] = "profile";
+    if (use_hypr)  g_custom_pages_buf[n++] = "dotfiles";
+    g_custom_pages_buf[n++] = "yay";
+    g_custom_pages_buf[n++] = "flatpak";
+    if (use_btrfs) g_custom_pages_buf[n++] = "snapper";
+    g_custom_pages_buf[n++] = "extra_pkgs";
+    g_custom_pages_buf[n++] = "review";
+    g_custom_pages_buf[n++] = "preflight";
+    g_custom_pages_buf[n++] = "install";
+    g_custom_pages_buf[n++] = "finish";
+    g_custom_pages_buf[n]   = NULL;
+    g_pages = g_custom_pages_buf;
+}
+
 static const char **g_pages = PRE_MODE_PAGES;
 static int          g_cur   = 0;
 
@@ -4919,7 +4974,8 @@ static int val_mode(void) {
         st.yay=1; st.snapper=1; st.flatpak=1; st.mirrors=1;
     }
 
-    g_pages = quick ? QUICK_PAGES : CUSTOM_PAGES;
+    if (quick) g_pages = QUICK_PAGES;
+    else rebuild_custom_pages();
     update_sidebar();
     return 1;
 }
@@ -5005,6 +5061,7 @@ static int val_filesystem(void) {
             break;
         }
     }
+    if (!st.quick) { rebuild_custom_pages(); update_sidebar(); }
     return 1;
 }
 
@@ -5156,6 +5213,7 @@ static int val_desktop(void) {
     }
     if (!list[0]) strncpy(list,"None",sizeof(list)-1);
     strncpy(st.desktop_list,list,sizeof(st.desktop_list)-1);
+    if (!st.quick) { rebuild_custom_pages(); update_sidebar(); }
     return 1;
 }
 
