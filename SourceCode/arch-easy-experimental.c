@@ -145,8 +145,8 @@ typedef struct {
 
 static const DesktopDef DESKTOP_DEFS[] = {
     {"KDE Plasma", {
-        "xorg-server xorg-apps xorg-xinit xorg-xrandr xf86-input-libinput",
-        "plasma-meta konsole alacritty dolphin ark kate plasma-nm firefox sddm"
+        "xorg-server xorg-xinit xorg-xrandr xf86-input-libinput",
+        "plasma konsole alacritty dolphin ark kate plasma-nm sddm firefox"
     }, 2},
     {"GNOME", {
         "gnome gdm firefox alacritty"
@@ -4191,6 +4191,20 @@ static void tz_region_changed(GtkComboBoxText *reg, gpointer city_widget) {
     gtk_combo_box_set_active(GTK_COMBO_BOX(city),sel_idx);
 }
 
+static void cb_de_none_toggled(GtkToggleButton *btn, gpointer data) {
+    (void)data;
+    if (!gtk_toggle_button_get_active(btn)) return;
+    for (int i = 0; i < 8; i++)
+        if (W_de_checks[i])
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_de_checks[i]), FALSE);
+}
+static void cb_de_other_toggled(GtkToggleButton *btn, gpointer data) {
+    (void)data;
+    if (!gtk_toggle_button_get_active(btn)) return;
+    if (W_de_checks[8])
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_de_checks[8]), FALSE);
+}
+
 static GtkWidget *build_desktop(void) {
     static const struct {const char *id; const char *en; const char *es;} DE[] = {
         {"KDE Plasma","KDE Plasma — Full-featured, modern, highly customizable",
@@ -4235,6 +4249,10 @@ static GtkWidget *build_desktop(void) {
         W_de_checks[i] = gtk_check_button_new_with_label(DE[i].id);
         int on = (strstr(st.desktop_list,DE[i].id)!=NULL);
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(W_de_checks[i]),on);
+        if (i == 8) 
+            g_signal_connect(W_de_checks[i],"toggled",G_CALLBACK(cb_de_none_toggled),NULL);
+        else
+            g_signal_connect(W_de_checks[i],"toggled",G_CALLBACK(cb_de_other_toggled),NULL);
         gtk_box_pack_start(GTK_BOX(row),W_de_checks[i],FALSE,FALSE,0);
         GtkWidget *d = gtk_label_new(strcmp(st.lang,"en")==0?DE[i].en:DE[i].es);
         gtk_label_set_xalign(GTK_LABEL(d),0.0f);
@@ -5205,7 +5223,7 @@ static int val_desktop(void) {
     for (int i=0;i<9;i++) {
         if (W_de_checks[i] &&
             gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_de_checks[i]))) {
-            if (!first) strncat(list,",",sizeof(list)-strlen(list)-1);
+            if (!first) strncat(list,"|",sizeof(list)-strlen(list)-1);
             strncat(list,DE_NAMES[i],sizeof(list)-strlen(list)-1);
             if (first) { strncpy(st.desktop,DE_NAMES[i],sizeof(st.desktop)-1); first=0; }
         }
