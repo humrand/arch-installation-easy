@@ -24,7 +24,7 @@
 
 #define VERSION   "V3.0.0"
 #define LOG_FILE  "/tmp/arch_install.log"
-#define TITLE     "Arch Linux Installer"
+#define TITLE     "PulseOS Installer"
 
 #define MAX_CMD    8192
 #define MAX_OUT    4096
@@ -1869,7 +1869,7 @@ static void ib_install_systemd_boot(IB *ib, const char *root_dev) {
         }
         f = fopen(fname, "w");
         if (f) {
-            fprintf(f,"title   Arch Linux (%s)\n", tok);
+            fprintf(f,"title   PulseOS (%s)\n", tok);
             fprintf(f,"linux   /vmlinuz-%s\n", tok);
             if (microcode[0]) fprintf(f,"initrd  /%s.img\n", microcode);
             fprintf(f,"initrd  /initramfs-%s.img\n", tok);
@@ -1922,7 +1922,7 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
                     snprintf(ucode_line,sizeof(ucode_line),
                              "module_path: boot():%s/boot/%s.img\n",btrfs_prefix,microcode);
             }
-            fprintf(f,"/Arch Linux (%s)\n    protocol: linux\n",tok);
+            fprintf(f,"/PulseOS (%s)\n    protocol: linux\n",tok);
             fprintf(f,"path: %s\n", kpath);
             fprintf(f,"cmdline: %s rw quiet %s\n", root_opt, extra);
             if (ucode_line[0]) fputs(ucode_line, f);
@@ -1953,7 +1953,7 @@ static void ib_install_limine(IB *ib, const char *disk, const char *root_dev) {
 
         snprintf(cmd,sizeof(cmd),
                  "efibootmgr --create --disk %s --part %s "
-                 "--label 'Arch Linux Limine' --loader '\\EFI\\limine\\BOOTX64.EFI' --unicode",
+                 "--label 'PulseOS' --loader '\\EFI\\limine\\BOOTX64.EFI' --unicode",
                  disk_dev, partn);
         run_stream(cmd,NULL,NULL,1);
 
@@ -2857,7 +2857,7 @@ static void *ib_run_thread(void *arg) {
             "printf '"
             "[Desktop Entry]\\n"
             "Name=PKG Helper\\n"
-            "Comment=Arch Linux Package Manager (pacman/AUR/Flatpak)\\n"
+            "Comment=PulseOS Package Manager (pacman/AUR/Flatpak)\\n"
             "Exec=pkg-helper\\n"
             "Icon=pkg-helper\\n"
             "Terminal=false\\n"
@@ -2868,6 +2868,183 @@ static void *ib_run_thread(void *arg) {
             1);
 
         write_log("pkg-helper: binary, icon and .desktop installed.");
+    }
+
+    {
+        ib_stage(ib, L("Applying PulseOS branding...",
+                       "Aplicando branding PulseOS..."));
+
+        FILE *fos = fopen("/mnt/etc/os-release", "w");
+        if (fos) {
+            fprintf(fos,
+                "NAME=\"PulseOS\"\n"
+                "PRETTY_NAME=\"PulseOS x86\"\n"
+                "ID=pulseos\n"
+                "ID_LIKE=arch\n"
+                "BUILD_ID=rolling\n"
+                "ANSI_COLOR=\"38;2;120;120;255\"\n"
+                "HOME_URL=\"https://github.com/humrand/arch-installation-easy\"\n"
+                "SUPPORT_URL=\"https://github.com/humrand/arch-installation-easy/pulls\"\n"
+                "BUG_REPORT_URL=\"https://github.com/humrand/arch-installation-easy/issues\"\n"
+                "LOGO=pulseos\n");
+            fclose(fos);
+        }
+
+        FILE *flsb = fopen("/mnt/etc/lsb-release", "w");
+        if (flsb) {
+            fprintf(flsb,
+                "DISTRIB_ID=PulseOS\n"
+                "DISTRIB_RELEASE=rolling\n"
+                "DISTRIB_DESCRIPTION=\"PulseOS x86\"\n");
+            fclose(flsb);
+        }
+
+        FILE *fiss = fopen("/mnt/etc/issue", "w");
+        if (fiss) {
+            fprintf(fiss, "Welcome to PulseOS x86  \\r  (\\l)\n\n");
+            fclose(fiss);
+        }
+
+        FILE *fmotd = fopen("/mnt/etc/motd", "w");
+        if (fmotd) {
+            fprintf(fmotd, "Welcome to PulseOS x86\n");
+            fclose(fmotd);
+        }
+
+        if (!strcmp(bl,"grub")) {
+            ib_chroot(ib,
+                "sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR=\"PulseOS\"/' "
+                "/etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg",
+                1);
+        }
+
+        if (!strcmp(bl,"systemd-boot")) {
+            ib_chroot(ib,
+                "find /boot/loader/entries -name '*.conf' "
+                "-exec sed -i 's/^title.*Arch Linux/title   PulseOS/' {} \\;",
+                1);
+        }
+
+        ib_stage(ib, L("Installing fastfetch...", "Instalando fastfetch..."));
+        ib_pacman(ib,
+            "arch-chroot /mnt pacman -S --noconfirm --needed fastfetch",
+            99.2, 99.6, 1);
+
+        run_simple("mkdir -p /mnt/etc/fastfetch", 0);
+        FILE *flogo = fopen("/mnt/etc/fastfetch/pulseos.txt", "w");
+        if (flogo) {
+            fprintf(flogo,
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa2\x80\xe2\xa3\x80\xe2\xa3\x80"
+                "\xe2\xa3\x80\xe2\xa3\x80\xe2\xa3\x80\xe2\xa3\x80\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa2\x80"
+                "\xe2\xa1\xb4\xe2\xa3\xbf\xe2\xa0\xbf\xe2\xa0\x9b\xe2\xa0\x9b"
+                "\xe2\xa0\x9b\xe2\xa0\x9b\xe2\xa0\xdb\xe2\xa0\xbf\xe2\xa1\xa6"
+                "\xe2\xa0\xa1\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\xa0\xe2\xa3\xbf"
+                "\xe2\xa0\x8b\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x99"
+                "\xe2\xa3\xbf\xe2\xa1\x86\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\xbc\xe2\xa0\xa7\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\xa0\xe2\xa1\x84\xe2\xa1\xb6"
+                "\xe2\xa1\xa6\xe2\xa0\xa1\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\xb8\xe2\xa3\xbf\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\xb8\xe2\xa3\xbf\xe2\xa0\x81\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\xbe\xe2\xa3\xbf\xe2\xa3\xbf\xe2\xa3\xbf"
+                "\xe2\xa3\xbf\xe2\xa3\xb7\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa3\xbf\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa3\xbf\xe2\xa0\xa7\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa3\xbf\xe2\xa3\xbf\xe2\xa3\xbf"
+                "\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa3\xbf\xe2\xa3\xbf\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa3\xbf\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa3\xbf\xe2\xa0\xa7\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\xb9\xe2\xa3\xbf\xe2\xa3\xbf\xe2\xa3\xbf"
+                "\xe2\xa3\xbf\xe2\xa0\x8f\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa3\xbf\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\xbf\xe2\xa0\x87\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x88\xe2\xa0\x89\xe2\xa0\x89"
+                "\xe2\xa0\x81\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\xa0\xe2\xa0\xa7\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x98\xe2\xa3\xbf\xe2\xa1\xa6\xe2\xa0\xa1"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\xc0\xe2\xa1\x84"
+                "\xe2\xa3\xbf\xe2\xa0\x83\n"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x80"
+                "\xe2\xa0\x80\xe2\xa0\x80\xe2\xa0\x88\xe2\xa0\xdb\xe2\xa3\xbf"
+                "\xe2\xa1\xb6\xe2\xa1\x84\xe2\xa0\xc0\xe2\xa0\xc0\xe2\xa0\xc0"
+                "\xe2\xa0\xa0\xe2\xa1\x84\xe2\xa0\xb4\xe2\xa0\xbf\xe2\xa0\x8b"
+                "\n\n"
+                "      PulseOS x86\n");
+            fclose(flogo);
+        }
+
+        FILE *fcfg = fopen("/mnt/etc/fastfetch/config.jsonc", "w");
+        if (fcfg) {
+            fprintf(fcfg,
+                "{\n"
+                "  \"$schema\": \"https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json\",\n"
+                "  \"logo\": {\n"
+                "    \"source\": \"/etc/fastfetch/pulseos.txt\",\n"
+                "    \"color\": { \"1\": \"blue\", \"2\": \"white\" }\n"
+                "  },\n"
+                "  \"display\": { \"separator\": \" : \" },\n"
+                "  \"modules\": [\n"
+                "    \"title\", \"separator\", \"os\", \"kernel\",\n"
+                "    \"uptime\", \"packages\", \"shell\", \"display\",\n"
+                "    \"de\", \"wm\", \"terminal\", \"cpu\", \"gpu\",\n"
+                "    \"memory\", \"disk\", \"battery\", \"locale\"\n"
+                "  ]\n"
+                "}\n");
+            fclose(fcfg);
+        }
+
+        ib_chroot(ib,
+            "if command -v neofetch >/dev/null 2>&1; then "
+            "  sed -i '/\"Arch Linux\")/{ N; s/\"Arch Linux\")/\"PulseOS\"|\"Arch Linux\")/; }' "
+            "  /usr/bin/neofetch 2>/dev/null || true; "
+            "fi",
+            1);
+
+        char ff_user_cmd[MAX_CMD];
+        snprintf(ff_user_cmd, sizeof(ff_user_cmd),
+            "mkdir -p /home/%s/.config/fastfetch && "
+            "cp /etc/fastfetch/pulseos.txt /home/%s/.config/fastfetch/pulseos.txt && "
+            "printf '{\n"
+            "  \"logo\": {\n"
+            "    \"source\": \"~/.config/fastfetch/pulseos.txt\",\n"
+            "    \"color\": { \"1\": \"blue\", \"2\": \"white\" }\n"
+            "  },\n"
+            "  \"display\": { \"separator\": \" : \" },\n"
+            "  \"modules\": [\n"
+            "    \"title\", \"separator\", \"os\", \"kernel\",\n"
+            "    \"uptime\", \"packages\", \"shell\", \"display\",\n"
+            "    \"de\", \"wm\", \"terminal\", \"cpu\", \"gpu\",\n"
+            "    \"memory\", \"disk\", \"battery\", \"locale\"\n"
+            "  ]\n"
+            "}\\n' > /home/%s/.config/fastfetch/config.jsonc && "
+            "chown -R %s:%s /home/%s/.config/fastfetch",
+            st.username, st.username,
+            st.username,
+            st.username, st.username, st.username);
+        ib_chroot(ib, ff_user_cmd, 1);
+
+        ib_chroot(ib,
+            "mkdir -p /root/.config/fastfetch && "
+            "cp /etc/fastfetch/config.jsonc /root/.config/fastfetch/config.jsonc && "
+            "cp /etc/fastfetch/pulseos.txt /root/.config/fastfetch/pulseos.txt",
+            1);
+
+        write_log("PulseOS branding applied successfully.");
     }
 
     pthread_mutex_lock(&ib->lock);
@@ -5555,7 +5732,7 @@ static GtkWidget *build_wizard_window(void) {
     gtk_widget_set_size_request(header,-1,48);
     gtk_container_set_border_width(GTK_CONTAINER(header),0);
 
-    GtkWidget *logo_lbl = gtk_label_new("⟨ Arch Linux Installer ⟩");
+    GtkWidget *logo_lbl = gtk_label_new("⟨ PulseOS Installer ⟩");
     add_class(logo_lbl,"step-name");
     gtk_widget_set_margin_start(logo_lbl,16);
     gtk_box_pack_start(GTK_BOX(header),logo_lbl,FALSE,FALSE,0);
