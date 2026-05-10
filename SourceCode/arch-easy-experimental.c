@@ -170,7 +170,7 @@ static const DesktopDef DESKTOP_DEFS[] = {
     }, 1},
     {"Sway", {
         "sway waybar wofi alacritty xdg-desktop-portal-wlr "
-        "polkit-gnome qt5-wayland sddm alacritty firefox"
+        "polkit-gnome qt5-wayland sddm firefox"
     }, 1},
     {NULL, {NULL}, 0}
 };
@@ -235,17 +235,20 @@ static void write_log_fmt(const char *fmt, ...) {
 
 static void shell_quote(const char *s, char *out, size_t sz) {
     size_t i = 0;
-    if (i < sz-1) out[i++] = '\'';
-    for (; *s && i < sz-3; ++s) {
+    if (sz < 4) { if (sz) out[0] = '\0'; return; } 
+    out[i++] = '\'';
+    for (; *s; ++s) {
         if (*s == '\'') {
+            if (i + 5 >= sz) break;
             out[i++] = '\''; out[i++] = '\\';
             out[i++] = '\''; out[i++] = '\'';
         } else {
+            if (i + 2 >= sz) break;
             out[i++] = *s;
         }
     }
-    if (i < sz-1) out[i++] = '\'';
-    out[i] = '\0';
+    out[i++] = '\'';
+    out[i]   = '\0';
 }
 
 static void trim_nl(char *s) {
@@ -632,6 +635,13 @@ static int radiolist_dlg(const char *title, const char *text,
     return rc == GTK_RESPONSE_OK;
 }
 
+typedef struct { GtkWidget *dlg; } MenuRowActivateData;
+static void menu_row_activated_cb(GtkListBox *lb, GtkListBoxRow *row, gpointer data) {
+    (void)lb; (void)row;
+    MenuRowActivateData *d = (MenuRowActivateData *)data;
+    gtk_dialog_response(GTK_DIALOG(d->dlg), GTK_RESPONSE_OK);
+}
+
 static int menu_dlg(const char *title, const char *text,
                      MenuItem *items, int n, char *out, size_t outsz) {
     char clean[2048]; dlg_strip(text, clean, sizeof(clean));
@@ -689,8 +699,11 @@ static int menu_dlg(const char *title, const char *text,
     GtkListBoxRow *row0 = gtk_list_box_get_row_at_index(GTK_LIST_BOX(lb), 0);
     if (row0) gtk_list_box_select_row(GTK_LIST_BOX(lb), row0);
 
-    g_signal_connect_swapped(lb, "row-activated",
-        G_CALLBACK(gtk_dialog_response), GINT_TO_POINTER(GTK_RESPONSE_OK));
+    MenuRowActivateData *rad = g_new0(MenuRowActivateData, 1);
+    rad->dlg = dlg;
+    g_signal_connect_data(lb, "row-activated",
+        G_CALLBACK(menu_row_activated_cb),
+        rad, (GClosureNotify)g_free, (GConnectFlags)0);
 
     gtk_container_add(GTK_CONTAINER(scroll), lb);
     gtk_box_pack_start(GTK_BOX(content), scroll, TRUE, TRUE, 0);
@@ -850,7 +863,16 @@ static int run_stream(const char *cmd, LineCallback cb, void *ud, int ignore_err
         }
     }
     int rc = pclose(fp);
-    rc = (rc==-1)?-1:WEXITSTATUS(rc);
+    if (rc == -1) {
+        rc = -1;
+    } else if (WIFEXITED(rc)) {
+        rc = WEXITSTATUS(rc);
+    } else if (WIFSIGNALED(rc)) {
+        write_log_fmt("Command killed by signal %d: %s", WTERMSIG(rc), cmd);
+        rc = 128 + WTERMSIG(rc);
+    } else {
+        rc = -1;
+    }
     if (rc!=0) {
         write_log_fmt("ERROR (rc=%d): %s", rc, cmd);
         if (ignore_error) write_log("Command failure was ignored by the caller.");
@@ -1230,8 +1252,7 @@ rescan_wifi:;
     }
 
     char scan_cmd[256];
-    snprintf(scan_cmd,sizeof(scan_cmd),"iwctl station '%s' scan 2>/dev/null",iface);
-    (void)system(scan_cmd);
+    snprintf(scan_cmd,sizeof(scan_cmd),"iwctl station '%s' scan 2>/dev/null",iface);    (void)system(scan_cmd);
 
     char ssids[16][128]; int nssids=0;
     time_t deadline = time(NULL)+12;
@@ -1269,8 +1290,7 @@ rescan_wifi:;
         char scan_cmd2[256];
         snprintf(scan_cmd2,sizeof(scan_cmd2),
                  "iw dev '%s' scan 2>/dev/null || "
-                 "iwctl station '%s' get-networks 2>/dev/null", iface, iface);
-        FILE *fp2 = popen(scan_cmd2,"r");
+                 "iwctl station '%s' get-networks 2>/dev/null", iface, iface);        FILE *fp2 = popen(scan_cmd2,"r");
         if (fp2) { (void)fread(scan_raw,1,sizeof(scan_raw)-1,fp2); pclose(fp2); }
 
         for (int i=0; i<nssids && nnets<15; i++) {
@@ -1398,15 +1418,16 @@ rescan_wifi:;
              L("Connecting to '%s'...","Conectando a '%s'..."),ssid_sel);
     infobox_dlg(L("Connecting...","Conectando..."),conn_msg);
 
-    char q_ssid[256], q_pass[256];
-    shell_quote(ssid_sel,q_ssid,sizeof(q_ssid));
+    char q_ssid[256], q_pass[256], q_iface[128];
+    shell_quote(ssid_sel, q_ssid, sizeof(q_ssid));
+    shell_quote(iface,    q_iface, sizeof(q_iface));
     char cmd[MAX_CMD];
     if (pass[0]) {
-        shell_quote(pass,q_pass,sizeof(q_pass));
-        snprintf(cmd,sizeof(cmd),"iwctl --passphrase %s station '%s' connect %s",
-                 q_pass,iface,q_ssid);
+        shell_quote(pass, q_pass, sizeof(q_pass));
+        snprintf(cmd,sizeof(cmd),"iwctl --passphrase %s station %s connect %s",
+                 q_pass, q_iface, q_ssid);
     } else {
-        snprintf(cmd,sizeof(cmd),"iwctl station '%s' connect %s",iface,q_ssid);
+        snprintf(cmd,sizeof(cmd),"iwctl station %s connect %s", q_iface, q_ssid);
     }
     (void)system(cmd);
     sleep(5);
@@ -1529,17 +1550,19 @@ typedef struct {
     pthread_mutex_t lock;
 } IB;
 
-static regex_t g_re_install;
-static regex_t g_re_download;
-static int      g_re_ready = 0;
+static regex_t         g_re_install;
+static regex_t         g_re_download;
+static pthread_once_t  g_re_once  = PTHREAD_ONCE_INIT;
 
-static void compile_regexes(void) {
-    if (g_re_ready) return;
+static void compile_regexes_impl(void) {
     regcomp(&g_re_install,  "\\(([0-9]+)/([0-9]+)\\)", REG_EXTENDED);
     regcomp(&g_re_download,
             "[^[:space:]]+ +[0-9]+\\.?[0-9]* +(B|KiB|MiB|GiB)"
             " +[0-9]+\\.?[0-9]* +(B|KiB|MiB|GiB)/s", REG_EXTENDED);
-    g_re_ready = 1;
+}
+
+static void compile_regexes(void) {
+    pthread_once(&g_re_once, compile_regexes_impl);
 }
 
 static void ib_pct(IB *ib, double p) {
@@ -1963,7 +1986,17 @@ static void ib_configure_nvidia_modeset(IB *ib) {
 }
 
 static void ib_install_gpu(IB *ib, double start, double end) {
-    const char *nv_pkg = !strcmp(st.kernel,"linux") ? "nvidia" : "nvidia-dkms";
+    const char *nv_pkg = "nvidia";
+    {
+        int needs_dkms = 0;
+        char klist_tmp[512]; strncpy(klist_tmp, st.kernel_list, sizeof(klist_tmp)-1);
+        char *tok2 = strtok(klist_tmp, " ");
+        while (tok2) {
+            if (strcmp(tok2, "linux") != 0) { needs_dkms = 1; break; }
+            tok2 = strtok(NULL, " ");
+        }
+        if (needs_dkms) nv_pkg = "nvidia-dkms";
+    }
     char cmd[MAX_CMD];
 
     if (!strcmp(st.gpu,"NVIDIA")) {
@@ -2181,6 +2214,12 @@ static void *ib_run_thread(void *arg) {
 
     compile_regexes();
 
+    if (!st.disk[0]) {
+        ib->on_done(0, "No disk selected. Aborting installation.", ib->ud);
+        pthread_mutex_destroy(&ib->lock);
+        free(ib);
+        return NULL;
+    }
     char pkernel[64]; strncpy(pkernel, st.kernel_list, sizeof(pkernel)-1);
     { char *sp = strchr(pkernel,' '); if(sp) *sp='\0'; }
     strncpy(st.kernel, pkernel, sizeof(st.kernel)-1);
@@ -2844,12 +2883,16 @@ static void *ib_run_thread(void *arg) {
                      "An installation command failed. Check %s.", LOG_FILE);
         }
         ib->on_done(0, first_error, ib->ud);
+        pthread_mutex_destroy(&ib->lock);
+        free(ib);
         return NULL;
     }
 
     ib_pct(ib,100);
     ib_stage(ib, L("Installation complete!","Instalacion completa!"));
     ib->on_done(1,"",ib->ud);
+    pthread_mutex_destroy(&ib->lock);
+    free(ib);
     return NULL;
 }
 static void refresh_disk_list(void);
@@ -5072,6 +5115,20 @@ static int val_disk(void) {
         }
     }
 
+    if (!st.dualboot && st.disk[0]) {
+        for (int i = 0; i < W_ndisks; i++) {
+            if (!strcmp(W_disks[i].name, st.disk) && W_disks[i].size_gb < 20) {
+                char sz_warn[256];
+                snprintf(sz_warn, sizeof(sz_warn),
+                    L("⚠  /dev/%s is only %lld GB.  Arch Linux requires at least 20 GB.\n\nPlease choose a larger disk.",
+                      "⚠  /dev/%s tiene solo %lld GB.  Arch Linux necesita al menos 20 GB.\n\nPor favor elige un disco mayor."),
+                    W_disks[i].name, W_disks[i].size_gb);
+                msgbox(L("Disk too small","Disco demasiado pequeño"), sz_warn);
+                return 0;
+            }
+        }
+    }
+
     char warn[256];
     snprintf(warn,sizeof(warn),
         L("⚠  This will ERASE all data on /dev/%s.\n\nAre you sure?",
@@ -5311,6 +5368,7 @@ static int val_snapper(void) {
 
 static int val_extra_pkgs(void) {
     char pkgs[2048]={0};
+    st.fish_default = 0; 
     for (int i=0;i<W_npkgs;i++) {
         if (W_pkg_checks[i] &&
             gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(W_pkg_checks[i]))) {
@@ -5660,7 +5718,10 @@ static void ensure_display(int argc, char **argv) {
     system(cmd);
     sleep(2);
 
-    execvp(argv[0],argv);
+    execvp(argv[0], argv);
+    perror("[installer] execvp failed");
+    fprintf(stderr, "[installer] Could not re-exec after starting X11. "
+                    "Trying to continue anyway...\n");
 }
 
 int main(int argc, char **argv) {
