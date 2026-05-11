@@ -3625,19 +3625,6 @@ static GtkWidget *build_welcome(void) {
     return page;
 }
 
-.welcome-logo {
-    font-family: "Monospace";
-    font-size: 14px;
-}
-
-.welcome-title {
-    font-size: 28px;
-    font-weight: bold;
-}
-
-.welcome-ver {
-    opacity: 0.7;
-}
     
 static GtkWidget *build_language(void) {
     GtkWidget *page = make_page_wrap();
