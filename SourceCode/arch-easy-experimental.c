@@ -1523,9 +1523,9 @@ static void screen_network(void) {
 
         char choice[64]={0};
         if (!menu_dlg(L(" Network Connection"," Conexión de red"),
-                      L("An internet connection is needed to download PulseOS.\n\n"
+                      L("An internet connection is needed to download Arch Linux.\n\n"
                         "How are you connected to the internet?",
-                        "Se necesita internet para descargar PulseOS.\n\n"
+                        "Se necesita internet para descargar Arch Linux.\n\n"
                         "¿Cómo estás conectado a internet?"),
                       items,2,choice,sizeof(choice))) {
             if (g_home_requested) { g_home_requested=0; }
@@ -3566,66 +3566,51 @@ static GtkWidget *make_field_row(const char *label_text, GtkWidget *widget) {
 
 static GtkWidget *build_welcome(void) {
     GtkWidget *page = make_page_wrap();
-
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 20);
     gtk_widget_set_valign(vbox, GTK_ALIGN_CENTER);
     gtk_widget_set_halign(vbox, GTK_ALIGN_CENTER);
-
     gtk_box_pack_start(GTK_BOX(page), vbox, TRUE, TRUE, 0);
 
     GtkWidget *logo = gtk_label_new(
-        "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀⣀⣀\n"
-        "⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⣿⠿⠛⠛⠛⠛⠻⢿⣦⡀\n"
-        "⠀⠀⠀⠀⠀⠀⠀⠀⣰⣿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠙⣿⣆\n"
-        "⠀⠀⠀⠀⠀⠀⠀⣼⡿⠀⠀⠀⣠⣶⣶⣦⡀⠀⠀⠀⢸⣿\n"
-        "⠀⠀⠀⠀⠀⠀⢸⣿⠁⠀⠀⣾⣿⣿⣿⣿⣷⠀⠀⠀⠀⣿\n"
-        "⠀⠀⠀⠀⠀⠀⣿⡇⠀⠀⠀⣿⣿⣿  ⣿⣿⠀⠀⠀⠀⣿\n"
-        "⠀⠀⠀⠀⠀⠀⣿⡇⠀⠀⠀⠹⣿⣿⣿⣿⠏⠀⠀⠀⠀⣿\n"
-        "⠀⠀⠀⠀⠀⠀⢿⣇⠀⠀⠀⠀⠈⠉⠉⠁⠀⠀⠀⠀⣸⡿\n"
-        "⠀⠀⠀⠀⠀⠀⠘⣿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⣿⠃\n"
-        "⠀⠀⠀⠀⠀⠀⠀⠈⠻⣿⣶⣤⣀⣀⣀⣠⣴⣾⠿⠋");
-
-    add_class(logo, "welcome-logo");
-
+        "/\\   \n"
+        "/  \\  \n"
+        " / /\\ \\ \n"
+        "/_/  \\_\\");
+    add_class(logo, "welcome-title");
     gtk_label_set_justify(GTK_LABEL(logo), GTK_JUSTIFY_CENTER);
-    gtk_label_set_xalign(GTK_LABEL(logo), 0.5);
-
     gtk_box_pack_start(GTK_BOX(vbox), logo, FALSE, FALSE, 0);
 
-    GtkWidget *title = gtk_label_new("PulseOS Installer");
-
+    GtkWidget *title = gtk_label_new("Arch Linux Installer");
     add_class(title, "welcome-title");
-
     gtk_label_set_justify(GTK_LABEL(title), GTK_JUSTIFY_CENTER);
-
     gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 0);
 
     GtkWidget *ver = gtk_label_new(VERSION);
-
     add_class(ver, "welcome-ver");
-
     gtk_label_set_justify(GTK_LABEL(ver), GTK_JUSTIFY_CENTER);
-
     gtk_box_pack_start(GTK_BOX(vbox), ver, FALSE, FALSE, 0);
 
-    W_boot_badge = gtk_label_new(is_uefi() ? "UEFI" : "BIOS");
+    W_boot_badge = gtk_label_new(is_uefi() ? "UEFI  " : "BIOS  ");
+    add_class(W_boot_badge, is_uefi() ? "badge-uefi" : "badge-bios");
+    gtk_label_set_justify(GTK_LABEL(W_boot_badge), GTK_JUSTIFY_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox), W_boot_badge, FALSE, FALSE, 0);
 
-    add_class(W_boot_badge,
-              is_uefi() ? "badge-uefi" : "badge-bios");
+    GtkWidget *sep = make_divider();
+    gtk_box_pack_start(GTK_BOX(vbox), sep, FALSE, FALSE, 10);
 
-    gtk_label_set_justify(GTK_LABEL(W_boot_badge),
-                          GTK_JUSTIFY_CENTER);
-
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       W_boot_badge,
-                       FALSE,
-                       FALSE,
-                       0);
+    GtkWidget *warn = gtk_label_new(
+        L("⚠  This installer will ERASE the selected disk and install Arch Linux.\n"
+          "Make sure you have backups.  Press Next to continue.",
+          "⚠  Este instalador BORRARÁ el disco seleccionado e instalará Arch Linux.\n"
+          "Asegúrate de tener copias de seguridad.  Pulsa Siguiente para continuar."));
+    gtk_label_set_justify(GTK_LABEL(warn), GTK_JUSTIFY_CENTER);
+    gtk_label_set_line_wrap(GTK_LABEL(warn), TRUE);
+    add_class(warn, "warn");
+    gtk_box_pack_start(GTK_BOX(vbox), warn, FALSE, FALSE, 0);
 
     return page;
 }
 
-    
 static GtkWidget *build_language(void) {
     GtkWidget *page = make_page_wrap();
     GtkWidget *sv   = gtk_scrolled_window_new(NULL,NULL);
