@@ -1,4 +1,3 @@
-
 #define _GNU_SOURCE
 #include <gtk/gtk.h>
 #include <gio/gio.h>
@@ -596,6 +595,8 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "PULSE_BL=''\n");
 
     g_string_append(s, "if command -v bootctl >/dev/null 2>&1 && bootctl is-installed 2>/dev/null; then\n");
+    g_string_append(s, "  PULSE_BL='systemd-boot'\n");
+    g_string_append(s, "elif [ -f /boot/loader/loader.conf ] || [ -d /boot/loader/entries ]; then\n");
     g_string_append(s, "  PULSE_BL='systemd-boot'\n");
     g_string_append(s, "fi\n");
 
