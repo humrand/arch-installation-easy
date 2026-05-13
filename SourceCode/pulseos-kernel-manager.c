@@ -16,9 +16,7 @@
 #define MAX_KERNELS  256
 #define MAX_TEXT     1024
 
-/* ── Self-update ──────────────────────────────────────────────────────── */
-#define KM_VERSION   "1.0.0"
-/* Cambia estas URLs por las de tu repositorio real */
+#define KM_VERSION   "0.0.1"
 #define UPD_URL_BIN  "https://raw.githubusercontent.com/PulseOS-community/" \
                      "pulseos/main/tools/pulseos-kernel-manager"
 #define UPD_BIN_DST  "/usr/local/bin/pulseos-kernel-manager"
@@ -79,13 +77,10 @@ typedef struct {
 
     gboolean        busy;
 
-    /* self-update */
     GtkWidget      *update_btn;
     GtkWidget      *ver_label;
 } AppState;
 
-/* Puntero global al AppState activo; se asigna en activate().
- * Solo se accede desde el hilo principal de GTK (idle callbacks). */
 static AppState *g_app_state = NULL;
 
 static gboolean is_kernel_name(const gchar *name) {
@@ -591,21 +586,6 @@ static gchar *collect_selected_cmds(GtkListStore *store,
     return result;
 }
 
-/* ---------------------------------------------------------------------------
- * Detección del bootloader activo y generación del script de actualización.
- *
- * Orden de prioridad (exclusivo, se usa el primero que coincida):
- *   1. systemd-boot  — bootctl is-installed
- *   2. GRUB          — /boot/grub/grub.cfg  o  /boot/grub2/grub.cfg
- *   3. rEFInd        — refind.conf en la ESP
- *   4. Limine        — limine.conf en /boot o en la ESP
- *
- * Para systemd-boot se hacen tres cosas:
- *   a) bootctl update       → actualiza el binario EFI del propio bootloader
- *   b) mkinitcpio -P        → regenera los initramfs de todos los presets
- *   c) kernel-install add   → crea/actualiza las entradas en /boot/loader/entries/
- *      (si kernel-install está disponible y hay módulos en /usr/lib/modules/)
- * ------------------------------------------------------------------------ */
 static gchar *make_bootloader_refresh_script(void) {
     GString *s = g_string_new(NULL);
 
@@ -613,15 +593,12 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "echo ''\n");
     g_string_append(s, "echo '======= Actualización del bootloader ======='\n");
 
-    /* ── Fase 1: detectar bootloader activo ── */
     g_string_append(s, "PULSE_BL=''\n");
 
-    /* systemd-boot: bootctl is-installed devuelve 0 sólo si está activo */
     g_string_append(s, "if command -v bootctl >/dev/null 2>&1 && bootctl is-installed 2>/dev/null; then\n");
     g_string_append(s, "  PULSE_BL='systemd-boot'\n");
     g_string_append(s, "fi\n");
 
-    /* GRUB / GRUB2 (comprueba el cfg generado, no sólo la herramienta) */
     g_string_append(s, "if [ -z \"$PULSE_BL\" ]; then\n");
     g_string_append(s, "  if [ -f /boot/grub/grub.cfg ]; then\n");
     g_string_append(s, "    PULSE_BL='grub'\n");
@@ -630,7 +607,6 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "  fi\n");
     g_string_append(s, "fi\n");
 
-    /* rEFInd: busca refind.conf en las rutas habituales de la ESP */
     g_string_append(s, "if [ -z \"$PULSE_BL\" ]; then\n");
     g_string_append(s, "  for REFIND_CONF in /boot/EFI/refind/refind.conf \\\n");
     g_string_append(s, "                     /boot/efi/EFI/refind/refind.conf \\\n");
@@ -639,7 +615,6 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "  done\n");
     g_string_append(s, "fi\n");
 
-    /* Limine: busca limine.conf en /boot o en la ESP */
     g_string_append(s, "if [ -z \"$PULSE_BL\" ]; then\n");
     g_string_append(s, "  for LIMINE_CONF in /boot/limine.conf \\\n");
     g_string_append(s, "                     /boot/EFI/LIMINE/limine.conf \\\n");
@@ -652,24 +627,18 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "echo \"Bootloader detectado: ${PULSE_BL:-desconocido}\"\n");
     g_string_append(s, "echo ''\n");
 
-    /* ── Fase 2: actualizar según el bootloader detectado ── */
     g_string_append(s, "case \"$PULSE_BL\" in\n");
 
-    /* ---- systemd-boot ---- */
     g_string_append(s, "  systemd-boot)\n");
-    /* a) actualizar el binario EFI del bootloader */
     g_string_append(s, "    echo '[systemd-boot] Actualizando binario EFI...'\n");
     g_string_append(s, "    sudo bootctl update 2>/dev/null || true\n");
-    /* b) regenerar initramfs para todos los presets instalados */
     g_string_append(s, "    if command -v mkinitcpio >/dev/null 2>&1; then\n");
     g_string_append(s, "      echo '[systemd-boot] Regenerando initramfs (mkinitcpio -P)...'\n");
     g_string_append(s, "      sudo mkinitcpio -P || true\n");
     g_string_append(s, "    fi\n");
-    /* c) crear/actualizar entradas en /boot/loader/entries/ vía kernel-install */
     g_string_append(s, "    if command -v kernel-install >/dev/null 2>&1; then\n");
     g_string_append(s, "      echo '[systemd-boot] Sincronizando entradas de arranque...'\n");
     g_string_append(s, "      for KVER in $(ls /usr/lib/modules/ 2>/dev/null); do\n");
-    /* busca el vmlinuz correspondiente siguiendo la convención de Arch */
     g_string_append(s, "        VMLINUZ=''\n");
     g_string_append(s, "        for CANDIDATE in \\\n");
     g_string_append(s, "              \"/boot/vmlinuz-${KVER}\" \\\n");
@@ -681,7 +650,6 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "        fi\n");
     g_string_append(s, "      done\n");
     g_string_append(s, "    else\n");
-    /* sin kernel-install: el usuario debe tener las entradas ya creadas */
     g_string_append(s, "      if [ -d /boot/loader/entries ]; then\n");
     g_string_append(s, "        echo '[systemd-boot] Entradas existentes en /boot/loader/entries/:'\n");
     g_string_append(s, "        ls /boot/loader/entries/ 2>/dev/null || true\n");
@@ -692,7 +660,6 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "    fi\n");
     g_string_append(s, "    ;;\n");
 
-    /* ---- GRUB ---- */
     g_string_append(s, "  grub)\n");
     g_string_append(s, "    if command -v grub-mkconfig >/dev/null 2>&1; then\n");
     g_string_append(s, "      echo '[GRUB] Regenerando /boot/grub/grub.cfg...'\n");
@@ -702,7 +669,6 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "    fi\n");
     g_string_append(s, "    ;;\n");
 
-    /* ---- GRUB2 (Fedora/openSUSE) ---- */
     g_string_append(s, "  grub2)\n");
     g_string_append(s, "    if command -v grub2-mkconfig >/dev/null 2>&1; then\n");
     g_string_append(s, "      echo '[GRUB2] Regenerando /boot/grub2/grub.cfg...'\n");
@@ -712,17 +678,14 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "    fi\n");
     g_string_append(s, "    ;;\n");
 
-    /* ---- rEFInd ---- */
     g_string_append(s, "  refind)\n");
     g_string_append(s, "    echo '[rEFInd] rEFInd detecta kernels automáticamente al arrancar.'\n");
-    /* regenerar initramfs por si los hooks no se ejecutaron */
     g_string_append(s, "    if command -v mkinitcpio >/dev/null 2>&1; then\n");
     g_string_append(s, "      echo '[rEFInd] Regenerando initramfs (mkinitcpio -P)...'\n");
     g_string_append(s, "      sudo mkinitcpio -P || true\n");
     g_string_append(s, "    fi\n");
     g_string_append(s, "    ;;\n");
 
-    /* ---- Limine ---- */
     g_string_append(s, "  limine)\n");
     g_string_append(s, "    if command -v limine-mkconfig >/dev/null 2>&1; then\n");
     g_string_append(s, "      echo '[Limine] Ejecutando limine-mkconfig...'\n");
@@ -736,7 +699,6 @@ static gchar *make_bootloader_refresh_script(void) {
     g_string_append(s, "    fi\n");
     g_string_append(s, "    ;;\n");
 
-    /* ---- Desconocido ---- */
     g_string_append(s, "  *)\n");
     g_string_append(s, "    echo 'AVISO: No se detectó un bootloader compatible.'\n");
     g_string_append(s, "    echo '       Actualiza el bootloader manualmente.'\n");
@@ -1240,36 +1202,19 @@ static void destroy_state(gpointer data) {
     g_free(st);
 }
 
-/* ================================================================
- * Sistema de auto-actualización — PulseOS Kernel Manager
- *
- * Flujo:
- *   1. km_launch_update_check()  — lanza el hilo en background
- *   2. km_update_check_thread()  — descarga el binario remoto,
- *                                   compara SHA256 con el local
- *   3. km_upd_notify_idle()      — callback en hilo GTK:
- *        · sin cambios  → muestra "Actualizado"
- *        · hay cambio   → km_spawn_update() lanza Alacritty con sudo
- *   4. km_on_update_finish()     — lee fichero de resultado,
- *                                   reinicia la app si todo fue bien
- * ================================================================ */
-
-/* Resultado del hilo de comprobación */
 typedef struct {
-    gboolean  bin_updated;   /* el binario remoto difiere del local */
-    gboolean  any_error;     /* fallo de red o de sha256            */
-    gchar     self_path[512];/* ruta real del ejecutable en curso   */
-    gchar     res_file[256]; /* fichero temporal para "ok"/"fail"   */
+    gboolean  bin_updated;   
+    gboolean  any_error;     
+    gchar     self_path[512];
+    gchar     res_file[256]; 
 } KmUpdResult;
 
-/* Contexto para el callback de fin de Alacritty (actualización) */
 typedef struct {
     AppState    *st;
     gchar       *script_path;
     KmUpdResult *upd;
 } SpawnUpdCtx;
 
-/* ── Helpers ─────────────────────────────────────────────────── */
 
 static gchar *km_sha256_of(const gchar *path) {
     gchar cmd[600];
@@ -1284,7 +1229,6 @@ static gchar *km_sha256_of(const gchar *path) {
     return (strlen(line) == 64) ? g_strdup(line) : NULL;
 }
 
-/* ── Reiniciar la app tras actualizar ───────────────────────── */
 
 static gboolean km_restart_cb(gpointer data) {
     gchar *self_path = data;
@@ -1301,19 +1245,16 @@ static gboolean km_restart_cb(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-/* ── Callback cuando Alacritty termina (actualización) ──────── */
 
 static void km_on_update_finish(GPid pid, gint status, gpointer data) {
     SpawnUpdCtx *ctx = data;
     g_spawn_close_pid(pid);
 
-    /* limpiar script temporal */
     if (ctx->script_path) {
         unlink(ctx->script_path);
         g_free(ctx->script_path);
     }
 
-    /* leer resultado */
     gboolean ok = FALSE;
     {
         FILE *rf = fopen(ctx->upd->res_file, "r");
@@ -1329,7 +1270,6 @@ static void km_on_update_finish(GPid pid, gint status, gpointer data) {
 
     if (ok && ctx->upd->bin_updated) {
         set_status(ctx->st, "Actualización aplicada. Reiniciando...");
-        /* reiniciar tras 2 s para que el usuario lea el mensaje */
         g_timeout_add(2000, km_restart_cb, g_strdup(ctx->upd->self_path));
     } else if (ok) {
         set_status(ctx->st, "Actualización aplicada correctamente.");
@@ -1345,7 +1285,6 @@ static void km_on_update_finish(GPid pid, gint status, gpointer data) {
     g_free(ctx);
 }
 
-/* ── Abrir Alacritty con el script de actualización ─────────── */
 
 static void km_spawn_update(AppState *st, KmUpdResult *r) {
     gchar *alacritty = g_find_program_in_path("alacritty");
@@ -1356,8 +1295,7 @@ static void km_spawn_update(AppState *st, KmUpdResult *r) {
         return;
     }
 
-    /* El script usa && para que set -e no lo corte antes del resultado.
-     * Con set -e, en una cadena a&&b&&c||d, si a falla d se ejecuta. */
+
     GString *body = g_string_new(NULL);
     g_string_append(body, "echo 'Aplicando actualización de PulseOS Kernel Manager...'\n");
     g_string_append_printf(body,
@@ -1421,7 +1359,6 @@ static void km_spawn_update(AppState *st, KmUpdResult *r) {
     g_child_watch_add(pid, km_on_update_finish, ctx);
 }
 
-/* ── Idle callbacks (hilo GTK) ──────────────────────────────── */
 
 static gboolean km_upd_notify_idle(gpointer data) {
     KmUpdResult *r  = data;
@@ -1439,8 +1376,7 @@ static gboolean km_upd_notify_idle(gpointer data) {
         return G_SOURCE_REMOVE;
     }
 
-    /* Hay actualización — lanzar script */
-    km_spawn_update(st, r);   /* r se libera dentro */
+    km_spawn_update(st, r);   
     return G_SOURCE_REMOVE;
 }
 
@@ -1454,7 +1390,6 @@ static gboolean km_upd_checking_idle(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-/* ── Hilo de comprobación ───────────────────────────────────── */
 
 static gpointer km_update_check_thread(gpointer data) {
     (void)data;
@@ -1464,14 +1399,12 @@ static gpointer km_update_check_thread(gpointer data) {
 
     g_idle_add(km_upd_checking_idle, NULL);
 
-    /* descargar binario remoto */
     gchar cmd[700];
     g_snprintf(cmd, sizeof(cmd),
                "curl -fsSL --max-time 30 -o '%s' '%s' 2>/dev/null",
                UPD_TMP_BIN, UPD_URL_BIN);
 
     if (system(cmd) == 0) {
-        /* averiguar ruta real del ejecutable */
         g_strlcpy(r->self_path, UPD_BIN_DST, sizeof(r->self_path));
         {
             gchar tmp[512] = {0};
@@ -1493,7 +1426,6 @@ static gpointer km_update_check_thread(gpointer data) {
         g_free(sha_local);
         g_free(sha_remote);
 
-        /* si no hay actualización, borrar la descarga */
         if (!r->bin_updated) unlink(UPD_TMP_BIN);
     } else {
         r->any_error = TRUE;
@@ -1503,7 +1435,6 @@ static gpointer km_update_check_thread(gpointer data) {
     return NULL;
 }
 
-/* ── API pública ────────────────────────────────────────────── */
 
 static void km_launch_update_check(AppState *st) {
     if (st->update_btn)
@@ -1516,7 +1447,6 @@ static void on_update_check_clicked(GtkButton *btn, gpointer user_data) {
     km_launch_update_check((AppState *)user_data);
 }
 
-/* ================================================================ */
 
 static GtkWidget *build_ui(AppState *st) {
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -1565,12 +1495,10 @@ static GtkWidget *build_ui(AppState *st) {
     gtk_label_set_ellipsize(GTK_LABEL(st->status_label), PANGO_ELLIPSIZE_END);
     gtk_box_pack_start(GTK_BOX(status_box), st->status_label, TRUE, TRUE, 0);
 
-    /* versión */
     st->ver_label = gtk_label_new(KM_VERSION);
     gtk_widget_set_opacity(st->ver_label, 0.38);
     gtk_box_pack_start(GTK_BOX(status_box), st->ver_label, FALSE, FALSE, 4);
 
-    /* botón de actualización de la propia app */
     st->update_btn = gtk_button_new_with_label("Buscar actualizaciones");
     gtk_widget_set_tooltip_text(st->update_btn,
         "Comprueba si hay una nueva versión de PulseOS Kernel Manager");
@@ -1587,7 +1515,6 @@ static void activate(GtkApplication *app, gpointer user_data) {
     AppState *st = g_new0(AppState, 1);
     st->app = app;
 
-    /* registrar el AppState global antes de lanzar cualquier hilo */
     g_app_state = st;
 
     st->window = gtk_application_window_new(app);
@@ -1604,7 +1531,6 @@ static void activate(GtkApplication *app, gpointer user_data) {
     set_status(st, "Listo.");
     g_object_set_data_full(G_OBJECT(st->window), "app-state", st, destroy_state);
 
-    /* comprobar actualizaciones de la app al arrancar */
     km_launch_update_check(st);
 }
 
