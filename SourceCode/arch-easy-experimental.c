@@ -2909,6 +2909,23 @@ static void *ib_run_thread(void *arg) {
     }
 
     {
+        ib_stage(ib, L("Initializing Firefox profile...",
+                       "Inicializando perfil de Firefox..."));
+        char ff_cmd[MAX_CMD];
+        snprintf(ff_cmd, sizeof(ff_cmd),
+            "su - %s -c '"
+            "mkdir -p ~/.mozilla/firefox && "
+            "PDIR=$(mktemp -d ~/.mozilla/firefox/XXXXXXXX.default-release) && "
+            "printf \"[General]\\nStartWithLastProfile=1\\n\\n"
+            "[Profile0]\\nName=default-release\\nIsRelative=1\\n"
+            "Path=$(basename $PDIR)\\nDefault=1\\n\""
+            " > ~/.mozilla/firefox/profiles.ini'",
+            st.username);
+        ib_chroot(ib, ff_cmd, 1);
+        write_log("Firefox default profile initialized.");
+    }
+
+    {
         ib_stage(ib, L("Applying PulseOS branding...",
                        "Aplicando branding PulseOS..."));
 
