@@ -16,8 +16,8 @@
 #define MAX_TEXT     1024
 
 #define KM_VERSION   "0.0.1"
-#define UPD_URL_BIN  "https://raw.githubusercontent.com/PulseOS-community/" \
-                     "pulseos/main/tools/pulseos-kernel-manager"
+#define UPD_URL_BIN  "https://raw.githubusercontent.com/humrand/" \
+                     "arch-installation-easy/main/SourceCode/pulseos-kernel-manager"
 #define UPD_BIN_DST  "/usr/local/bin/pulseos-kernel-manager"
 #define UPD_TMP_BIN  "/tmp/.pulseos-km.upd"
 
