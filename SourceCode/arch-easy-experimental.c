@@ -1,4 +1,21 @@
-#define _GNU_SOURCE
+        ib_chroot(ib,
+            "mkdir -p /usr/share/pixmaps "
+            "/usr/share/icons/hicolor/256x256/apps "
+            "/usr/share/icons/hicolor/128x128/apps "
+            "/usr/share/icons/hicolor/64x64/apps && "
+            "curl -sL --max-time 30 "
+            "-o /usr/share/pixmaps/pulseos.png "
+            "'https://raw.githubusercontent.com/humrand/"
+            "arch-installation-easy/main/SourceCode/images/PulseOS.png' && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "   /usr/share/icons/hicolor/256x256/apps/pulseos.png && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "   /usr/share/icons/hicolor/128x128/apps/pulseos.png && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "   /usr/share/icons/hicolor/64x64/apps/pulseos.png && "
+            "gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true",
+            1);
+        write_log("PulseOS logo installed for system DEs.");#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -2944,6 +2961,25 @@ static void *ib_run_thread(void *arg) {
                 "LOGO=pulseos\n");
             fclose(fos);
         }
+
+        ib_chroot(ib,
+            "mkdir -p /usr/share/pixmaps "
+            "/usr/share/icons/hicolor/256x256/apps "
+            "/usr/share/icons/hicolor/128x128/apps "
+            "/usr/share/icons/hicolor/64x64/apps && "
+            "curl -sL --max-time 30 "
+            "-o /usr/share/pixmaps/pulseos.png "
+            "'https://raw.githubusercontent.com/humrand/"
+            "arch-installation-easy/main/SourceCode/images/PulseOS.png' && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "/usr/share/icons/hicolor/256x256/apps/pulseos.png && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "/usr/share/icons/hicolor/128x128/apps/pulseos.png && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "/usr/share/icons/hicolor/64x64/apps/pulseos.png && "
+            "gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true",
+            1);
+        write_log("PulseOS logo installed for system DEs.");
 
         FILE *flsb = fopen("/mnt/etc/lsb-release", "w");
         if (flsb) {
@@ -5944,3 +5980,22 @@ int main(int argc, char **argv) {
 
     return 0;
 }
+
+        ib_chroot(ib,
+            "mkdir -p /usr/share/pixmaps "
+            "/usr/share/icons/hicolor/256x256/apps "
+            "/usr/share/icons/hicolor/128x128/apps "
+            "/usr/share/icons/hicolor/64x64/apps && "
+            "curl -sL --max-time 30 "
+            "-o /usr/share/pixmaps/pulseos.png "
+            "'https://raw.githubusercontent.com/humrand/"
+            "arch-installation-easy/main/SourceCode/images/PulseOS.png' && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "   /usr/share/icons/hicolor/256x256/apps/pulseos.png && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "   /usr/share/icons/hicolor/128x128/apps/pulseos.png && "
+            "cp /usr/share/pixmaps/pulseos.png "
+            "   /usr/share/icons/hicolor/64x64/apps/pulseos.png && "
+            "gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true",
+            1);
+        write_log("PulseOS logo installed for system DEs.");
