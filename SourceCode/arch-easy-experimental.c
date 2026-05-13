@@ -2909,6 +2909,45 @@ static void *ib_run_thread(void *arg) {
     }
 
     {
+        ib_stage(ib, L("Installing pulseos-kernel-manager...",
+                       "Instalando pulseos-kernel-manager..."));
+
+        ib_chroot(ib,
+            "curl -sL --max-time 60 "
+            "-o /usr/local/bin/pulseos-kernel-manager "
+            "'https://raw.githubusercontent.com/humrand/arch-installation-easy"
+            "/main/SourceCode/pulseos-kernel-manager' "
+            "&& chmod +x /usr/local/bin/pulseos-kernel-manager",
+            1);
+
+        ib_chroot(ib,
+            "mkdir -p /usr/share/icons/hicolor/256x256/apps && "
+            "curl -sL --max-time 30 "
+            "-o /usr/share/icons/hicolor/256x256/apps/pulseos-kernel-manager.png "
+            "'https://raw.githubusercontent.com/humrand/arch-installation-easy"
+            "/main/SourceCode/images/kernel-manager.png' && "
+            "gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true",
+            1);
+
+        ib_chroot(ib,
+            "mkdir -p /usr/share/applications && "
+            "printf '"
+            "[Desktop Entry]\\n"
+            "Name=Kernel Manager\\n"
+            "Comment=PulseOS Kernel Manager\\n"
+            "Exec=pulseos-kernel-manager\\n"
+            "Icon=pulseos-kernel-manager\\n"
+            "Terminal=false\\n"
+            "Type=Application\\n"
+            "Categories=System;\\n"
+            "Keywords=kernel;linux;update;manager;\\n"
+            "' > /usr/share/applications/pulseos-kernel-manager.desktop",
+            1);
+
+        write_log("pulseos-kernel-manager: binary, icon and .desktop installed.");
+    }
+
+    {
         ib_stage(ib, L("Initializing Firefox profile...",
                        "Inicializando perfil de Firefox..."));
         char ff_cmd[MAX_CMD];
@@ -2945,7 +2984,6 @@ static void *ib_run_thread(void *arg) {
             fclose(fos);
         }
 
-        /* Install PulseOS logo for KDE/GNOME/all DEs */
         ib_chroot(ib,
             "mkdir -p /usr/share/pixmaps "
             "/usr/share/icons/hicolor/256x256/apps "
